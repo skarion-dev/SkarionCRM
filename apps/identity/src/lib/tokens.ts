@@ -54,9 +54,27 @@ export function generateOpaqueToken(byteLength = 32): string {
   return base64url(bytes);
 }
 
-/** SHA-256 hash of an opaque token, hex-encoded - this is what gets stored in the DB. */
+// Set once per request (see the middleware in index.ts) rather than threaded
+// through every function that hashes a token - Workers process one request
+// at a time per isolate invocation, so this can't leak across requests.
+let configuredPepper = '';
+
+/** Call once at the top of each request, before any token hashing happens. */
+export function configureTokenPepper(pepper: string): void {
+  configuredPepper = pepper;
+}
+
+/**
+ * SHA-256 hash of an opaque token, hex-encoded - this is what gets stored
+ * in the DB. The configured pepper (INVITATION_TOKEN_PEPPER - despite the
+ * name it's used for every opaque token: refresh/reset/invitation/recovery
+ * codes; one secret is simpler to manage than four) is mixed in so a DB
+ * leak alone isn't enough to brute-force or rainbow-table the original
+ * tokens; you'd also need the pepper, which lives only in Worker secrets,
+ * never the database.
+ */
 export async function sha256Hex(value: string): Promise<string> {
-  const data = new TextEncoder().encode(value);
+  const data = new TextEncoder().encode(configuredPepper + value);
   const digest = await crypto.subtle.digest('SHA-256', data);
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, '0'))

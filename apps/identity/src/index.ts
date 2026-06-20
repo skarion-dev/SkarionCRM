@@ -20,6 +20,7 @@ import * as authService from './services/auth.js';
 import * as invitationService from './services/invitations.js';
 import * as adminService from './services/admin.js';
 import { requireAuth, type AuthedVariables } from './middleware/auth.js';
+import { configureTokenPepper } from './lib/tokens.js';
 import type { AppName, Env } from './lib/types.js';
 
 const APP_LABELS: Record<AppName, string> = { crm: 'CRM', hr: 'Employee Portal', books: 'Books' };
@@ -86,6 +87,13 @@ app.use('*', async (c, next) => {
   await next();
 });
 
+// Must run before any route touches sha256Hex (login, refresh, invitations,
+// password reset, MFA recovery codes all hash opaque tokens).
+app.use('*', async (c, next) => {
+  configureTokenPepper(c.env.INVITATION_TOKEN_PEPPER);
+  await next();
+});
+
 function setRefreshCookie(c: AppContext, token: string, expiresAt: Date) {
   setCookie(c, REFRESH_COOKIE, token, {
     httpOnly: true,
@@ -134,6 +142,7 @@ app.post('/auth/login', async (c) => {
       ip: c.req.header('CF-Connecting-IP') ?? null,
       userAgent: c.req.header('User-Agent') ?? null,
       jwtSecret: c.env.JWT_SECRET,
+      mfaEncryptionKey: c.env.MFA_ENCRYPTION_KEY,
     });
     setRefreshCookie(c, result.refreshToken, result.refreshTokenExpiresAt);
     return c.json({ access_token: result.accessToken, user: result.user });
@@ -205,6 +214,7 @@ app.post('/auth/mfa/enroll', requireAuth, async (c) => {
   const result = await authService.enrollMfa(db, {
     userId: c.get('userId'),
     userEmail: c.get('userEmail'),
+    mfaEncryptionKey: c.env.MFA_ENCRYPTION_KEY,
   });
   return c.json(result);
 });
@@ -216,6 +226,7 @@ app.post('/auth/mfa/verify', requireAuth, async (c) => {
     const result = await authService.verifyMfaEnrollment(db, {
       userId: c.get('userId'),
       code: body.code,
+      mfaEncryptionKey: c.env.MFA_ENCRYPTION_KEY,
     });
     const me = await authService.getMe(db, c.get('userId'));
     const email = await renderMfaEnrolledEmail({ displayName: me.displayName });
@@ -309,6 +320,7 @@ app.post('/invitations/accept', async (c) => {
       email: me.email,
       password: body.password,
       jwtSecret: c.env.JWT_SECRET,
+      mfaEncryptionKey: c.env.MFA_ENCRYPTION_KEY,
     });
     setRefreshCookie(c, loginResult.refreshToken, loginResult.refreshTokenExpiresAt);
 

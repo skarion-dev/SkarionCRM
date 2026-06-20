@@ -7,6 +7,7 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { withAudit } from '@skarion/db-kit';
 import * as schema from '../db/schema.js';
 import type { IdentityDb } from '../db/types.js';
+import { decryptMfaSecret, encryptMfaSecret } from '../lib/mfa-crypto.js';
 import { hashPassword, verifyPassword } from '../lib/password.js';
 import { generateOpaqueToken, sha256Hex, signAccessToken } from '../lib/tokens.js';
 import {
@@ -47,6 +48,7 @@ export interface LoginParams {
   ip?: string | null;
   userAgent?: string | null;
   jwtSecret: string;
+  mfaEncryptionKey: string;
 }
 
 export interface LoginResult {
@@ -74,7 +76,8 @@ export async function login(db: IdentityDb, params: LoginParams): Promise<LoginR
   });
   if (mfa?.enrolledAt) {
     if (!params.mfaCode) throw new AuthError('MFA code required.', 401);
-    const ok = await verifyTotpCode(mfa.totpSecretEncrypted, params.mfaCode);
+    const secretBase32 = await decryptMfaSecret(mfa.totpSecretEncrypted, params.mfaEncryptionKey);
+    const ok = await verifyTotpCode(secretBase32, params.mfaCode);
     if (!ok) throw new AuthError('Invalid MFA code.', 401);
   }
 
@@ -228,7 +231,7 @@ async function currentTokenVersion(db: IdentityDb, userId: string): Promise<numb
 
 export async function enrollMfa(
   db: IdentityDb,
-  params: { userId: string; userEmail: string }
+  params: { userId: string; userEmail: string; mfaEncryptionKey: string }
 ): Promise<{ secretBase32: string; provisioningUri: string }> {
   const secretBase32 = generateBase32Secret();
   const provisioningUri = buildProvisioningUri({
@@ -236,29 +239,32 @@ export async function enrollMfa(
     accountEmail: params.userEmail,
     issuer: 'Skarion',
   });
+  const encrypted = await encryptMfaSecret(secretBase32, params.mfaEncryptionKey);
 
   // Not yet "enrolled" until verified - upsert without setting enrolledAt.
   await db
     .insert(schema.mfaSecrets)
-    .values({ userId: params.userId, totpSecretEncrypted: secretBase32 })
+    .values({ userId: params.userId, totpSecretEncrypted: encrypted })
     .onConflictDoUpdate({
       target: schema.mfaSecrets.userId,
-      set: { totpSecretEncrypted: secretBase32, enrolledAt: null, recoveryCodesHashes: null },
+      set: { totpSecretEncrypted: encrypted, enrolledAt: null, recoveryCodesHashes: null },
     });
 
+  // Returned once for the QR code / manual entry - never persisted in plaintext.
   return { secretBase32, provisioningUri };
 }
 
 export async function verifyMfaEnrollment(
   db: IdentityDb,
-  params: { userId: string; code: string }
+  params: { userId: string; code: string; mfaEncryptionKey: string }
 ): Promise<{ recoveryCodes: string[] }> {
   const mfa = await db.query.mfaSecrets.findFirst({
     where: eq(schema.mfaSecrets.userId, params.userId),
   });
   if (!mfa) throw new AuthError('No MFA enrollment in progress.', 400);
 
-  const ok = await verifyTotpCode(mfa.totpSecretEncrypted, params.code);
+  const secretBase32 = await decryptMfaSecret(mfa.totpSecretEncrypted, params.mfaEncryptionKey);
+  const ok = await verifyTotpCode(secretBase32, params.code);
   if (!ok) throw new AuthError('Invalid code.', 401);
 
   const recoveryCodes = generateRecoveryCodes();
