@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { useLeads, useDeleteEntity } from '../hooks/use-api.js';
 import { useNavigate } from 'react-router-dom';
-import { Target, Plus, Search, Trash2, ArrowRight, Pencil } from 'lucide-react';
+import { Target, Plus, Search, Trash2, ArrowRight, Pencil, Upload } from 'lucide-react';
 import { cn } from '../lib/utils.js';
 import LeadForm from '../components/forms/LeadForm.js';
+import ImportModal from '../components/ImportModal.js';
 import type { Lead } from '../api.js';
 
 export default function LeadsPage() {
@@ -13,6 +14,7 @@ export default function LeadsPage() {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'all' | LeadStatus>('all');
   const [modalOpen, setModalOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [editLead, setEditLead] = useState<Lead | null>(null);
 
   const openCreate = () => { setEditLead(null); setModalOpen(true); };
@@ -46,9 +48,14 @@ export default function LeadsPage() {
           <h1 className="text-xl font-semibold">Leads</h1>
           <span className="text-sm text-slate-500">({filtered.length})</span>
         </div>
-        <button onClick={openCreate} className="flex items-center gap-2 px-3 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700">
-          <Plus size={16} /> Add Lead
-        </button>
+        <div className="flex gap-2">
+          <button onClick={() => setImportOpen(true)} className="flex items-center gap-2 px-3 py-2 border border-slate-200 rounded-md text-sm hover:bg-slate-50 text-slate-600">
+            <Upload size={16} /> Import
+          </button>
+          <button onClick={openCreate} className="flex items-center gap-2 px-3 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700">
+            <Plus size={16} /> Add Lead
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -146,6 +153,15 @@ export default function LeadsPage() {
       </div>
 
       <LeadForm open={modalOpen} onClose={closeModal} lead={editLead} />
+      <ImportModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        type="leads"
+        title="Leads"
+        sampleCsv={`firstName,lastName,email,phone,companyName,companyDomain,source
+John,Doe,john@acme.com,+1-555-1234,Acme Inc,acme.com,website
+Jane,Smith,jane@globex.org,+1-555-5678,Globex Corp,globex.org,referral`}
+      />
     </div>
   );
 }

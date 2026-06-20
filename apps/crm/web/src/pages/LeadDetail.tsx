@@ -1,12 +1,20 @@
 import { useNavigate, useParams } from 'react-router-dom';
-import { useLead } from '../hooks/use-api.js';
-import { ArrowLeft, Target, Mail, Phone, Building2, Calendar, FileText } from 'lucide-react';
+import { useLead, useDeleteEntity } from '../hooks/use-api.js';
+import { ArrowLeft, Target, Mail, Phone, Building2, Calendar, FileText, Pencil, Trash2 } from 'lucide-react';
 import { cn } from '../lib/utils.js';
+import { useState } from 'react';
+import ActivityTimeline from '../components/ActivityTimeline.js';
+import ActivityForm from '../components/ActivityForm.js';
+import LeadForm from '../components/forms/LeadForm.js';
+import type { ActivityType } from '../api.js';
 
 export default function LeadDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { data, isLoading } = useLead(id ?? '');
+  const deleteMutation = useDeleteEntity();
+  const [editOpen, setEditOpen] = useState(false);
+  const [activityType, setActivityType] = useState<ActivityType | null>(null);
 
   if (isLoading) return <div className="text-slate-500">Loading lead...</div>;
   if (!data?.lead) return <div className="text-slate-500">Lead not found</div>;
@@ -33,15 +41,28 @@ export default function LeadDetail() {
               <div className="text-slate-500 text-sm">{lead.email}</div>
             </div>
           </div>
-          <span className={cn('px-3 py-1 rounded-full text-sm font-medium capitalize',
-            lead.status === 'new' ? 'bg-blue-100 text-blue-700' :
-            lead.status === 'contacted' ? 'bg-amber-100 text-amber-700' :
-            lead.status === 'qualified' ? 'bg-green-100 text-green-700' :
-            lead.status === 'converted' ? 'bg-purple-100 text-purple-700' :
-            'bg-slate-100 text-slate-600'
-          )}>
-            {lead.status}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className={cn('px-3 py-1 rounded-full text-sm font-medium capitalize',
+              lead.status === 'new' ? 'bg-blue-100 text-blue-700' :
+              lead.status === 'contacted' ? 'bg-amber-100 text-amber-700' :
+              lead.status === 'qualified' ? 'bg-green-100 text-green-700' :
+              lead.status === 'converted' ? 'bg-purple-100 text-purple-700' :
+              'bg-slate-100 text-slate-600'
+            )}>
+              {lead.status}
+            </span>
+            <button onClick={() => setEditOpen(true)} className="p-2 rounded hover:bg-slate-100 text-slate-500">
+              <Pencil size={16} />
+            </button>
+            <button
+              onClick={() => {
+                deleteMutation.mutate({ type: 'leads', id: lead.id }, { onSuccess: () => navigate('/leads') });
+              }}
+              className="p-2 rounded hover:bg-red-100 text-red-500"
+            >
+              <Trash2 size={16} />
+            </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
@@ -76,6 +97,25 @@ export default function LeadDetail() {
           </div>
         )}
       </div>
+
+      <div className="bg-white border border-slate-200 rounded-lg p-6">
+        <ActivityTimeline
+          filters={{ contactId: lead.id }}
+          entityName={`${lead.firstName} ${lead.lastName}`}
+          onAddActivity={(type) => setActivityType(type)}
+        />
+      </div>
+
+      <LeadForm open={editOpen} onClose={() => setEditOpen(false)} lead={lead} />
+      {activityType && (
+        <ActivityForm
+          open={!!activityType}
+          onClose={() => setActivityType(null)}
+          type={activityType}
+          filters={{ contactId: lead.id }}
+          entityName={`${lead.firstName} ${lead.lastName}`}
+        />
+      )}
     </div>
   );
 }

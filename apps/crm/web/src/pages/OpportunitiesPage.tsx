@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useOpportunities, useDeleteEntity } from '../hooks/use-api.js';
-import { Users, Plus, Search, Trash2, Pencil } from 'lucide-react';
+import { Users, Plus, Search, Trash2, Pencil, ArrowRight } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { cn } from '../lib/utils.js';
 import OpportunityForm from '../components/forms/OpportunityForm.js';
 import type { Opportunity } from '../api.js';
@@ -8,6 +9,7 @@ import type { Opportunity } from '../api.js';
 export default function OpportunitiesPage() {
   const { data, isLoading } = useOpportunities();
   const deleteMutation = useDeleteEntity();
+  const navigate = useNavigate();
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'all' | string>('all');
   const [modalOpen, setModalOpen] = useState(false);
@@ -90,7 +92,11 @@ export default function OpportunitiesPage() {
             </thead>
             <tbody>
               {filtered.map((opp) => (
-                <tr key={opp.id} className="border-b border-slate-100 hover:bg-slate-50">
+                <tr
+                  key={opp.id}
+                  className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer"
+                  onClick={() => navigate(`/opportunities/${opp.id}`)}
+                >
                   <td className="px-4 py-3 font-medium">{opp.name}</td>
                   <td className="px-4 py-3">
                     <span className={cn('px-2 py-0.5 rounded text-xs font-medium capitalize',
@@ -109,11 +115,20 @@ export default function OpportunitiesPage() {
                   <td className="px-4 py-3 text-slate-600">{opp.probability ? `${opp.probability}%` : '—'}</td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-2">
-                      <button onClick={() => openEdit(opp)} className="p-1.5 rounded hover:bg-slate-200 text-slate-500">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); openEdit(opp); }}
+                        className="p-1.5 rounded hover:bg-slate-200 text-slate-500"
+                      >
                         <Pencil size={14} />
                       </button>
                       <button
-                        onClick={() => deleteMutation.mutate({ type: 'opportunities', id: opp.id })}
+                        onClick={(e) => { e.stopPropagation(); navigate(`/opportunities/${opp.id}`); }}
+                        className="p-1.5 rounded hover:bg-slate-200 text-slate-500"
+                      >
+                        <ArrowRight size={14} />
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); deleteMutation.mutate({ type: 'opportunities', id: opp.id }); }}
                         className="p-1.5 rounded hover:bg-red-100 text-red-500"
                       >
                         <Trash2 size={14} />

@@ -1,14 +1,18 @@
 import { useState } from 'react';
 import { useContacts, useDeleteEntity } from '../hooks/use-api.js';
-import { Contact as ContactIcon, Plus, Search, Trash2, Pencil } from 'lucide-react';
+import { Contact as ContactIcon, Plus, Search, Trash2, Pencil, ArrowRight, Upload } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import ContactForm from '../components/forms/ContactForm.js';
+import ImportModal from '../components/ImportModal.js';
 import type { Contact } from '../api.js';
 
 export default function ContactsPage() {
   const { data, isLoading } = useContacts();
   const deleteMutation = useDeleteEntity();
+  const navigate = useNavigate();
   const [search, setSearch] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [editContact, setEditContact] = useState<Contact | null>(null);
 
   const openCreate = () => { setEditContact(null); setModalOpen(true); };
@@ -32,9 +36,14 @@ export default function ContactsPage() {
           <h1 className="text-xl font-semibold">Contacts</h1>
           <span className="text-sm text-slate-500">({filtered.length})</span>
         </div>
-        <button onClick={openCreate} className="flex items-center gap-2 px-3 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700">
-          <Plus size={16} /> Add Contact
-        </button>
+        <div className="flex gap-2">
+          <button onClick={() => setImportOpen(true)} className="flex items-center gap-2 px-3 py-2 border border-slate-200 rounded-md text-sm hover:bg-slate-50 text-slate-600">
+            <Upload size={16} /> Import
+          </button>
+          <button onClick={openCreate} className="flex items-center gap-2 px-3 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700">
+            <Plus size={16} /> Add Contact
+          </button>
+        </div>
       </div>
 
       <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-md px-3 py-2">
@@ -62,18 +71,31 @@ export default function ContactsPage() {
             </thead>
             <tbody>
               {filtered.map((contact) => (
-                <tr key={contact.id} className="border-b border-slate-100 hover:bg-slate-50">
+                <tr
+                  key={contact.id}
+                  className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer"
+                  onClick={() => navigate(`/contacts/${contact.id}`)}
+                >
                   <td className="px-4 py-3 font-medium">{contact.firstName} {contact.lastName}</td>
                   <td className="px-4 py-3 text-slate-600">{contact.email}</td>
                   <td className="px-4 py-3 text-slate-600">{contact.title ?? '—'}</td>
                   <td className="px-4 py-3 text-slate-600">{contact.phone ?? '—'}</td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-2">
-                      <button onClick={() => openEdit(contact)} className="p-1.5 rounded hover:bg-slate-200 text-slate-500">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); openEdit(contact); }}
+                        className="p-1.5 rounded hover:bg-slate-200 text-slate-500"
+                      >
                         <Pencil size={14} />
                       </button>
                       <button
-                        onClick={() => deleteMutation.mutate({ type: 'contacts', id: contact.id })}
+                        onClick={(e) => { e.stopPropagation(); navigate(`/contacts/${contact.id}`); }}
+                        className="p-1.5 rounded hover:bg-slate-200 text-slate-500"
+                      >
+                        <ArrowRight size={14} />
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); deleteMutation.mutate({ type: 'contacts', id: contact.id }); }}
                         className="p-1.5 rounded hover:bg-red-100 text-red-500"
                       >
                         <Trash2 size={14} />
@@ -91,6 +113,15 @@ export default function ContactsPage() {
       </div>
 
       <ContactForm open={modalOpen} onClose={closeModal} contact={editContact} />
+      <ImportModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        type="contacts"
+        title="Contacts"
+        sampleCsv={`firstName,lastName,email,phone,title,companyName
+John,Doe,john@acme.com,+1-555-1234,CEO,Acme Inc
+Jane,Smith,jane@globex.org,+1-555-5678,VP Sales,Globex Corp`}
+      />
     </div>
   );
 }
