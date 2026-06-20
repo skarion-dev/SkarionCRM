@@ -96,11 +96,12 @@ columns; nothing currently writes to them.
   `CREATE UNIQUE INDEX ... ON ... ("domain")` — no `lower()` call at all.
   `Acme.com` and `acme.com` currently collide as different companies.
   Fix in the schema (`apps/crm/src/db/schema.ts`) using
-  `uniqueIndex(...).on(sql\`lower(${table.domain})\`)`, exactly matching
-how `apps/identity/src/db/schema.ts`does it for`users.email`. Since
-the original migration is already applied to production, generate a
-**new** migration for this (`pnpm db:generate`from`apps/crm`) —
-don't hand-edit the already-applied `.sql` file.
+  `uniqueIndex(...).on(sql\`lower(${table.domain})\`)`. This exactly
+matches the case-insensitive-email pattern already used for
+`users.email`in`apps/identity/src/db/schema.ts`— copy it. Since the
+original migration is already applied to production, generate a new
+migration for this change (run`pnpm db:generate`from`apps/crm`) —
+  don't hand-edit the already-applied SQL file.
 - The CSV importers in `packages/importers` typecheck and have correct
   logic but are never called from any API route — dead code right now.
   Wire `POST /api/import/contacts`, `/api/import/companies`,
