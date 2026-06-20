@@ -14,12 +14,11 @@ import {
   renderMfaEnrolledEmail,
   renderWelcomeAfterInviteEmail,
 } from '@skarion/ui/emails';
-import { sendEmail } from '@skarion/auth-client';
+import { requireAuth, sendEmail, type AuthedVariables } from '@skarion/auth-client';
 import * as schema from './db/schema.js';
 import * as authService from './services/auth.js';
 import * as invitationService from './services/invitations.js';
 import * as adminService from './services/admin.js';
-import { requireAuth, type AuthedVariables } from './middleware/auth.js';
 import { configureTokenPepper } from './lib/tokens.js';
 import type { AppName, Env } from './lib/types.js';
 

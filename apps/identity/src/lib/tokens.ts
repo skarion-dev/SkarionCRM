@@ -5,24 +5,16 @@
 // their SHA-256 hash is ever stored, so a DB leak doesn't hand out usable
 // tokens directly.
 
-import { sign, verify } from 'hono/jwt';
-import type { AppMembershipsMap } from './types.js';
+import { sign } from 'hono/jwt';
+import type { AccessTokenPayload, AppMembershipsMap } from '@skarion/auth-client';
 
 const JWT_ALG = 'HS256';
 const ACCESS_TOKEN_TTL_SECONDS = 15 * 60; // 15 minutes
 
-export interface AccessTokenPayload {
-  sub: string;
-  email: string;
-  apps: AppMembershipsMap;
-  ver: number;
-  iat: number;
-  exp: number;
-  // Hono's JWTPayload requires an index signature - this stays structurally
-  // typed for the fields above via the explicit properties.
-  [key: string]: unknown;
-}
-
+// Verification (verifyAccessToken) lives in @skarion/auth-client - every
+// other Worker (crm, hr, books) needs the exact same logic to trust
+// identity-issued tokens, so there's one implementation, not N copies that
+// could drift. Signing stays here: only identity ever signs a token.
 export async function signAccessToken(
   params: { userId: string; email: string; apps: AppMembershipsMap; tokenVersion: number },
   secret: string
@@ -37,14 +29,6 @@ export async function signAccessToken(
     exp: now + ACCESS_TOKEN_TTL_SECONDS,
   };
   return sign(payload, secret, JWT_ALG);
-}
-
-export async function verifyAccessToken(
-  token: string,
-  secret: string
-): Promise<AccessTokenPayload> {
-  const payload = await verify(token, secret, JWT_ALG);
-  return payload as unknown as AccessTokenPayload;
 }
 
 /** Random URL-safe opaque token (refresh token, invitation token, password reset token). */

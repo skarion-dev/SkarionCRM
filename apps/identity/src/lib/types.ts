@@ -1,7 +1,4 @@
-export type AppName = 'crm' | 'hr' | 'books';
-
-/** Maps each app the user has an active membership in to their role in that app. */
-export type AppMembershipsMap = Partial<Record<AppName, string>>;
+export type { AppName, AppMembershipsMap } from '@skarion/auth-client';
 
 export interface Env {
   DATABASE_URL: string;

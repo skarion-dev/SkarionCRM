@@ -1,8 +1,9 @@
-// apps/identity/src/middleware/auth.ts
-
+// Shared Hono middleware for any Worker that trusts identity-issued JWTs
+// (crm, hr, books, and identity itself). One implementation instead of a
+// copy per Worker that could silently drift.
 import type { Context, Next } from 'hono';
-import { verifyAccessToken } from '../lib/tokens.js';
-import type { AppMembershipsMap, Env } from '../lib/types.js';
+import { verifyAccessToken } from './jwt.js';
+import type { AppMembershipsMap, AppName } from './types.js';
 
 export interface AuthedVariables {
   userId: string;
@@ -10,9 +11,13 @@ export interface AuthedVariables {
   apps: AppMembershipsMap;
 }
 
+export interface JwtEnv {
+  JWT_SECRET: string;
+}
+
 /** Requires a valid `Authorization: Bearer <jwt>` header. Attaches userId/email/apps to context. */
 export async function requireAuth(
-  c: Context<{ Bindings: Env; Variables: AuthedVariables }>,
+  c: Context<{ Bindings: JwtEnv; Variables: AuthedVariables }>,
   next: Next
 ) {
   const header = c.req.header('Authorization');
@@ -32,8 +37,8 @@ export async function requireAuth(
 }
 
 /** Requires the caller to hold one of `allowedRoles` on `app` (call after requireAuth). */
-export function requireAppRole(app: 'crm' | 'hr' | 'books', allowedRoles: string[]) {
-  return async (c: Context<{ Bindings: Env; Variables: AuthedVariables }>, next: Next) => {
+export function requireAppRole(app: AppName, allowedRoles: string[]) {
+  return async (c: Context<{ Bindings: JwtEnv; Variables: AuthedVariables }>, next: Next) => {
     const apps = c.get('apps');
     const role = apps[app];
     if (!role || !allowedRoles.includes(role)) {
