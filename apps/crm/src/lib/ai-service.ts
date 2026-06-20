@@ -4,12 +4,16 @@
 // Used by: chat endpoint, PDF lead extraction, outreach drafting, embeddings.
 
 interface Env {
+  AI_PROVIDER?: string;
   GOOGLE_API_KEY?: string;
-  GOOGLE_CHAT_MODEL?: string;
+  GOOGLE_MODEL?: string;
+  GOOGLE_FALLBACK_MODEL?: string;
+  GOOGLE_CHAT_MODEL?: string; // legacy alias
   GOOGLE_EMBEDDING_MODEL?: string;
 }
 
-export const DEFAULT_CHAT_MODEL = 'gemini-1.5-flash';
+export const DEFAULT_CHAT_MODEL = 'gemini-2.5-flash-lite';
+export const DEFAULT_FALLBACK_MODEL = 'gemini-2.5-flash';
 export const DEFAULT_EMBEDDING_MODEL = 'embedding-001';
 export const AI_NOT_CONFIGURED_MSG = 'AI assistant is not configured. Add GOOGLE_API_KEY to enable AI features.';
 
@@ -58,10 +62,12 @@ export interface ChatMessage {
 export async function chatCompletion(
   messages: ChatMessage[],
   env: Env,
-  opts?: { temperature?: number; systemInstruction?: string }
+  opts?: { temperature?: number; systemInstruction?: string; model?: string }
 ): Promise<string | null> {
   if (!env.GOOGLE_API_KEY) return null;
-  const model = env.GOOGLE_CHAT_MODEL || DEFAULT_CHAT_MODEL;
+  const preferredModel = opts?.model || env.GOOGLE_MODEL || env.GOOGLE_CHAT_MODEL || DEFAULT_CHAT_MODEL;
+  const fallbackModel = env.GOOGLE_FALLBACK_MODEL || DEFAULT_FALLBACK_MODEL;
+
   const contents = messages.map((m) => ({
     role: m.role === 'model' ? 'model' : 'user',
     parts: [{ text: m.text }],
@@ -69,25 +75,37 @@ export async function chatCompletion(
   if (opts?.systemInstruction) {
     contents.unshift({
       role: 'user',
-      parts: [{ text: `System instruction: ${opts.systemInstruction}\n\n(End of system instruction.)` }],
+      parts: [{ text: 'System instruction: ' + opts.systemInstruction + '\n\n(End of system instruction.)' }],
     });
   }
-  try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GOOGLE_API_KEY}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents,
-        generationConfig: { temperature: opts?.temperature ?? 0.3 },
-      }),
-    });
-    if (!res.ok) { console.error('Google chat error:', await res.text()); return null; }
-    const data = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
-    return data.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
-  } catch (err) {
-    console.error('Chat completion failed:', err);
-    return null;
+
+  async function tryModel(model: string): Promise<string | null> {
+    try {
+      const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + env.GOOGLE_API_KEY, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents,
+          generationConfig: { temperature: opts?.temperature ?? 0.3 },
+        }),
+      });
+      if (!res.ok) {
+        const errText = await res.text();
+        console.error('Google chat error (' + model + '):', errText);
+        return null;
+      }
+      const data = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
+      return data.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
+    } catch (err) {
+      console.error('Chat completion failed (' + model + '):', err);
+      return null;
+    }
   }
+
+  const result = await tryModel(preferredModel);
+  if (result) return result;
+  console.log('[AI] Preferred model ' + preferredModel + ' failed, trying fallback ' + fallbackModel + '...');
+  return tryModel(fallbackModel);
 }
 
 export async function chatCompletionSingle(prompt: string, env: Env, opts?: { temperature?: number; systemInstruction?: string }): Promise<string | null> {

@@ -15,9 +15,12 @@ interface Env {
   APP_URL: string;
   RESEND_API_KEY?: string;
   WORKFLOW_RUNNER_URL?: string;
+  AI_PROVIDER?: string;
   GOOGLE_API_KEY?: string;
-  GOOGLE_EMBEDDING_MODEL?: string;
+  GOOGLE_MODEL?: string;
+  GOOGLE_FALLBACK_MODEL?: string;
   GOOGLE_CHAT_MODEL?: string;
+  GOOGLE_EMBEDDING_MODEL?: string;
 }
 
 /** Basic email stub — logs what would be sent. Full Resend wiring in a future ticket. */

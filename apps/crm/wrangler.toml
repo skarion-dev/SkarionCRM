@@ -9,6 +9,14 @@ head_sampling_rate = 1
 
 [vars]
 APP_URL = "https://skarion-crm.pages.dev"
+AI_PROVIDER = "google"
+GOOGLE_MODEL = "gemini-2.5-flash-lite"
+GOOGLE_FALLBACK_MODEL = "gemini-2.5-flash"
+GOOGLE_EMBEDDING_MODEL = "embedding-001"
 
 [env.staging.vars]
 APP_URL = "https://skarion-crm-staging.pages.dev"
+AI_PROVIDER = "google"
+GOOGLE_MODEL = "gemini-2.5-flash-lite"
+GOOGLE_FALLBACK_MODEL = "gemini-2.5-flash"
+GOOGLE_EMBEDDING_MODEL = "embedding-001"

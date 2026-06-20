@@ -10,3 +10,6 @@ head_sampling_rate = 1
 # Cron trigger: run every 15 minutes to (re)embed changed records.
 [[triggers]]
 crons = ["*/15 * * * *"]
+
+[vars]
+GOOGLE_EMBEDDING_MODEL = "embedding-001"
