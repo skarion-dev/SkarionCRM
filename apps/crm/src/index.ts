@@ -819,18 +819,42 @@ app.delete("/api/opportunities/:id", async (c) => {
 app.get("/api/activities", async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const role = getRole(c);
-  const _caller = { userId: c.get("userId") };
+  const isSuperadmin = c.get("isSuperadmin");
+  const caller = { userId: c.get("userId"), isSuperadmin };
   if (!role) return c.json({ error: "Forbidden." }, 403);
 
   const { contactId, companyId, opportunityId, type } = c.req.query();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const conditions: any[] = [];
+  const conditions: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any
 
-  if (contactId) conditions.push(eq(schema.activities.contactId, contactId));
-  if (companyId) conditions.push(eq(schema.activities.companyId, companyId));
-  if (opportunityId) conditions.push(eq(schema.activities.opportunityId, opportunityId));
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (type) conditions.push(eq(schema.activities.type, type as any));
+  // If a specific parent resource is provided, verify the caller can access it
+  if (companyId) {
+    const [company] = await db.select().from(schema.companies)
+      .where(and(eq(schema.companies.id, companyId), isNull(schema.companies.deletedAt)));
+    if (!company) return c.json({ error: "Not found." }, 404);
+    if (!can(isSuperadmin, role, "view", { ownerId: company.ownerId }, caller)) {
+      return c.json({ error: "Forbidden." }, 403);
+    }
+    conditions.push(eq(schema.activities.companyId, companyId));
+  }
+  if (contactId) {
+    const [contact] = await db.select().from(schema.contacts)
+      .where(and(eq(schema.contacts.id, contactId), isNull(schema.contacts.deletedAt)));
+    if (!contact) return c.json({ error: "Not found." }, 404);
+    if (!can(isSuperadmin, role, "view", { ownerId: contact.ownerId }, caller)) {
+      return c.json({ error: "Forbidden." }, 403);
+    }
+    conditions.push(eq(schema.activities.contactId, contactId));
+  }
+  if (opportunityId) {
+    const [opportunity] = await db.select().from(schema.opportunities)
+      .where(and(eq(schema.opportunities.id, opportunityId), isNull(schema.opportunities.deletedAt)));
+    if (!opportunity) return c.json({ error: "Not found." }, 404);
+    if (!can(isSuperadmin, role, "view", { ownerId: opportunity.ownerId }, caller)) {
+      return c.json({ error: "Forbidden." }, 403);
+    }
+    conditions.push(eq(schema.activities.opportunityId, opportunityId));
+  }
+  if (type) conditions.push(eq(schema.activities.type, type as any)); // eslint-disable-line @typescript-eslint/no-explicit-any
 
   if (conditions.length === 0) {
     return c.json({ error: "Provide at least one filter: contactId, companyId, opportunityId, or type." }, 400);
@@ -1327,7 +1351,12 @@ app.get("/api/admin/audit-log", async (c) => {
 app.get("/api/workflow-rules", async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const role = getRole(c);
+  const isSuperadmin = c.get("isSuperadmin");
   if (!role) return c.json({ error: "Forbidden." }, 403);
+  // Only managers and superadmins can view workflow rules
+  if (!isSuperadmin && role !== "manager") {
+    return c.json({ error: "Forbidden." }, 403);
+  }
 
   const rows = await db.select().from(schema.workflowRules)
     .orderBy(desc(schema.workflowRules.updatedAt))
@@ -1407,7 +1436,12 @@ app.delete("/api/workflow-rules/:id", async (c) => {
 app.get("/api/integrations", async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const role = getRole(c);
+  const isSuperadmin = c.get("isSuperadmin");
   if (!role) return c.json({ error: "Forbidden." }, 403);
+  // Only managers and superadmins can view integrations
+  if (!isSuperadmin && role !== "manager") {
+    return c.json({ error: "Forbidden." }, 403);
+  }
 
   const rows = await db.select().from(schema.integrationConfigs)
     .orderBy(desc(schema.integrationConfigs.updatedAt));
