@@ -24,7 +24,11 @@ import type { AppName, Env } from './lib/types.js';
 
 const APP_LABELS: Record<AppName, string> = { crm: 'CRM', hr: 'Employee Portal', books: 'Books' };
 const APP_SUBDOMAINS: Record<AppName, string> = { crm: 'crm', hr: 'team', books: 'books' };
-const APP_PAGES_SUBDOMAINS: Record<AppName, string> = { crm: 'skarion-crm', hr: 'skarion-hr', books: 'skarion-books' };
+const APP_PAGES_SUBDOMAINS: Record<AppName, string> = {
+  crm: 'skarion-crm',
+  hr: 'skarion-hr',
+  books: 'skarion-books',
+};
 
 /** Derives e.g. https://crm.skarion.com from the identity app's own https://auth.skarion.com.
  *  For workers.dev / pages.dev deployments, returns the known Pages subdomain. */
@@ -52,6 +56,22 @@ type AppContext = Context<{ Bindings: Env; Variables: AuthedVariables }>;
 
 const app = new Hono<{ Bindings: Env; Variables: AuthedVariables }>();
 
+// pages.dev and workers.dev are shared, multi-tenant domains - literally
+// anyone with a Cloudflare account can deploy to <anything>.pages.dev or
+// <anything>.workers.dev. Matching the whole domain with a wildcard (as a
+// prior version of this function did) would let any other tenant's site
+// make credentialed cross-origin requests against this API. Only this
+// project's own known subdomains are allowed - this is a stopgap until
+// real custom domains (auth.skarion.com etc.) are attached; update this
+// list, don't widen the pattern, if a new Pages/Worker project is added.
+const ALLOWED_PAGES_WORKERS_ORIGINS = new Set([
+  'https://skarion-identity-login.pages.dev',
+  'https://skarion-identity-admin.pages.dev',
+  'https://skarion-crm.pages.dev',
+  'https://skarion-identity.alsaki1999.workers.dev',
+  'https://skarion-crm-platform.alsaki1999.workers.dev',
+]);
+
 function isAllowedOrigin(origin: string, appUrl: string): boolean {
   try {
     const allowed = new URL(appUrl).origin;
@@ -60,8 +80,7 @@ function isAllowedOrigin(origin: string, appUrl: string): boolean {
     /* APP_URL not set yet in local dev - fall through */
   }
   if (/^https:\/\/([a-z0-9-]+\.)*skarion\.com$/.test(origin)) return true;
-  if (/^https:\/\/([a-z0-9-]+\.)*pages\.dev$/.test(origin)) return true;
-  if (/^https:\/\/([a-z0-9-]+\.)*workers\.dev$/.test(origin)) return true;
+  if (ALLOWED_PAGES_WORKERS_ORIGINS.has(origin)) return true;
   if (origin.startsWith('http://localhost:')) return true;
   return false;
 }
