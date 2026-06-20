@@ -69,8 +69,7 @@ jobs:
       - run: cd apps/crm/web && pnpm exec vite build
         env:
           VITE_API_URL: ${{ secrets.VITE_API_URL }}
-      - uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy apps/crm/web/dist --project-name=skarion-crm-platform
+      - run: cd apps/crm/web && pnpm exec wrangler pages deploy dist --project-name=skarion-crm-platform
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
