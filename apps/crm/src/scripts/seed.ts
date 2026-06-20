@@ -1,4 +1,4 @@
-import { eq, isNull } from "drizzle-orm";
+import { isNull } from "drizzle-orm";
 import type { CrmDb } from "../db/types.js";
 import * as schema from "../db/schema.js";
 import { withAudit } from "@skarion/db-kit";
@@ -43,11 +43,11 @@ const demoOpportunities = [
 ];
 
 const demoActivities = [
-  { type: "call" as const, subject: "Initial discovery call with Acme", content: "Discussed their current pain points and requirements. Very interested in our enterprise solution.", contactId: 0, companyId: 0 },
-  { type: "email" as const, subject: "Follow-up: TechStart proposal", content: "Sent pricing details and case studies. Awaiting their internal review.", contactId: 1, companyId: 1 },
-  { type: "meeting" as const, subject: "Product demo for Global Logistics", content: "Demonstrated our integration capabilities. Positive feedback from their technical team.", contactId: 2, companyId: 2 },
-  { type: "note" as const, subject: "Green Energy budget confirmed", content: "VP confirmed $30K budget for pilot program. Need to send contract by Friday.", contactId: 3, companyId: 3 },
-  { type: "call" as const, subject: "MediCare contract negotiation", content: "Finalized terms for the $500K deal. Legal review in progress.", contactId: 4, companyId: 4 },
+  { type: "call" as const, subject: "Initial discovery call with Acme", content: "Discussed their current pain points and requirements. Very interested in our enterprise solution.", contactId: 0, companyId: 0, opportunityId: null },
+  { type: "email" as const, subject: "Follow-up: TechStart proposal", content: "Sent pricing details and case studies. Awaiting their internal review.", contactId: 1, companyId: 1, opportunityId: null },
+  { type: "meeting" as const, subject: "Product demo for Global Logistics", content: "Demonstrated our integration capabilities. Positive feedback from their technical team.", contactId: 2, companyId: 2, opportunityId: null },
+  { type: "note" as const, subject: "Green Energy budget confirmed", content: "VP confirmed $30K budget for pilot program. Need to send contract by Friday.", contactId: 3, companyId: 3, opportunityId: null },
+  { type: "call" as const, subject: "MediCare contract negotiation", content: "Finalized terms for the $500K deal. Legal review in progress.", contactId: 4, companyId: 4, opportunityId: null },
 ];
 
 const demoTasks = [
@@ -76,34 +76,33 @@ export async function seed(db: CrmDb): Promise<void> {
   const contactRows = await db.insert(schema.contacts).values(
     demoContacts.map((c, i) => ({
       ...c,
-      companyId: companyRows[i % companyRows.length].id,
+      companyId: companyRows[i % companyRows.length]!.id,
       ownerId: DEMO_USER_ID,
     }))
   ).returning();
-  console.log(`Inserted ${contactRows.length} contacts`);
+  console.log("Inserted " + contactRows.length + " contacts");
 
   const leadRows = await db.insert(schema.leads).values(
-    demoLeads.map(l => 
     demoLeads.map(l => ({ ...l, ownerId: DEMO_USER_ID }))
   ).returning();
-  console.log(`Inserted ${leadRows.length} leads`);
+  console.log("Inserted " + leadRows.length + " leads");
 
   const oppRows = await db.insert(schema.opportunities).values(
     demoOpportunities.map((o, i) => ({
       ...o,
-      companyId: companyRows[i % companyRows.length].id,
-      contactId: contactRows[i % contactRows.length].id,
+      companyId: companyRows[i % companyRows.length]!.id,
+      contactId: contactRows[i % contactRows.length]!.id,
       ownerId: DEMO_USER_ID,
     }))
   ).returning();
-  console.log(`Inserted ${oppRows.length} opportunities`);
+  console.log("Inserted " + oppRows.length + " opportunities");
 
   await db.insert(schema.activities).values(
     demoActivities.map((a, i) => ({
       ...a,
-      contactId: a.contactId !== null ? contactRows[a.contactId].id : null,
-      companyId: a.companyId !== null ? companyRows[a.companyId].id : null,
-      opportunityId: a.opportunityId !== null ? oppRows[i % oppRows.length].id : null,
+      contactId: a.contactId !== null ? contactRows[a.contactId]!.id : null,
+      companyId: a.companyId !== null ? companyRows[a.companyId]!.id : null,
+      opportunityId: a.opportunityId !== null ? oppRows[i % oppRows.length]!.id : null,
       actorId: DEMO_USER_ID,
     }))
   );
@@ -112,9 +111,9 @@ export async function seed(db: CrmDb): Promise<void> {
   await db.insert(schema.tasks).values(
     demoTasks.map((t, i) => ({
       ...t,
-      contactId: t.contactId !== null ? contactRows[t.contactId].id : null,
-      companyId: t.companyId !== null ? companyRows[t.companyId].id : null,
-      opportunityId: t.opportunityId !== null ? oppRows[t.opportunityId].id : null,
+      contactId: t.contactId !== null ? contactRows[t.contactId]!.id : null,
+      companyId: t.companyId !== null ? companyRows[t.companyId]!.id : null,
+      opportunityId: t.opportunityId !== null ? oppRows[t.opportunityId]!.id : null,
       assigneeId: DEMO_USER_ID,
       dueDate: new Date(Date.now() + (i + 1) * 24 * 60 * 60 * 1000),
     }))
