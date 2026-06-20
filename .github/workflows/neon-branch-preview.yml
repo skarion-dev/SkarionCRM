@@ -1,0 +1,62 @@
+name: Neon Branch Preview
+
+# Creates a temporary Neon branch per PR, runs all schema migrations against
+# it, and tears the branch down again when the PR closes (merged or not).
+# Requires repo secrets: NEON_API_KEY, NEON_PROJECT_ID.
+# Not active until Chunk 1.8 wires real Cloudflare/Neon credentials - this
+# file is correct and ready, just needs those secrets set in repo settings.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, closed]
+
+jobs:
+  create-branch:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    outputs:
+      db_url: ${{ steps.create_neon_branch.outputs.db_url }}
+    steps:
+      - name: Create Neon branch for this PR
+        id: create_neon_branch
+        uses: neondatabase/create-branch-action@v6
+        with:
+          project_id: ${{ secrets.NEON_PROJECT_ID }}
+          api_key: ${{ secrets.NEON_API_KEY }}
+          branch_name: pr-${{ github.event.number }}
+          username: neondb_owner
+
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - run: pnpm install --frozen-lockfile
+
+      # Each schema (identity, crm, hr, books) has its own drizzle.config.ts
+      # and migrations folder under its app directory. Add one step per app
+      # as each app's schema lands.
+      - name: Apply identity schema migrations
+        if: hashFiles('apps/identity/drizzle/**') != ''
+        working-directory: apps/identity
+        run: pnpm db:migrate
+        env:
+          DATABASE_URL: ${{ steps.create_neon_branch.outputs.db_url }}
+
+  teardown-branch:
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete Neon branch for this PR
+        uses: neondatabase/delete-branch-action@v3
+        with:
+          project_id: ${{ secrets.NEON_PROJECT_ID }}
+          api_key: ${{ secrets.NEON_API_KEY }}
+          branch: pr-${{ github.event.number }}
