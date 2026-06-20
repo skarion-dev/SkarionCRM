@@ -1,47 +1,37 @@
 import { useEffect, useState } from 'react';
+import { listCompanies, type Company } from './api.js';
 
 function App() {
-  const [user, setUser] = useState<null | { id: string; email: string }>(null);
+  const [companies, setCompanies] = useState<Company[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const token = new URLSearchParams(window.location.search).get('token');
-    if (token) {
-      localStorage.setItem('skarion_token', token);
-      window.history.replaceState({}, '', window.location.pathname);
-    }
+    listCompanies()
+      .then((result) => setCompanies(result.companies))
+      .catch((err) => {
+        // crmFetch already redirected to login on a real 401; anything
+        // else here is a genuine error worth surfacing.
+        if (err?.status !== 401) setError(err?.message ?? 'Failed to load.');
+      });
   }, []);
 
-  useEffect(() => {
-    const token = localStorage.getItem('skarion_token');
-    if (!token) {
-      const returnTo = encodeURIComponent(window.location.href);
-      window.location.href = `https://auth.skarion.com/?return_to=${returnTo}`;
-      return;
-    }
+  if (error) {
+    return <div style={{ padding: 40, fontFamily: 'sans-serif' }}>Error: {error}</div>;
+  }
 
-    fetch(import.meta.env.VITE_API_URL + '/api/companies', {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then((r) => {
-        if (r.status === 401) {
-          localStorage.removeItem('skarion_token');
-          window.location.reload();
-          return;
-        }
-        return r.json();
-      })
-      .then(() => setUser({ id: 'unknown', email: 'user@skarion.com' }))
-      .catch(() => setUser(null));
-  }, []);
-
-  if (!user) {
+  if (!companies) {
     return <div style={{ padding: 40, fontFamily: 'sans-serif' }}>Loading CRM...</div>;
   }
 
   return (
     <div style={{ padding: 40, fontFamily: 'sans-serif' }}>
       <h1>Skarion CRM</h1>
-      <p>Welcome! Dashboard coming soon. (v2)</p>
+      <p>{companies.length} companies. Full dashboard coming in Chunk 3.</p>
+      <ul>
+        {companies.map((c) => (
+          <li key={c.id}>{c.name}</li>
+        ))}
+      </ul>
     </div>
   );
 }

@@ -50,9 +50,27 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: apps/crm
           command: deploy
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+
+      # `env:` on the deploy step above only sets vars for the GH Actions
+      # runner process - it does NOT inject them into the deployed Worker.
+      # Workers secrets only exist at runtime if pushed via
+      # `wrangler secret put`, same as deploy-identity.yml does. Without
+      # this, c.env.DATABASE_URL and c.env.JWT_SECRET are undefined in the
+      # live Worker - every DB-backed and auth-checked route would fail.
+      - name: Set DATABASE_URL secret
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/crm
+          command: secret put DATABASE_URL --value "${{ secrets.DATABASE_URL }}"
+      - name: Set JWT_SECRET secret
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/crm
+          command: secret put JWT_SECRET --value "${{ secrets.JWT_SECRET }}"
 
   # Pages is deployed via Cloudflare's GitHub integration (auto-build on push).
   # Project: skarion-crm | Branch: cloudflare-platform-rewrite | Root: apps/crm/web

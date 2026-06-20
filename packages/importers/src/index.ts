@@ -35,14 +35,16 @@ export interface LeadImportRow {
 }
 
 function parseCsv(text: string): CsvRow[] {
-  const lines = text.trim().split("\n");
+  const lines = text.trim().split('\n');
   if (lines.length < 2) return [];
-  const headers = lines[0].split(",").map((h) => h.trim().replace(/^["']|["']$/g, ""));
+  const headers = lines[0]!.split(',').map((h) => h.trim().replace(/^["']|["']$/g, ''));
   const rows: CsvRow[] = [];
   for (let i = 1; i < lines.length; i++) {
-    const values = lines[i].split(",").map((v) => v.trim().replace(/^["']|["']$/g, ""));
+    const values = lines[i]!.split(',').map((v) => v.trim().replace(/^["']|["']$/g, ''));
     const row: CsvRow = {};
-    headers.forEach((h, idx) => { row[h] = values[idx] || undefined; });
+    headers.forEach((h, idx) => {
+      row[h] = values[idx] || undefined;
+    });
     rows.push(row);
   }
   return rows;
@@ -60,7 +62,7 @@ export function parseContactsCsv(csvText: string): ImportResult<ContactImportRow
   rows.forEach((row, idx) => {
     const email = row.email?.toLowerCase();
     if (!email || !isValidEmail(email)) {
-      result.errors.push({ row: idx + 2, field: "email", message: "Invalid or missing email" });
+      result.errors.push({ row: idx + 2, field: 'email', message: 'Invalid or missing email' });
       return;
     }
     if (seenEmails.has(email)) {
@@ -68,10 +70,10 @@ export function parseContactsCsv(csvText: string): ImportResult<ContactImportRow
       return;
     }
     seenEmails.add(email);
-    const firstName = row.firstName || row["first name"] || row.first_name;
-    const lastName = row.lastName || row["last name"] || row.last_name;
+    const firstName = row.firstName || row['first name'] || row.first_name;
+    const lastName = row.lastName || row['last name'] || row.last_name;
     if (!firstName || !lastName) {
-      result.errors.push({ row: idx + 2, field: "name", message: "Missing first or last name" });
+      result.errors.push({ row: idx + 2, field: 'name', message: 'Missing first or last name' });
       return;
     }
     result.success.push({
@@ -80,7 +82,7 @@ export function parseContactsCsv(csvText: string): ImportResult<ContactImportRow
       email,
       phone: row.phone,
       title: row.title,
-      companyName: row.companyName || row.company || row["company name"],
+      companyName: row.companyName || row.company || row['company name'],
     });
   });
 
@@ -93,9 +95,9 @@ export function parseCompaniesCsv(csvText: string): ImportResult<CompanyImportRo
   const seenDomains = new Set<string>();
 
   rows.forEach((row, idx) => {
-    const name = row.name || row.company || row["company name"];
+    const name = row.name || row.company || row['company name'];
     if (!name) {
-      result.errors.push({ row: idx + 2, field: "name", message: "Missing company name" });
+      result.errors.push({ row: idx + 2, field: 'name', message: 'Missing company name' });
       return;
     }
     const domain = row.domain?.toLowerCase();
@@ -120,7 +122,7 @@ export function parseLeadsCsv(csvText: string): ImportResult<LeadImportRow> {
   rows.forEach((row, idx) => {
     const email = row.email?.toLowerCase();
     if (!email || !isValidEmail(email)) {
-      result.errors.push({ row: idx + 2, field: "email", message: "Invalid or missing email" });
+      result.errors.push({ row: idx + 2, field: 'email', message: 'Invalid or missing email' });
       return;
     }
     if (seenEmails.has(email)) {
@@ -128,10 +130,10 @@ export function parseLeadsCsv(csvText: string): ImportResult<LeadImportRow> {
       return;
     }
     seenEmails.add(email);
-    const firstName = row.firstName || row["first name"] || row.first_name;
-    const lastName = row.lastName || row["last name"] || row.last_name;
+    const firstName = row.firstName || row['first name'] || row.first_name;
+    const lastName = row.lastName || row['last name'] || row.last_name;
     if (!firstName || !lastName) {
-      result.errors.push({ row: idx + 2, field: "name", message: "Missing first or last name" });
+      result.errors.push({ row: idx + 2, field: 'name', message: 'Missing first or last name' });
       return;
     }
     result.success.push({
@@ -139,9 +141,9 @@ export function parseLeadsCsv(csvText: string): ImportResult<LeadImportRow> {
       lastName,
       email,
       phone: row.phone,
-      companyName: row.companyName || row.company || row["company name"],
-      companyDomain: row.companyDomain || row.domain || row["company domain"],
-      source: row.source || row["lead source"] || "other",
+      companyName: row.companyName || row.company || row['company name'],
+      companyDomain: row.companyDomain || row.domain || row['company domain'],
+      source: row.source || row['lead source'] || 'other',
     });
   });
 
