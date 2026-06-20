@@ -6,8 +6,11 @@ import Dashboard from './pages/Dashboard.js';
 import LeadsPage from './pages/LeadsPage.js';
 import LeadDetail from './pages/LeadDetail.js';
 import CompaniesPage from './pages/CompaniesPage.js';
+import CompanyDetail from './pages/CompanyDetail.js';
 import ContactsPage from './pages/ContactsPage.js';
+import ContactDetail from './pages/ContactDetail.js';
 import OpportunitiesPage from './pages/OpportunitiesPage.js';
+import OpportunityDetail from './pages/OpportunityDetail.js';
 import TasksPage from './pages/TasksPage.js';
 import SettingsPage from './pages/SettingsPage.js';
 
@@ -37,8 +40,11 @@ export default function App() {
           <Route path="/leads" element={<RequireAuth><LeadsPage /></RequireAuth>} />
           <Route path="/leads/:id" element={<RequireAuth><LeadDetail /></RequireAuth>} />
           <Route path="/companies" element={<RequireAuth><CompaniesPage /></RequireAuth>} />
+          <Route path="/companies/:id" element={<RequireAuth><CompanyDetail /></RequireAuth>} />
           <Route path="/contacts" element={<RequireAuth><ContactsPage /></RequireAuth>} />
+          <Route path="/contacts/:id" element={<RequireAuth><ContactDetail /></RequireAuth>} />
           <Route path="/opportunities" element={<RequireAuth><OpportunitiesPage /></RequireAuth>} />
+          <Route path="/opportunities/:id" element={<RequireAuth><OpportunityDetail /></RequireAuth>} />
           <Route path="/tasks" element={<RequireAuth><TasksPage /></RequireAuth>} />
           <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
         </Routes>

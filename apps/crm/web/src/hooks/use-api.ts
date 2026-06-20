@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { crmFetch, redirectToLogin, type Company, type Contact, type Lead, type Opportunity, type Task } from '../api.js';
+import { crmFetch, redirectToLogin, type Company, type Contact, type Lead, type Opportunity, type Task, type Activity } from '../api.js';
 
 function useCrmQuery<T>(key: string[], fetcher: () => Promise<T>) {
   return useQuery({
@@ -13,6 +13,29 @@ function useCrmQuery<T>(key: string[], fetcher: () => Promise<T>) {
         }
         throw err;
       }
+    },
+  });
+}
+
+export function useActivities(filters: { contactId?: string; companyId?: string; opportunityId?: string; type?: string }) {
+  const qs = new URLSearchParams();
+  if (filters.contactId) qs.append('contactId', filters.contactId);
+  if (filters.companyId) qs.append('companyId', filters.companyId);
+  if (filters.opportunityId) qs.append('opportunityId', filters.opportunityId);
+  if (filters.type) qs.append('type', filters.type);
+  return useCrmQuery(['activities', qs.toString()], () =>
+    crmFetch<{ activities: Activity[] }>(`/api/activities?${qs.toString()}`)
+  );
+}
+
+export function useCreateActivity() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: Record<string, unknown>) => {
+      return crmFetch<{ activity: Activity }>('/api/activities', { method: 'POST', body: JSON.stringify(data) });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['activities'] });
     },
   });
 }

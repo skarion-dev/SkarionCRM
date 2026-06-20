@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useCompanies, useDeleteEntity } from '../hooks/use-api.js';
 import { Building2, Plus, Search, Trash2, Pencil } from 'lucide-react';
 import CompanyForm from '../components/forms/CompanyForm.js';
@@ -7,6 +8,7 @@ import type { Company } from '../api.js';
 export default function CompaniesPage() {
   const { data, isLoading } = useCompanies();
   const deleteMutation = useDeleteEntity();
+  const navigate = useNavigate();
   const [search, setSearch] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [editCompany, setEditCompany] = useState<Company | null>(null);
@@ -50,18 +52,25 @@ export default function CompaniesPage() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {filtered.map((company) => (
-          <div key={company.id} className="bg-white border border-slate-200 rounded-lg p-4 hover:shadow-sm transition-shadow">
+          <div
+            key={company.id}
+            className="bg-white border border-slate-200 rounded-lg p-4 hover:shadow-sm transition-shadow cursor-pointer"
+            onClick={() => navigate(`/companies/${company.id}`)}
+          >
             <div className="flex items-start justify-between">
               <div>
                 <h3 className="font-semibold">{company.name}</h3>
                 <div className="text-sm text-slate-500 mt-1">{company.domain ?? '—'}</div>
               </div>
               <div className="flex gap-1">
-                <button onClick={() => openEdit(company)} className="p-1.5 rounded hover:bg-slate-200 text-slate-500">
+                <button
+                  onClick={(e) => { e.stopPropagation(); openEdit(company); }}
+                  className="p-1.5 rounded hover:bg-slate-200 text-slate-500"
+                >
                   <Pencil size={14} />
                 </button>
                 <button
-                  onClick={() => deleteMutation.mutate({ type: 'companies', id: company.id })}
+                  onClick={(e) => { e.stopPropagation(); deleteMutation.mutate({ type: 'companies', id: company.id }); }}
                   className="p-1.5 rounded hover:bg-red-100 text-red-500"
                 >
                   <Trash2 size={14} />

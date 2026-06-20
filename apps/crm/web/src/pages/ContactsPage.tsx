@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import { useContacts, useDeleteEntity } from '../hooks/use-api.js';
-import { Contact as ContactIcon, Plus, Search, Trash2, Pencil } from 'lucide-react';
+import { Contact as ContactIcon, Plus, Search, Trash2, Pencil, ArrowRight } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import ContactForm from '../components/forms/ContactForm.js';
 import type { Contact } from '../api.js';
 
 export default function ContactsPage() {
   const { data, isLoading } = useContacts();
   const deleteMutation = useDeleteEntity();
+  const navigate = useNavigate();
   const [search, setSearch] = useState('');
   const [modalOpen, setModalOpen] = useState(false);
   const [editContact, setEditContact] = useState<Contact | null>(null);
@@ -62,18 +64,31 @@ export default function ContactsPage() {
             </thead>
             <tbody>
               {filtered.map((contact) => (
-                <tr key={contact.id} className="border-b border-slate-100 hover:bg-slate-50">
+                <tr
+                  key={contact.id}
+                  className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer"
+                  onClick={() => navigate(`/contacts/${contact.id}`)}
+                >
                   <td className="px-4 py-3 font-medium">{contact.firstName} {contact.lastName}</td>
                   <td className="px-4 py-3 text-slate-600">{contact.email}</td>
                   <td className="px-4 py-3 text-slate-600">{contact.title ?? '—'}</td>
                   <td className="px-4 py-3 text-slate-600">{contact.phone ?? '—'}</td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-2">
-                      <button onClick={() => openEdit(contact)} className="p-1.5 rounded hover:bg-slate-200 text-slate-500">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); openEdit(contact); }}
+                        className="p-1.5 rounded hover:bg-slate-200 text-slate-500"
+                      >
                         <Pencil size={14} />
                       </button>
                       <button
-                        onClick={() => deleteMutation.mutate({ type: 'contacts', id: contact.id })}
+                        onClick={(e) => { e.stopPropagation(); navigate(`/contacts/${contact.id}`); }}
+                        className="p-1.5 rounded hover:bg-slate-200 text-slate-500"
+                      >
+                        <ArrowRight size={14} />
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); deleteMutation.mutate({ type: 'contacts', id: contact.id }); }}
                         className="p-1.5 rounded hover:bg-red-100 text-red-500"
                       >
                         <Trash2 size={14} />
