@@ -1,3 +1,18 @@
+// Role model: global superadmin + per-app manager/member
+//
+// - isSuperadmin (global flag on identity.users): bypasses all checks. Set once
+//   by platform admins; grants full access to every app.
+// - manager (per-app membership): can view all records, create, edit/delete
+//   own + managed-team records. Reassign allowed for own/managed.
+// - member (per-app membership): can view all records, create, edit own records.
+//   Cannot delete or reassign anything. Own-only list filtering.
+//
+// Migration from old four-role model:
+//   superadmin -> isSuperadmin=true + manager membership
+//   manager    -> manager
+//   outreach   -> member
+//   viewer     -> member
+
 export type CrmRole = "manager" | "member";
 
 export interface CallerInfo {
