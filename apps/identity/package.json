@@ -19,7 +19,9 @@
   },
   "dependencies": {
     "@neondatabase/serverless": "1.1.0",
+    "@skarion/auth-client": "workspace:^",
     "@skarion/db-kit": "workspace:*",
+    "@skarion/ui": "workspace:^",
     "drizzle-orm": "0.45.2",
     "hash-wasm": "^4.12.0",
     "hono": "^4.12.26",

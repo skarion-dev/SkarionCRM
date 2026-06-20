@@ -1,1 +1,2 @@
-export const name = '@skarion/auth-client';
+export { sendEmail } from './email.js';
+export type { SendEmailParams, SendEmailResult } from './email.js';

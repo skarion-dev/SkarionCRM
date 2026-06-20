@@ -4,6 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./emails": "./emails/index.tsx"
+  },
   "scripts": {
     "build": "echo \"(stub) no build yet for @skarion/ui\"",
     "dev": "echo \"(stub) no dev yet for @skarion/ui\"",
@@ -12,6 +16,14 @@
     "lint": "eslint . --max-warnings=0"
   },
   "devDependencies": {
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
     "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "@react-email/components": "^1.0.12",
+    "@react-email/render": "^2.0.9",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
   }
 }

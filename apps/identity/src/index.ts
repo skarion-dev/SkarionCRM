@@ -8,12 +8,33 @@ import type { Context } from 'hono';
 import { cors } from 'hono/cors';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { getDb } from '@skarion/db-kit';
+import {
+  renderInvitationEmail,
+  renderPasswordResetEmail,
+  renderMfaEnrolledEmail,
+  renderWelcomeAfterInviteEmail,
+} from '@skarion/ui/emails';
+import { sendEmail } from '@skarion/auth-client';
 import * as schema from './db/schema.js';
 import * as authService from './services/auth.js';
 import * as invitationService from './services/invitations.js';
 import * as adminService from './services/admin.js';
 import { requireAuth, type AuthedVariables } from './middleware/auth.js';
 import type { AppName, Env } from './lib/types.js';
+
+const APP_LABELS: Record<AppName, string> = { crm: 'CRM', hr: 'Employee Portal', books: 'Books' };
+const APP_SUBDOMAINS: Record<AppName, string> = { crm: 'crm', hr: 'team', books: 'books' };
+
+/** Derives e.g. https://crm.skarion.com from the identity app's own https://auth.skarion.com. */
+function appUrlFor(identityAppUrl: string, app: AppName): string {
+  try {
+    const url = new URL(identityAppUrl);
+    const rootDomain = url.hostname.split('.').slice(-2).join('.'); // auth.skarion.com -> skarion.com
+    return `${url.protocol}//${APP_SUBDOMAINS[app]}.${rootDomain}`;
+  } catch {
+    return identityAppUrl; // local dev fallback - APP_URL may just be http://localhost:xxxx
+  }
+}
 
 const REFRESH_COOKIE = 'skarion_refresh_token';
 const APP_NAMES: AppName[] = ['crm', 'hr', 'books'];
@@ -131,8 +152,14 @@ app.post('/auth/forgot-password', async (c) => {
   const result = await authService.requestPasswordReset(db, body.email);
   // Always return the same generic response - don't leak whether the email exists.
   if (result) {
-    // TODO(ticket 1.5): send the actual email via Resend with this token/link.
-    console.log(`[dev] password reset link: ${c.env.APP_URL}/reset-password?token=${result.token}`);
+    const email = await renderPasswordResetEmail({
+      resetUrl: `${c.env.APP_URL}/reset-password?token=${result.token}`,
+    });
+    try {
+      await sendEmail(c.env.RESEND_API_KEY, { to: result.user.email, ...email });
+    } catch (err) {
+      console.error('Failed to send password reset email:', err);
+    }
   }
   return c.json({ ok: true, message: 'If that email exists, a reset link has been sent.' });
 });
@@ -168,6 +195,13 @@ app.post('/auth/mfa/verify', requireAuth, async (c) => {
       userId: c.get('userId'),
       code: body.code,
     });
+    const me = await authService.getMe(db, c.get('userId'));
+    const email = await renderMfaEnrolledEmail({ displayName: me.displayName });
+    try {
+      await sendEmail(c.env.RESEND_API_KEY, { to: me.email, ...email });
+    } catch (err) {
+      console.error('Failed to send MFA-enrolled email:', err);
+    }
     return c.json(result);
   } catch (err) {
     return errorResponse(c, err);
@@ -211,8 +245,17 @@ app.post('/invitations', requireAuth, async (c) => {
       role: body.role,
       invitedBy: c.get('userId'),
     });
-    // TODO(ticket 1.5): send the actual invitation email via Resend.
-    console.log(`[dev] invitation link: ${c.env.APP_URL}/accept-invite?token=${result.token}`);
+    const inviter = await authService.getMe(db, c.get('userId'));
+    const email = await renderInvitationEmail({
+      inviterName: inviter.displayName,
+      appLabel: APP_LABELS[body.app],
+      acceptUrl: `${c.env.APP_URL}/accept-invite?token=${result.token}`,
+    });
+    try {
+      await sendEmail(c.env.RESEND_API_KEY, { to: body.email, ...email });
+    } catch (err) {
+      console.error('Failed to send invitation email:', err);
+    }
     return c.json({ ok: true, invitation_id: result.invitationId }, 201);
   } catch (err) {
     return errorResponse(c, err);
@@ -226,7 +269,7 @@ app.post('/invitations/accept', async (c) => {
   }
   const db = getDb(c.env, schema);
   try {
-    const { userId } = await invitationService.acceptInvitation(db, {
+    const { userId, app: acceptedApp } = await invitationService.acceptInvitation(db, {
       token: body.token,
       password: body.password,
       displayName: body.display_name,
@@ -238,6 +281,18 @@ app.post('/invitations/accept', async (c) => {
       jwtSecret: c.env.JWT_SECRET,
     });
     setRefreshCookie(c, loginResult.refreshToken, loginResult.refreshTokenExpiresAt);
+
+    const welcomeEmail = await renderWelcomeAfterInviteEmail({
+      displayName: me.displayName,
+      appLabel: APP_LABELS[acceptedApp],
+      appUrl: appUrlFor(c.env.APP_URL, acceptedApp),
+    });
+    try {
+      await sendEmail(c.env.RESEND_API_KEY, { to: me.email, ...welcomeEmail });
+    } catch (err) {
+      console.error('Failed to send welcome email:', err);
+    }
+
     return c.json({ access_token: loginResult.accessToken, user: loginResult.user }, 201);
   } catch (err) {
     return errorResponse(c, err);
@@ -266,9 +321,17 @@ app.post('/invitations/:id/resend', requireAuth, async (c) => {
       invitationId: requireParam(c, 'id'),
       actorUserId: c.get('userId'),
     });
-    console.log(
-      `[dev] resent invitation link: ${c.env.APP_URL}/accept-invite?token=${result.token}`
-    );
+    const actor = await authService.getMe(db, c.get('userId'));
+    const email = await renderInvitationEmail({
+      inviterName: actor.displayName,
+      appLabel: APP_LABELS[result.app],
+      acceptUrl: `${c.env.APP_URL}/accept-invite?token=${result.token}`,
+    });
+    try {
+      await sendEmail(c.env.RESEND_API_KEY, { to: result.email, ...email });
+    } catch (err) {
+      console.error('Failed to send resent invitation email:', err);
+    }
     return c.json({ ok: true });
   } catch (err) {
     return errorResponse(c, err);
