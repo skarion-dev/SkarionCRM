@@ -1,6 +1,7 @@
 packages:
   - 'apps/*'
-  - 'apps/*/admin'
+  - 'apps/identity/admin'
+  - 'apps/identity/login'
   - 'apps/workers/*'
   - 'packages/*'
 

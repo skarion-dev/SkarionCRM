@@ -43,6 +43,18 @@ type AppContext = Context<{ Bindings: Env; Variables: AuthedVariables }>;
 
 const app = new Hono<{ Bindings: Env; Variables: AuthedVariables }>();
 
+function isAllowedOrigin(origin: string, appUrl: string): boolean {
+  try {
+    const allowed = new URL(appUrl).origin;
+    if (origin === allowed) return true;
+  } catch {
+    /* APP_URL not set yet in local dev - fall through */
+  }
+  if (/^https:\/\/([a-z0-9-]+\.)*skarion\.com$/.test(origin)) return true;
+  if (origin.startsWith('http://localhost:')) return true;
+  return false;
+}
+
 app.use(
   '*',
   cors({
@@ -50,19 +62,29 @@ app.use(
       // Allow the auth app's own APP_URL and any *.skarion.com subdomain in prod;
       // ticket 1.8 tightens this further once real domains exist.
       if (!origin) return origin;
-      try {
-        const allowed = new URL(c.env.APP_URL).origin;
-        if (origin === allowed) return origin;
-      } catch {
-        /* APP_URL not set yet in local dev - fall through */
-      }
-      if (/^https:\/\/([a-z0-9-]+\.)*skarion\.com$/.test(origin)) return origin;
-      if (origin.startsWith('http://localhost:')) return origin;
-      return null;
+      return isAllowedOrigin(origin, c.env.APP_URL) ? origin : null;
     },
     credentials: true,
   })
 );
+
+// CSRF: CORS alone stops the browser from *reading* a cross-origin response,
+// but doesn't stop the request from executing server-side - which matters
+// for /auth/refresh and /auth/logout specifically, since they authenticate
+// off the httpOnly cookie alone (every other mutation requires a Bearer
+// token, which a CSRF attacker can't forge). Reject state-changing requests
+// outright if the Origin header doesn't match, as a second layer alongside
+// the SameSite=Lax cookie attribute already set on the refresh-token cookie.
+app.use('*', async (c, next) => {
+  const unsafeMethod = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method);
+  if (unsafeMethod) {
+    const origin = c.req.header('Origin');
+    if (origin && !isAllowedOrigin(origin, c.env.APP_URL)) {
+      return c.json({ error: 'Origin not allowed.' }, 403);
+    }
+  }
+  await next();
+});
 
 function setRefreshCookie(c: AppContext, token: string, expiresAt: Date) {
   setCookie(c, REFRESH_COOKIE, token, {
