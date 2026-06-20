@@ -196,6 +196,17 @@ app.post('/auth/refresh', async (c) => {
   }
 });
 
+app.get('/logout', async (c) => {
+  const token = getCookie(c, REFRESH_COOKIE);
+  if (token) {
+    const db = getDb(c.env, schema);
+    await authService.logout(db, token);
+  }
+  deleteCookie(c, REFRESH_COOKIE, { path: '/' });
+  const returnTo = c.req.query('return_to') ?? c.env.APP_URL;
+  return c.redirect(returnTo);
+});
+
 app.post('/auth/logout', async (c) => {
   const token = getCookie(c, REFRESH_COOKIE);
   if (token) {

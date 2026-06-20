@@ -5,7 +5,7 @@ import { cn } from '../../lib/utils.js';
 import { bootstrapAuth } from '../../api.js';
 import {
   LayoutDashboard, Users, Building2, Contact, Target, CheckSquare, Settings, LogOut,
-  BarChart, ChevronLeft, ChevronRight, Bell, Search, Menu, X
+  BarChart, ChevronLeft, ChevronRight, Bell, Search, Menu, X, MessageSquare,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
@@ -16,6 +16,7 @@ const NAV_ITEMS = [
   { icon: BarChart, label: 'Pipeline', path: '/pipeline', roles: ['manager', 'member'] },
   { icon: Users, label: 'Opportunities', path: '/opportunities', roles: ['manager', 'member'] },
   { icon: CheckSquare, label: 'Tasks', path: '/tasks', roles: ['manager', 'member'] },
+  { icon: MessageSquare, label: 'AI Chat', path: '/chat', roles: ['manager', 'member'] },
   { icon: Settings, label: 'Settings', path: '/settings', roles: ['manager'] },
 ];
 

@@ -113,3 +113,34 @@ export function useUpdateEntity<T extends Record<string, unknown>>(type: string)
     },
   });
 }
+
+// ─── CHAT ───
+
+export interface ChatMessage {
+  id: string;
+  userId: string;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: string;
+}
+
+export function useChatHistory() {
+  return useCrmQuery(['chat', 'history'], () =>
+    crmFetch<{ messages: ChatMessage[] }>('/api/chat/history')
+  );
+}
+
+export function useSendChatMessage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (message: string) => {
+      return crmFetch<{ answer: string; message: ChatMessage }>('/api/chat', {
+        method: 'POST',
+        body: JSON.stringify({ message }),
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['chat', 'history'] });
+    },
+  });
+}
