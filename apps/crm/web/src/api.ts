@@ -43,19 +43,29 @@ export async function refreshAccessToken(): Promise<string | null> {
 /** Bootstraps the auth store by refreshing the token once. Returns the
  *  user payload if the refresh succeeds, null otherwise. Safe to call
  *  from any app's mount effect. */
-export async function bootstrapAuth(): Promise<{ id: string; email: string; name?: string; role: string } | null> {
+export async function bootstrapAuth(): Promise<{ id: string; email: string; name?: string; role: string; isSuperadmin: boolean } | null> {
   const response = await fetch(`${IDENTITY_API_URL}/auth/refresh`, {
     method: 'POST',
     credentials: 'include',
   });
   if (!response.ok) return null;
-  const data = (await response.json()) as { access_token: string; user: { id: string; email: string; name?: string; apps: Record<string, string> } };
+  const data = (await response.json()) as {
+    access_token: string;
+    user: {
+      id: string;
+      email: string;
+      displayName?: string;
+      isSuperadmin: boolean;
+      apps: Record<string, string>;
+    };
+  };
   accessToken = data.access_token;
   return {
     id: data.user.id,
     email: data.user.email,
-    name: data.user.name,
+    name: data.user.displayName,
     role: data.user.apps?.crm ?? '',
+    isSuperadmin: data.user.isSuperadmin,
   };
 }
 

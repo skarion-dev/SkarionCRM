@@ -7,6 +7,7 @@ interface User {
   email: string;
   name?: string;
   role: CrmRole;
+  isSuperadmin?: boolean;
 }
 
 export interface AuthStore {

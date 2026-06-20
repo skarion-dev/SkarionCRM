@@ -55,7 +55,7 @@ export interface LoginResult {
   accessToken: string;
   refreshToken: string;
   refreshTokenExpiresAt: Date;
-  user: { id: string; email: string; displayName: string };
+  user: { id: string; email: string; displayName: string; isSuperadmin: boolean; apps: AppMembershipsMap };
 }
 
 export async function login(db: IdentityDb, params: LoginParams): Promise<LoginResult> {
@@ -108,7 +108,7 @@ export async function login(db: IdentityDb, params: LoginParams): Promise<LoginR
     accessToken,
     refreshToken,
     refreshTokenExpiresAt,
-    user: { id: found.id, email: found.email, displayName: found.displayName },
+    user: { id: found.id, email: found.email, displayName: found.displayName, isSuperadmin: found.isSuperadmin, apps },
   };
 }
 
@@ -151,7 +151,7 @@ export async function refresh(db: IdentityDb, params: RefreshParams): Promise<Lo
     accessToken,
     refreshToken: newRefreshToken,
     refreshTokenExpiresAt: newExpiresAt,
-    user: { id: user.id, email: user.email, displayName: user.displayName },
+    user: { id: user.id, email: user.email, displayName: user.displayName, isSuperadmin: user.isSuperadmin, apps },
   };
 }
 

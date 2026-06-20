@@ -21,6 +21,7 @@ const NAV_ITEMS = [
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const user = useAuthStore((s: AuthStore) => s.user);
+  const isSuperadmin = user?.isSuperadmin ?? false;
   const logout = useAuthStore((s: AuthStore) => s.logout);
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -36,6 +37,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               email: authUser.email,
               name: authUser.name,
               role: authUser.role as CrmRole,
+              isSuperadmin: authUser.isSuperadmin,
             });
           } else {
             useAuthStore.getState().setLoading(false);
@@ -46,7 +48,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [user]);
 
   const role = user?.role ?? '';
-  const visibleNav = NAV_ITEMS.filter((n) => n.roles.includes(role));
+  const visibleNav = isSuperadmin
+    ? NAV_ITEMS
+    : NAV_ITEMS.filter((n) => n.roles.includes(role));
 
   return (
     <div className="flex h-screen bg-slate-50 text-slate-900">
