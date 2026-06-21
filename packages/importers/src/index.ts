@@ -47,19 +47,77 @@ export interface LeadImportRow {
 }
 
 function parseCsv(text: string): CsvRow[] {
-  const lines = text.trim().split('\n');
-  if (lines.length < 2) return [];
-  const headers = lines[0]!.split(',').map((h) => h.trim().replace(/^["']|["']$/g, ''));
+  // Simple but robust CSV parser that handles quoted commas and newlines
   const rows: CsvRow[] = [];
+  const lines: string[] = [];
+  let currentLine = '';
+  let inQuotes = false;
+  
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    const nextChar = text[i + 1];
+    
+    if (char === '"') {
+      if (inQuotes && nextChar === '"') {
+        // Escaped quote
+        currentLine += '"';
+        i++; // Skip next quote
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === '\n' && !inQuotes) {
+      lines.push(currentLine);
+      currentLine = '';
+    } else if (char === '\r' && !inQuotes) {
+      // Skip carriage return (Windows line endings)
+      continue;
+    } else {
+      currentLine += char;
+    }
+  }
+  if (currentLine) lines.push(currentLine);
+  
+  if (lines.length < 1) return [];
+  
+  const headers = parseCsvLine(lines[0]!).map((h) => h.trim().replace(/^["']|["']$/g, ''));
+  
   for (let i = 1; i < lines.length; i++) {
-    const values = lines[i]!.split(',').map((v) => v.trim().replace(/^["']|["']$/g, ''));
+    const values = parseCsvLine(lines[i]!);
     const row: CsvRow = {};
     headers.forEach((h, idx) => {
-      row[h] = values[idx] || undefined;
+      row[h] = values[idx]?.trim().replace(/^["']|["']$/g, '') || undefined;
     });
     rows.push(row);
   }
   return rows;
+}
+
+function parseCsvLine(line: string): string[] {
+  const values: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    const nextChar = line[i + 1];
+    
+    if (char === '"') {
+      if (inQuotes && nextChar === '"') {
+        // Escaped quote
+        current += '"';
+        i++; // Skip next quote
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === ',' && !inQuotes) {
+      values.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  values.push(current);
+  return values;
 }
 
 function isValidEmail(email: string): boolean {

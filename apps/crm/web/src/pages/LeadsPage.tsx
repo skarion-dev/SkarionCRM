@@ -6,7 +6,7 @@ import { cn } from '../lib/utils.js';
 import LeadForm from '../components/forms/LeadForm.js';
 import ImportModal from '../components/ImportModal.js';
 import type { Lead, LeadStatus, OutreachStatus } from '../api.js';
-import { bootstrapAuth, crmFetch } from '../api.js';
+import { crmFetch, CRM_API_URL, getAccessToken } from '../api.js';
 
 const PAGE_SIZES = [25, 50, 100, 250];
 
@@ -21,7 +21,7 @@ export default function LeadsPage() {
   const [importOpen, setImportOpen] = useState(false);
   const [editLead, setEditLead] = useState<Lead | null>(null);
 
-  const { data, isLoading, error: leadsError } = useLeads(
+  const { data, isLoading } = useLeads(
     page,
     pageSize,
     statusFilter === 'all' ? undefined : statusFilter,
@@ -30,42 +30,6 @@ export default function LeadsPage() {
   );
   const deleteMutation = useDeleteEntity();
   const navigate = useNavigate();
-
-  // Debug: log query state to global for inspection
-  useEffect(() => {
-    window.__LEADS_DEBUG = { data, isLoading, hasData: !!data, total: data?.total, leadsCount: data?.leads?.length, error: leadsError ? (leadsError.message || String(leadsError)) : null, timestamp: Date.now() };
-  }, [data, isLoading, leadsError]);
-
-  // Debug: direct API call to bypass React Query
-  useEffect(() => {
-    (async () => {
-      try {
-        // Test bootstrapAuth from component context
-        const bootstrapResult = await bootstrapAuth();
-        window.__LEADS_BOOTSTRAP = { success: !!bootstrapResult, user: bootstrapResult ? { id: bootstrapResult.id, email: bootstrapResult.email, role: bootstrapResult.role } : null };
-
-        const refresh = await fetch('https://skarion-identity.alsaki1999.workers.dev/auth/refresh', { method: 'POST', credentials: 'include' });
-        const refreshData = await refresh.json();
-        const token = refreshData.access_token;
-        const api = await fetch('https://skarion-crm-platform.alsaki1999.workers.dev/api/leads?page=1&pageSize=50', {
-          headers: { Authorization: 'Bearer ' + token }
-        });
-        const apiData = await api.json();
-        window.__LEADS_DIRECT_API = { refreshStatus: refresh.status, refreshOk: refresh.ok, tokenExists: !!token, apiOk: api.ok, apiStatus: api.status, total: apiData.total, leadsCount: apiData.leads?.length, error: apiData.error };
-
-        // Test crmFetch directly
-        try {
-          const crmData = await crmFetch('/api/leads?page=1&pageSize=50');
-          window.__LEADS_CRM_FETCH = { success: true, total: crmData.total, leadsCount: crmData.leads?.length, url: window.__CRM_FETCH_DEBUG?.url };
-        } catch (crmErr) {
-          window.__LEADS_CRM_FETCH = { success: false, error: crmErr.message, status: crmErr.status || 'N/A', url: window.__CRM_FETCH_DEBUG?.url };
-        }
-      } catch (e) {
-        window.__LEADS_DIRECT_API = { error: e.message };
-        window.__LEADS_CRM_FETCH = { success: false, error: e.message };
-      }
-    })();
-  }, []);
 
   // Debounce search
   useEffect(() => {
@@ -87,8 +51,8 @@ export default function LeadsPage() {
     if (statusFilter !== 'all') qs.append('status', statusFilter);
     if (outreachFilter !== 'all') qs.append('outreachStatus', outreachFilter);
     if (debouncedSearch) qs.append('search', debouncedSearch);
-    const url = `${import.meta.env.VITE_API_URL}/api/leads/export.csv?${qs.toString()}`;
-    const token = localStorage.getItem('access_token');
+    const url = `${CRM_API_URL}/api/leads/export.csv?${qs.toString()}`;
+    const token = getAccessToken();
     const res = await fetch(url, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });

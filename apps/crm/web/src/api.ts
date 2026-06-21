@@ -12,7 +12,12 @@
 // rather than introducing a new, unconfigured one. Identity's URL is also
 // env-configurable via VITE_IDENTITY_API_URL so it can be changed in one
 // place (dashboard env var or local .env) without a grep-and-replace.
-export const CRM_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8788';
+const _CRM_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8788';
+// Guard against misconfigured Pages dashboard env vars where VITE_API_URL
+// may accidentally be set to the identity/login URL instead of the CRM API.
+export const CRM_API_URL = _CRM_API_URL.includes('identity-login') || _CRM_API_URL.includes('skarion-identity-login')
+  ? 'https://skarion-crm-platform.alsaki1999.workers.dev'
+  : _CRM_API_URL;
 export const IDENTITY_API_URL = import.meta.env.VITE_IDENTITY_API_URL || 'https://skarion-identity.alsaki1999.workers.dev';
 // The login page is a separate Pages site (not the Worker API). Separate env var so
 // the redirect goes to the right place while API calls still hit the worker.
@@ -20,6 +25,10 @@ export const IDENTITY_LOGIN_URL = import.meta.env.VITE_IDENTITY_LOGIN_URL || 'ht
 
 
 let accessToken: string | null = null;
+
+export function getAccessToken(): string | null {
+  return accessToken;
+}
 
 export class ApiError extends Error {
   constructor(
@@ -96,9 +105,6 @@ export async function crmFetch<T>(path: string, init: RequestInit = {}): Promise
     Authorization: `Bearer ${accessToken}`,
     ...init.headers,
   };
-  // Debug: log crmFetch attempt
-  (window as any).__CRM_FETCH_DEBUG = (window as any).__CRM_FETCH_DEBUG || [];
-  (window as any).__CRM_FETCH_DEBUG.push({ path, url, accessTokenExists: !!accessToken, headers: Object.keys(headers) });
 
   let response;
   try {
@@ -107,11 +113,6 @@ export async function crmFetch<T>(path: string, init: RequestInit = {}): Promise
       headers,
     });
   } catch (fetchErr: any) {
-    const lastDebug = (window as any).__CRM_FETCH_DEBUG?.[(window as any).__CRM_FETCH_DEBUG.length - 1];
-    if (lastDebug) {
-      lastDebug.error = fetchErr.message;
-      lastDebug.errorType = fetchErr.name;
-    }
     throw fetchErr;
   }
 

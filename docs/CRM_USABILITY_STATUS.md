@@ -19,8 +19,10 @@
 ## Admin Login
 
 - **Email:** `admin@skarion.com`
-- **Password:** `changeme-now`
+- **Password:** *(set during initial setup — change immediately after first login)*
 - **Role:** superadmin + CRM manager
+
+> ⚠️ **Security Note:** The default admin password should be changed immediately after the first login. Do not commit production credentials to the repository.
 
 ## What Works
 

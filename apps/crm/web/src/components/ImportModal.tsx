@@ -13,7 +13,12 @@ interface ImportModalProps {
 
 export default function ImportModal({ open, onClose, type, title, sampleCsv }: ImportModalProps) {
   const [csvText, setCsvText] = useState('');
-  const [result, setResult] = useState<{ imported: number; errors: string[]; duplicates: string[] } | null>(null);
+  const [result, setResult] = useState<{
+    imported: number;
+    errors: { row: number; field: string; message: string }[];
+    duplicates: { row: number; reason: string }[];
+    warnings: { row: number; message: string }[];
+  } | null>(null);
   const create = useCreateEntity(`import/${type}`);
 
   const handleFile = async (file: File) => {
@@ -29,7 +34,12 @@ export default function ImportModal({ open, onClose, type, title, sampleCsv }: I
       { csv: csvText },
       {
         onSuccess: (data) => {
-          setResult(data as unknown as { imported: number; errors: string[]; duplicates: string[] });
+          setResult(data as unknown as {
+            imported: number;
+            errors: { row: number; field: string; message: string }[];
+            duplicates: { row: number; reason: string }[];
+            warnings: { row: number; message: string }[];
+          });
         },
       }
     );
@@ -109,7 +119,7 @@ export default function ImportModal({ open, onClose, type, title, sampleCsv }: I
                 <ul className="text-xs text-red-600 space-y-0.5 max-h-32 overflow-y-auto">
                   {result.errors.slice(0, 10).map((err, i) => (
                     <li key={i} className="flex items-start gap-1">
-                      <X size={12} className="mt-0.5 shrink-0" /> {err}
+                      <X size={12} className="mt-0.5 shrink-0" /> Row {err.row}: {err.field} — {err.message}
                     </li>
                   ))}
                   {result.errors.length > 10 && (
@@ -120,7 +130,38 @@ export default function ImportModal({ open, onClose, type, title, sampleCsv }: I
             )}
             {result.duplicates.length > 0 && (
               <div className="text-xs text-amber-600 bg-amber-50 rounded-lg p-3">
-                {result.duplicates.length} duplicate rows skipped
+                <div className="flex items-center gap-2 text-sm text-amber-700 font-medium mb-1">
+                  <AlertCircle size={16} />
+                  <span>{result.duplicates.length} duplicate rows skipped</span>
+                </div>
+                <ul className="text-xs text-amber-600 space-y-0.5 max-h-32 overflow-y-auto">
+                  {result.duplicates.slice(0, 10).map((dup, i) => (
+                    <li key={i} className="flex items-start gap-1">
+                      <X size={12} className="mt-0.5 shrink-0" /> Row {dup.row}: {dup.reason}
+                    </li>
+                  ))}
+                  {result.duplicates.length > 10 && (
+                    <li className="text-slate-400">...and {result.duplicates.length - 10} more</li>
+                  )}
+                </ul>
+              </div>
+            )}
+            {result.warnings && result.warnings.length > 0 && (
+              <div className="text-xs text-blue-600 bg-blue-50 rounded-lg p-3">
+                <div className="flex items-center gap-2 text-sm text-blue-700 font-medium mb-1">
+                  <AlertCircle size={16} />
+                  <span>{result.warnings.length} warnings</span>
+                </div>
+                <ul className="text-xs text-blue-600 space-y-0.5 max-h-32 overflow-y-auto">
+                  {result.warnings.slice(0, 10).map((warn, i) => (
+                    <li key={i} className="flex items-start gap-1">
+                      <X size={12} className="mt-0.5 shrink-0" /> Row {warn.row}: {warn.message}
+                    </li>
+                  ))}
+                  {result.warnings.length > 10 && (
+                    <li className="text-slate-400">...and {result.warnings.length - 10} more</li>
+                  )}
+                </ul>
               </div>
             )}
             {result.imported === 0 && result.errors.length === 0 && (

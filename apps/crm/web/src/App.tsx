@@ -30,7 +30,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 
   if (isLoading) return <Loading />;
   if (!user) {
-    const loginUrl = import.meta.env.VITE_IDENTITY_LOGIN_URL || import.meta.env.VITE_IDENTITY_API_URL || 'https://skarion-identity.alsaki1999.workers.dev';
+    const loginUrl = import.meta.env.VITE_IDENTITY_LOGIN_URL || 'https://skarion-identity-login.pages.dev';
     const returnTo = encodeURIComponent(window.location.href);
     window.location.href = `${loginUrl}/?return_to=${returnTo}`;
     return <Loading />;

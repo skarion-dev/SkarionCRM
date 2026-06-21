@@ -151,13 +151,13 @@ cd apps/identity && DATABASE_URL=... pnpm db:migrate
 
 ```bash
 # Set env vars, then run:
-ADMIN_EMAIL=admin@skarion.com ADMIN_PASSWORD=changeme-now npx tsx scripts/smoke-production.ts
+ADMIN_EMAIL=admin@skarion.com ADMIN_PASSWORD=$ADMIN_PASSWORD npx tsx scripts/smoke-production.ts
 
 # Or with custom URLs:
 CRM_URL=https://skarion-crm-platform.alsaki1999.workers.dev \
   IDENTITY_URL=https://skarion-identity.alsaki1999.workers.dev \
   ADMIN_EMAIL=admin@skarion.com \
-  ADMIN_PASSWORD=changeme-now \
+  ADMIN_PASSWORD=$ADMIN_PASSWORD \
   npx tsx scripts/smoke-production.ts
 ```
 
