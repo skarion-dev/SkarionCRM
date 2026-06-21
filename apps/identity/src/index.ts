@@ -124,10 +124,16 @@ app.use('*', async (c, next) => {
 });
 
 function setRefreshCookie(c: AppContext, token: string, expiresAt: Date) {
+  const origin = c.req.header('Origin') ?? '';
+  // SameSite=None is required for cross-site cookie on default Cloudflare
+  // domains (pages.dev / workers.dev). For custom domains (*.skarion.com)
+  // where auth and app are same-site, Lax is preferred.
+  const isDefaultCloudflareDomain =
+    origin.includes('.pages.dev') || origin.includes('.workers.dev');
   setCookie(c, REFRESH_COOKIE, token, {
     httpOnly: true,
     secure: true,
-    sameSite: 'Lax',
+    sameSite: isDefaultCloudflareDomain ? 'None' : 'Lax',
     path: '/',
     expires: expiresAt,
   });

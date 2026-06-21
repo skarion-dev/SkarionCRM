@@ -16,7 +16,7 @@ export const CRM_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:878
 export const IDENTITY_API_URL = import.meta.env.VITE_IDENTITY_API_URL || 'https://skarion-identity.alsaki1999.workers.dev';
 // The login page is a separate Pages site (not the Worker API). Separate env var so
 // the redirect goes to the right place while API calls still hit the worker.
-export const IDENTITY_LOGIN_URL = import.meta.env.VITE_IDENTITY_LOGIN_URL || IDENTITY_API_URL;
+export const IDENTITY_LOGIN_URL = import.meta.env.VITE_IDENTITY_LOGIN_URL || 'https://skarion-identity-login.pages.dev';
 
 
 let accessToken: string | null = null;
