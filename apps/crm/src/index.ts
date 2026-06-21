@@ -428,7 +428,7 @@ app.get("/api/leads", async (c) => {
   // Parse query params
   const page = Math.max(1, parseInt(c.req.query('page') || '1', 10));
   const pageSize = Math.min(500, Math.max(1, parseInt(c.req.query('pageSize') || '50', 10)));
-  const { status, source, search, owner } = c.req.query();
+  const { status, source, search, owner, outreachStatus } = c.req.query();
 
   const conditions = [isNull(schema.leads.deletedAt)];
 
@@ -440,6 +440,7 @@ app.get("/api/leads", async (c) => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   if (source) conditions.push(eq(schema.leads.source, source as any));
   if (owner) conditions.push(eq(schema.leads.ownerId, owner));
+  if (outreachStatus) conditions.push(eq(schema.leads.outreachStatus, outreachStatus));
 
   // Search across name, email, company, linkedinUrl
   if (search) {
@@ -475,6 +476,15 @@ app.get("/api/leads", async (c) => {
   const statusCounts = { new: 0, contacted: 0, qualified: 0, disqualified: 0, converted: 0 };
   statusCountsRaw.forEach(s => { statusCounts[s.status as keyof typeof statusCounts] = s.count; });
 
+  // Get outreach status counts (for filters)
+  const outreachStatusCountsRaw = await db.select({ outreachStatus: schema.leads.outreachStatus, count: sql<number>`count(*)` })
+    .from(schema.leads)
+    .where(and(isNull(schema.leads.deletedAt), ...(!isSuperadmin ? [eq(schema.leads.ownerId, caller.userId)] : [])))
+    .groupBy(schema.leads.outreachStatus);
+
+  const outreachStatusCounts = { not_approached: 0, approached: 0, connected: 0, replied: 0, booked_call: 0, not_interested: 0, bad_fit: 0 };
+  outreachStatusCountsRaw.forEach(s => { outreachStatusCounts[s.outreachStatus as keyof typeof outreachStatusCounts] = s.count; });
+
   return c.json({
     leads: rows,
     page,
@@ -482,6 +492,7 @@ app.get("/api/leads", async (c) => {
     total,
     totalPages: Math.ceil(total / pageSize),
     statusCounts,
+    outreachStatusCounts,
   });
 });
 

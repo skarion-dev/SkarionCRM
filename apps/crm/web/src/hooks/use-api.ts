@@ -48,14 +48,15 @@ export function useContacts() {
   return useCrmQuery(['contacts'], () => crmFetch<{ contacts: Contact[] }>('/api/contacts'));
 }
 
-export function useLeads(page: number = 1, pageSize: number = 50, status?: string, search?: string) {
+export function useLeads(page: number = 1, pageSize: number = 50, status?: string, search?: string, outreachStatus?: string) {
   const qs = new URLSearchParams();
   qs.append('page', String(page));
   qs.append('pageSize', String(pageSize));
   if (status) qs.append('status', status);
   if (search) qs.append('search', search);
-  return useCrmQuery(['leads', String(page), String(pageSize), status ?? '', search ?? ''], () =>
-    crmFetch<{ leads: Lead[]; page: number; pageSize: number; total: number; totalPages: number; statusCounts: Record<string, number> }>(`/api/leads?${qs.toString()}`)
+  if (outreachStatus) qs.append('outreachStatus', outreachStatus);
+  return useCrmQuery(['leads', String(page), String(pageSize), status ?? '', search ?? '', outreachStatus ?? ''], () =>
+    crmFetch<{ leads: Lead[]; page: number; pageSize: number; total: number; totalPages: number; statusCounts: Record<string, number>; outreachStatusCounts: Record<string, number> }>(`/api/leads?${qs.toString()}`)
   );
 }
 

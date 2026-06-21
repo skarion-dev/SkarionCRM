@@ -5,19 +5,28 @@ import { Target, Plus, Search, Trash2, ArrowRight, Pencil, Upload, Linkedin, Che
 import { cn } from '../lib/utils.js';
 import LeadForm from '../components/forms/LeadForm.js';
 import ImportModal from '../components/ImportModal.js';
-import type { Lead, LeadStatus } from '../api.js';
+import type { Lead, LeadStatus, OutreachStatus } from '../api.js';
+
+const PAGE_SIZES = [25, 50, 100, 250];
 
 export default function LeadsPage() {
   const [page, setPage] = useState(1);
-  const pageSize = 50;
+  const [pageSize, setPageSize] = useState(50);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [filter, setFilter] = useState<'all' | LeadStatus>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | LeadStatus>('all');
+  const [outreachFilter, setOutreachFilter] = useState<'all' | OutreachStatus>('all');
   const [modalOpen, setModalOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [editLead, setEditLead] = useState<Lead | null>(null);
 
-  const { data, isLoading } = useLeads(page, pageSize, filter === 'all' ? undefined : filter, debouncedSearch || undefined);
+  const { data, isLoading } = useLeads(
+    page,
+    pageSize,
+    statusFilter === 'all' ? undefined : statusFilter,
+    debouncedSearch || undefined,
+    outreachFilter === 'all' ? undefined : outreachFilter
+  );
   const deleteMutation = useDeleteEntity();
   const navigate = useNavigate();
 
@@ -30,7 +39,7 @@ export default function LeadsPage() {
   // Reset to page 1 when filter or search changes
   useEffect(() => {
     setPage(1);
-  }, [filter, debouncedSearch]);
+  }, [statusFilter, outreachFilter, debouncedSearch, pageSize]);
 
   const openCreate = () => { setEditLead(null); setModalOpen(true); };
   const openEdit = (lead: Lead) => { setEditLead(lead); setModalOpen(true); };
@@ -40,6 +49,7 @@ export default function LeadsPage() {
   const total = data?.total ?? 0;
   const totalPages = data?.totalPages ?? 1;
   const statusCounts = data?.statusCounts ?? { new: 0, contacted: 0, qualified: 0, disqualified: 0, converted: 0 };
+  const outreachStatusCounts = data?.outreachStatusCounts ?? { not_approached: 0, approached: 0, connected: 0, replied: 0, booked_call: 0, not_interested: 0, bad_fit: 0 };
 
   if (isLoading) return <div className="text-slate-500">Loading leads...</div>;
 
@@ -61,33 +71,65 @@ export default function LeadsPage() {
         </div>
       </div>
 
+      {/* Status filters */}
       <div className="flex flex-wrap gap-2">
         <button
-          onClick={() => setFilter('all')}
-          className={cn('px-3 py-1.5 rounded-md text-sm border', filter === 'all' ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-200 hover:bg-slate-50')}
+          onClick={() => setStatusFilter('all')}
+          className={cn('px-3 py-1.5 rounded-md text-sm border', statusFilter === 'all' ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-200 hover:bg-slate-50')}
         >
           All ({total})
         </button>
         {(Object.keys(statusCounts) as LeadStatus[]).map((s) => (
           <button
             key={s}
-            onClick={() => setFilter(s)}
-            className={cn('px-3 py-1.5 rounded-md text-sm border capitalize', filter === s ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-200 hover:bg-slate-50')}
+            onClick={() => setStatusFilter(s)}
+            className={cn('px-3 py-1.5 rounded-md text-sm border capitalize', statusFilter === s ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-200 hover:bg-slate-50')}
           >
             {s} ({statusCounts[s] || 0})
           </button>
         ))}
       </div>
 
-      <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-md px-3 py-2">
-        <Search size={16} className="text-slate-400" />
-        <input
-          type="text"
-          placeholder="Search by name, email, company, LinkedIn..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="flex-1 text-sm outline-none"
-        />
+      {/* Outreach filters */}
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={() => setOutreachFilter('all')}
+          className={cn('px-3 py-1.5 rounded-md text-sm border', outreachFilter === 'all' ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-200 hover:bg-slate-50')}
+        >
+          All Outreach
+        </button>
+        {(Object.keys(outreachStatusCounts) as OutreachStatus[]).map((s) => (
+          <button
+            key={s}
+            onClick={() => setOutreachFilter(s)}
+            className={cn('px-3 py-1.5 rounded-md text-sm border capitalize', outreachFilter === s ? 'bg-slate-900 text-white border-slate-900' : 'bg-white border-slate-200 hover:bg-slate-50')}
+          >
+            {s.replace(/_/g, ' ')} ({outreachStatusCounts[s] || 0})
+          </button>
+        ))}
+      </div>
+
+      {/* Search and page size */}
+      <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-md px-3 py-2 flex-1">
+          <Search size={16} className="text-slate-400" />
+          <input
+            type="text"
+            placeholder="Search by name, email, company, LinkedIn..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="flex-1 text-sm outline-none"
+          />
+        </div>
+        <select
+          value={pageSize}
+          onChange={(e) => setPageSize(Number(e.target.value))}
+          className="px-3 py-2 border border-slate-200 rounded-md text-sm bg-white"
+        >
+          {PAGE_SIZES.map((size) => (
+            <option key={size} value={size}>{size} / page</option>
+          ))}
+        </select>
       </div>
 
       <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
@@ -128,7 +170,7 @@ export default function LeadsPage() {
                       lead.outreachStatus === 'booked_call' ? 'bg-purple-100 text-purple-700' :
                       'bg-slate-100 text-slate-600'
                     )}>
-                      {lead.outreachStatus?.replace('_', ' ') ?? 'not approached'}
+                      {lead.outreachStatus?.replace(/_/g, ' ') ?? 'not approached'}
                     </span>
                   </td>
                   <td className="px-4 py-3">
