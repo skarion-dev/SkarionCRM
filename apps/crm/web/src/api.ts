@@ -106,15 +106,10 @@ export async function crmFetch<T>(path: string, init: RequestInit = {}): Promise
     ...init.headers,
   };
 
-  let response;
-  try {
-    response = await fetch(url, {
-      ...init,
-      headers,
-    });
-  } catch (fetchErr: any) {
-    throw fetchErr;
-  }
+  const response = await fetch(url, {
+    ...init,
+    headers,
+  });
 
   if (response.status === 401) {
     const refreshed = await refreshAccessToken();

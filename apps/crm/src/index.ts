@@ -479,6 +479,7 @@ app.get("/api/leads", async (c) => {
   }
 
   // Build orderBy dynamically
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const validSortColumns: Record<string, any> = {
     createdAt: schema.leads.createdAt,
     updatedAt: schema.leads.updatedAt,

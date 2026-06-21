@@ -6,7 +6,7 @@ import { cn } from '../lib/utils.js';
 import LeadForm from '../components/forms/LeadForm.js';
 import ImportModal from '../components/ImportModal.js';
 import type { Lead, LeadStatus, OutreachStatus } from '../api.js';
-import { crmFetch, CRM_API_URL, getAccessToken } from '../api.js';
+import { CRM_API_URL, getAccessToken } from '../api.js';
 import { showToast } from '../stores/toast.js';
 
 const PAGE_SIZES = [25, 50, 100, 250];
