@@ -28,31 +28,33 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @skarion/crm typecheck
-      - uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: apps/workers/embeddings-builder
-          command: deploy
+      - name: Install wrangler CLI
+        run: npm install -g wrangler@3
+
+      - name: Deploy embeddings-builder Worker
+        working-directory: apps/workers/embeddings-builder
+        run: wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
       - name: Set DATABASE_URL secret
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: apps/workers/embeddings-builder
-          command: secret put DATABASE_URL --value "${{ secrets.DATABASE_URL }}"
+        working-directory: apps/workers/embeddings-builder
+        run: printf '%s' "$DATABASE_URL" | wrangler secret put DATABASE_URL
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
       - name: Set GOOGLE_API_KEY secret
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: apps/workers/embeddings-builder
-          command: secret put GOOGLE_API_KEY --value "${{ secrets.GOOGLE_API_KEY }}"
+        working-directory: apps/workers/embeddings-builder
+        run: printf '%s' "$GOOGLE_API_KEY" | wrangler secret put GOOGLE_API_KEY
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
       - name: Set GOOGLE_EMBEDDING_MODEL secret
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: apps/workers/embeddings-builder
-          command: secret put GOOGLE_EMBEDDING_MODEL --value "${{ secrets.GOOGLE_EMBEDDING_MODEL }}"
+        working-directory: apps/workers/embeddings-builder
+        run: printf '%s' "$GOOGLE_EMBEDDING_MODEL" | wrangler secret put GOOGLE_EMBEDDING_MODEL
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GOOGLE_EMBEDDING_MODEL: ${{ secrets.GOOGLE_EMBEDDING_MODEL }}

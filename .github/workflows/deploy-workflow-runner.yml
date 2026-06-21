@@ -27,24 +27,26 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: apps/workers/workflow-runner
-          command: deploy
+      - name: Install wrangler CLI
+        run: npm install -g wrangler@3
+
+      - name: Deploy workflow-runner Worker
+        working-directory: apps/workers/workflow-runner
+        run: wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
       - name: Set DATABASE_URL secret
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: apps/workers/workflow-runner
-          command: secret put DATABASE_URL --value "${{ secrets.DATABASE_URL }}"
+        working-directory: apps/workers/workflow-runner
+        run: printf '%s' "$DATABASE_URL" | wrangler secret put DATABASE_URL
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
       - name: Set WORKFLOW_RUNNER_SECRET secret
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: apps/workers/workflow-runner
-          command: secret put WORKFLOW_RUNNER_SECRET --value "${{ secrets.WORKFLOW_RUNNER_SECRET }}"
+        working-directory: apps/workers/workflow-runner
+        run: printf '%s' "$WORKFLOW_RUNNER_SECRET" | wrangler secret put WORKFLOW_RUNNER_SECRET
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WORKFLOW_RUNNER_SECRET: ${{ secrets.WORKFLOW_RUNNER_SECRET }}

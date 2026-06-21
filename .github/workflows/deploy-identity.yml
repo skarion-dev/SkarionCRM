@@ -59,49 +59,50 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @skarion/identity typecheck
 
+      - name: Install wrangler CLI
+        run: npm install -g wrangler@3
+
       - name: Deploy Worker
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: apps/identity
-          command: deploy
+        working-directory: apps/identity
+        run: wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
       - name: Set DATABASE_URL secret
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: apps/identity
-          command: secret put DATABASE_URL --value "${{ secrets.DATABASE_URL }}"
+        working-directory: apps/identity
+        run: printf '%s' "$DATABASE_URL" | wrangler secret put DATABASE_URL
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
       - name: Set JWT_SECRET secret
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: apps/identity
-          command: secret put JWT_SECRET --value "${{ secrets.JWT_SECRET }}"
+        working-directory: apps/identity
+        run: printf '%s' "$JWT_SECRET" | wrangler secret put JWT_SECRET
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
       - name: Set RESEND_API_KEY secret
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: apps/identity
-          command: secret put RESEND_API_KEY --value "${{ secrets.RESEND_API_KEY }}"
+        working-directory: apps/identity
+        run: printf '%s' "$RESEND_API_KEY" | wrangler secret put RESEND_API_KEY
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
       - name: Set MFA_ENCRYPTION_KEY secret
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: apps/identity
-          command: secret put MFA_ENCRYPTION_KEY --value "${{ secrets.MFA_ENCRYPTION_KEY }}"
+        working-directory: apps/identity
+        run: printf '%s' "$MFA_ENCRYPTION_KEY" | wrangler secret put MFA_ENCRYPTION_KEY
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          MFA_ENCRYPTION_KEY: ${{ secrets.MFA_ENCRYPTION_KEY }}
       - name: Set INVITATION_TOKEN_PEPPER secret
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: apps/identity
-          command: secret put INVITATION_TOKEN_PEPPER --value "${{ secrets.INVITATION_TOKEN_PEPPER }}"
+        working-directory: apps/identity
+        run: printf '%s' "$INVITATION_TOKEN_PEPPER" | wrangler secret put INVITATION_TOKEN_PEPPER
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          INVITATION_TOKEN_PEPPER: ${{ secrets.INVITATION_TOKEN_PEPPER }}
 
   deploy-login:
     name: Deploy public login Pages site
@@ -124,16 +125,16 @@ jobs:
       - name: Debug auth
         working-directory: apps/identity/login
         run: |
-          pnpm exec wrangler --version
+          wrangler --version
           ls -la dist/
-          pnpm exec wrangler pages deploy dist --project-name=skarion-identity-login --dry-run 2>&1 || true
+          wrangler pages deploy dist --project-name=skarion-identity-login --dry-run 2>&1 || true
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Deploy to Cloudflare Pages (with log capture)
         working-directory: apps/identity/login
         run: |
-          pnpm exec wrangler pages deploy dist --project-name=skarion-identity-login 2>&1 | tee deploy.log
+          wrangler pages deploy dist --project-name=skarion-identity-login 2>&1 | tee deploy.log
           exit ${PIPESTATUS[0]}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -167,16 +168,16 @@ jobs:
       - name: Debug auth
         working-directory: apps/identity/admin
         run: |
-          pnpm exec wrangler --version
-          pnpm exec wrangler whoami || true
-          pnpm exec wrangler pages project list || true
+          wrangler --version
+          wrangler whoami || true
+          wrangler pages project list || true
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       - name: Deploy to Cloudflare Pages (with log capture)
         working-directory: apps/identity/admin
         run: |
-          pnpm exec wrangler pages deploy dist --project-name=skarion-identity-admin 2>&1 | tee deploy.log
+          wrangler pages deploy dist --project-name=skarion-identity-admin 2>&1 | tee deploy.log
           exit ${PIPESTATUS[0]}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
