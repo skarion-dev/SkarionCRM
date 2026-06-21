@@ -1396,17 +1396,26 @@ app.post("/api/import/leads", async (c) => {
       phone: row.phone ?? null,
       companyName: row.companyName ?? null,
       companyDomain: row.companyDomain ?? null,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      linkedinUrl: row.linkedinUrl ?? null,
+      title: row.title ?? null,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       source: (row.source ?? "other") as any,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      status: "new" as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      status: (row.status ?? "new") as any,
+      notes: row.notes ?? null,
+      outreachStatus: row.outreachStatus ?? "not_approached",
+      approachedAt: row.approachedAt ? new Date(row.approachedAt) : null,
+      connectionStatus: row.connectionStatus ?? null,
+      sourceSheet: row.sourceSheet ?? null,
+      originalRowNumber: row.originalRowNumber ?? null,
+      tags: row.tags ? JSON.stringify(row.tags) : null,
       ownerId: caller.userId,
     }).returning();
     if (!result) return c.json({ error: "Internal error" }, 500);
     created.push(result);
   }
 
-  return c.json({ imported: created.length, errors: parsed.errors, duplicates: parsed.duplicates });
+  return c.json({ imported: created.length, errors: parsed.errors, duplicates: parsed.duplicates, warnings: parsed.warnings });
 });
 
 // --- ADMIN ---
