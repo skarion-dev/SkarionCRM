@@ -2,17 +2,12 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { crmFetch, redirectToLogin, type Company, type Contact, type Lead, type Opportunity, type Task, type Activity } from '../api.js';
 
 function useCrmQuery<T>(key: string[], fetcher: () => Promise<T>) {
-  console.log('[useCrmQuery] called with key:', key);
   return useQuery({
     queryKey: key,
     queryFn: async () => {
-      console.log('[useCrmQuery] queryFn executing for key:', key);
       try {
-        const result = await fetcher();
-        console.log('[useCrmQuery] queryFn succeeded for key:', key, 'result:', result);
-        return result;
+        return await fetcher();
       } catch (err) {
-        console.log('[useCrmQuery] queryFn failed for key:', key, 'error:', err);
         if (err instanceof Error && 'status' in err && err.status === 401) {
           redirectToLogin();
         }

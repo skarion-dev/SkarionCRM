@@ -21,7 +21,7 @@ export default function LeadsPage() {
   const [importOpen, setImportOpen] = useState(false);
   const [editLead, setEditLead] = useState<Lead | null>(null);
 
-  const { data, isLoading } = useLeads(
+  const { data, isLoading, error: leadsError } = useLeads(
     page,
     pageSize,
     statusFilter === 'all' ? undefined : statusFilter,
@@ -33,8 +33,8 @@ export default function LeadsPage() {
 
   // Debug: log query state to global for inspection
   useEffect(() => {
-    window.__LEADS_DEBUG = { data, isLoading, hasData: !!data, total: data?.total, leadsCount: data?.leads?.length, timestamp: Date.now() };
-  }, [data, isLoading]);
+    window.__LEADS_DEBUG = { data, isLoading, hasData: !!data, total: data?.total, leadsCount: data?.leads?.length, error: leadsError ? (leadsError.message || String(leadsError)) : null, timestamp: Date.now() };
+  }, [data, isLoading, leadsError]);
 
   // Debug: direct API call to bypass React Query
   useEffect(() => {
