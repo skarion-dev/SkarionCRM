@@ -1788,7 +1788,7 @@ app.post('/api/leads/import/document', async (c) => {
   const convResult = await docConv.convertDocument(bytes, file.name, file.type, c.env, leadType);
 
   if ('usedFallback' in convResult && convResult.usedFallback) {
-    // ── Fallback: local PDF text extractor ───────────────────────────────
+    // ── Fallback: local text extraction ───────────────────────────────────
     usedFallback = true;
     fallbackReason = convResult.fallbackReason;
 
@@ -1797,8 +1797,13 @@ app.post('/api/leads/import/document', async (c) => {
       if (!rawText || rawText.trim().length === 0) {
         return c.json({ error: 'No selectable text found in PDF. OCR is not implemented yet. Please upload a text-based PDF.' }, 422);
       }
+    } else if (file.type === 'text/plain' || file.type === 'text/csv' || file.name.endsWith('.txt') || file.name.endsWith('.csv')) {
+      rawText = extractTextFromPlainText(bytes);
+      if (!rawText || rawText.trim().length === 0) {
+        return c.json({ error: 'No text found in file. The file may be empty or binary.' }, 422);
+      }
     } else {
-      return c.json({ error: `Document converter not available for ${file.type}. Only PDFs can be processed without the converter service.` }, 503);
+      return c.json({ error: `Document converter not available for ${file.type}. Supported without converter: PDF, TXT, CSV.` }, 503);
     }
   } else {
     // ── Converter succeeded ──────────────────────────────────────────────
@@ -2030,6 +2035,15 @@ function extractTextFromPdf(bytes: Uint8Array): string {
 
   // Fallback: return all printable ASCII text
   return text.replace(/[^\x20-\x7E\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function extractTextFromPlainText(bytes: Uint8Array): string {
+  const decoder = new TextDecoder('utf-8');
+  try {
+    return decoder.decode(bytes);
+  } catch {
+    return String.fromCharCode(...bytes);
+  }
 }
 
 function regexExtractFromText(text: string) {
