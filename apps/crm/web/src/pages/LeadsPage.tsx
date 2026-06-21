@@ -63,9 +63,10 @@ export default function LeadsPage() {
     const blob = await res.blob();
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = 'skarion-leads.csv';
+    const dateStr = new Date().toISOString().split('T')[0];
+    a.download = `skarion-leads-${dateStr}.csv`;
     a.click();
-    URL.revokeObjectURL(a.href);
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
   };
 
   const leads = data?.leads ?? [];
@@ -218,7 +219,7 @@ export default function LeadsPage() {
                       <button onClick={(e) => { e.stopPropagation(); navigate(`/leads/${lead.id}`); }} className="p-1.5 rounded hover:bg-slate-200 text-slate-500">
                         <ArrowRight size={14} />
                       </button>
-                      <button onClick={(e) => { e.stopPropagation(); deleteMutation.mutate({ type: 'leads', id: lead.id }); }} className="p-1.5 rounded hover:bg-red-100 text-red-500">
+                      <button onClick={(e) => { e.stopPropagation(); if (window.confirm('Are you sure you want to delete this lead? This action cannot be undone.')) { deleteMutation.mutate({ type: 'leads', id: lead.id }); } }} className="p-1.5 rounded hover:bg-red-100 text-red-500">
                         <Trash2 size={14} />
                       </button>
                     </div>

@@ -1463,6 +1463,64 @@ app.post("/api/import/contacts", async (c) => {
   return c.json({ imported: created.length, errors: parsed.errors, duplicates: parsed.duplicates });
 });
 
+app.post("/api/import/leads/preview", async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const role = getRole(c);
+  const isSuperadmin = c.get("isSuperadmin");
+  const caller = { userId: c.get("userId"), isSuperadmin };
+  if (!can(isSuperadmin, role, "create", { ownerId: caller.userId }, caller)) {
+    return c.json({ error: "Forbidden." }, 403);
+  }
+
+  const body = await c.req.json();
+  const csvText = body.csv;
+  if (!csvText || typeof csvText !== "string") {
+    return c.json({ error: "Missing or invalid 'csv' field." }, 400);
+  }
+
+  const parsed = parseLeadsCsv(csvText);
+  // Check DB for existing duplicates
+  const enriched = await Promise.all(
+    parsed.success.map(async (row) => {
+      const conflicts: string[] = [];
+      if (row.email && !row.email.includes('@placeholder.skarion')) {
+        const existing = await db.select({ id: schema.leads.id }).from(schema.leads)
+          .where(and(
+            eq(sql`lower(${schema.leads.email})`, row.email.toLowerCase()),
+            isNull(schema.leads.deletedAt)
+          ))
+          .limit(1);
+        if (existing.length > 0) conflicts.push('email exists');
+      }
+      if (row.linkedinUrl) {
+        const normalizedLi = row.linkedinUrl.toLowerCase().replace(/\/+$/, '');
+        const existingLi = await db.select({ id: schema.leads.id }).from(schema.leads)
+          .where(and(
+            eq(sql`lower(${schema.leads.linkedinUrl})`, normalizedLi),
+            isNull(schema.leads.deletedAt)
+          ))
+          .limit(1);
+        if (existingLi.length > 0) conflicts.push('linkedin exists');
+      }
+      return { ...row, conflicts, canImport: conflicts.length === 0 };
+    })
+  );
+
+  const dbDuplicates = enriched.filter((r) => !r.canImport).length;
+  const importable = enriched.filter((r) => r.canImport);
+
+  return c.json({
+    preview: importable.slice(0, 50),
+    totalRows: parsed.success.length,
+    importableCount: importable.length,
+    dbDuplicates,
+    errors: parsed.errors,
+    duplicates: parsed.duplicates,
+    warnings: parsed.warnings,
+    allRows: enriched.slice(0, 100),
+  });
+});
+
 app.post("/api/import/leads", async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const role = getRole(c);
@@ -1480,7 +1538,35 @@ app.post("/api/import/leads", async (c) => {
 
   const parsed = parseLeadsCsv(csvText);
   const created: typeof schema.leads.$inferInsert[] = [];
+  const dbDuplicates: { row: number; reason: string }[] = [];
   for (const row of parsed.success) {
+    // Check for existing duplicate by email (skip placeholders)
+    if (row.email && !row.email.includes('@placeholder.skarion')) {
+      const existingEmail = await db.select({ id: schema.leads.id }).from(schema.leads)
+        .where(and(
+          eq(sql`lower(${schema.leads.email})`, row.email.toLowerCase()),
+          isNull(schema.leads.deletedAt)
+        ))
+        .limit(1);
+      if (existingEmail.length > 0) {
+        dbDuplicates.push({ row: row.originalRowNumber ?? 0, reason: `Email already exists: ${row.email}` });
+        continue;
+      }
+    }
+    // Check for existing duplicate by LinkedIn URL
+    if (row.linkedinUrl) {
+      const normalizedLi = row.linkedinUrl.toLowerCase().replace(/\/+$/, '');
+      const existingLi = await db.select({ id: schema.leads.id }).from(schema.leads)
+        .where(and(
+          eq(sql`lower(${schema.leads.linkedinUrl})`, normalizedLi),
+          isNull(schema.leads.deletedAt)
+        ))
+        .limit(1);
+      if (existingLi.length > 0) {
+        dbDuplicates.push({ row: row.originalRowNumber ?? 0, reason: `LinkedIn already exists: ${row.linkedinUrl}` });
+        continue;
+      }
+    }
     const [result] = await db.insert(schema.leads).values({
       firstName: row.firstName,
       lastName: row.lastName,
@@ -1506,7 +1592,7 @@ app.post("/api/import/leads", async (c) => {
     created.push(result);
   }
 
-  return c.json({ imported: created.length, errors: parsed.errors, duplicates: parsed.duplicates, warnings: parsed.warnings });
+  return c.json({ imported: created.length, errors: parsed.errors, duplicates: [...parsed.duplicates, ...dbDuplicates], warnings: parsed.warnings });
 });
 
 // --- ADMIN ---

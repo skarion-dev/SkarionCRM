@@ -1,6 +1,6 @@
 import { useNavigate, useParams } from 'react-router-dom';
 import { useLead, useDeleteEntity } from '../hooks/use-api.js';
-import { ArrowLeft, Mail, Phone, Building2, Calendar, FileText, Pencil, Trash2, Linkedin, Target, BarChart3, Hash, Tag, Layers } from 'lucide-react';
+import { ArrowLeft, Mail, Phone, Building2, Calendar, FileText, Pencil, Trash2, Linkedin, Target, BarChart3, Hash, Tag, Layers, AlertTriangle } from 'lucide-react';
 import { cn } from '../lib/utils.js';
 import { useState } from 'react';
 import ActivityTimeline from '../components/ActivityTimeline.js';
@@ -17,7 +17,27 @@ export default function LeadDetail() {
   const [activityType, setActivityType] = useState<ActivityType | null>(null);
 
   if (isLoading) return <div className="text-slate-500">Loading lead...</div>;
-  if (!data?.lead) return <div className="text-slate-500">Lead not found</div>;
+  if (!data?.lead) return (
+    <div className="space-y-4">
+      <button
+        onClick={() => navigate('/leads')}
+        className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"
+      >
+        <ArrowLeft size={16} /> Back to leads
+      </button>
+      <div className="bg-white border border-slate-200 rounded-lg p-12 text-center">
+        <AlertTriangle size={48} className="mx-auto text-slate-300 mb-4" />
+        <h2 className="text-lg font-medium text-slate-700 mb-1">Lead not found</h2>
+        <p className="text-sm text-slate-400 mb-4">This lead may have been deleted or the ID is invalid.</p>
+        <button
+          onClick={() => navigate('/leads')}
+          className="px-4 py-2 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700"
+        >
+          Go to Leads
+        </button>
+      </div>
+    </div>
+  );
 
   const lead = data.lead;
 
@@ -66,7 +86,9 @@ export default function LeadDetail() {
             </button>
             <button
               onClick={() => {
-                deleteMutation.mutate({ type: 'leads', id: lead.id }, { onSuccess: () => navigate('/leads') });
+                if (window.confirm('Are you sure you want to delete this lead? This action cannot be undone.')) {
+                  deleteMutation.mutate({ type: 'leads', id: lead.id }, { onSuccess: () => navigate('/leads') });
+                }
               }}
               className="p-2 rounded hover:bg-red-100 text-red-500"
             >
