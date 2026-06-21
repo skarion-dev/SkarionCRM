@@ -132,71 +132,18 @@ jobs:
         run: pnpm build
         env:
           VITE_IDENTITY_API_URL: ${{ vars.IDENTITY_API_URL }}
-      - name: Debug auth
+      - name: Ensure Pages project exists
+        run: |
+          curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"name":"skarion-identity-login","production_branch":"main"}' || true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Deploy to Cloudflare Pages
         working-directory: apps/identity/login
-        run: |
-          wrangler --version
-          ls -la dist/
-          wrangler pages deploy dist --project-name=skarion-identity-login --dry-run 2>&1 || true
+        run: wrangler pages deploy dist --project-name=skarion-identity-login --branch=main
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      - name: Deploy to Cloudflare Pages (with log capture)
-        working-directory: apps/identity/login
-        run: |
-          wrangler pages deploy dist --project-name=skarion-identity-login 2>&1 | tee deploy.log
-          exit ${PIPESTATUS[0]}
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      - name: Upload deploy log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: deploy-login-log
-          path: apps/identity/login/deploy.log
-
-
-  deploy-admin:
-    name: Deploy identity admin Pages site
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 9.15.0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: 'pnpm'
-      - run: pnpm install --frozen-lockfile
-      - name: Install wrangler CLI
-        run: npm install -g wrangler@3
-      - name: Build admin
-        working-directory: apps/identity/admin
-        run: pnpm build
-        env:
-          VITE_IDENTITY_API_URL: ${{ vars.IDENTITY_API_URL }}
-      - name: Debug auth
-        working-directory: apps/identity/admin
-        run: |
-          wrangler --version
-          wrangler whoami || true
-          wrangler pages project list || true
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      - name: Deploy to Cloudflare Pages (with log capture)
-        working-directory: apps/identity/admin
-        run: |
-          wrangler pages deploy dist --project-name=skarion-identity-admin 2>&1 | tee deploy.log
-          exit ${PIPESTATUS[0]}
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      - name: Upload deploy log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: deploy-admin-log
-          path: apps/identity/admin/deploy.log
