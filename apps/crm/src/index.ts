@@ -7,6 +7,26 @@ import { parseContactsCsv, parseCompaniesCsv, parseLeadsCsv } from "@skarion/imp
 import * as schema from "./db/schema.js";
 import { eq, and, isNull, like, sql, desc, asc, or } from "drizzle-orm";
 import type { CrmDb } from "./db/types.js";
+
+// --- Rate Limiting (per-Worker instance, in-memory) ---
+// For production scale, replace with Cloudflare KV or Durable Objects.
+interface RateLimitEntry { count: number; resetAt: number; }
+const rateLimits = new Map<string, RateLimitEntry>();
+
+function checkRateLimit(key: string, maxRequests: number, windowMs: number): { allowed: boolean; retryAfter?: number } {
+  const now = Date.now();
+  const entry = rateLimits.get(key);
+  if (!entry || now > entry.resetAt) {
+    rateLimits.set(key, { count: 1, resetAt: now + windowMs });
+    return { allowed: true };
+  }
+  if (entry.count >= maxRequests) {
+    return { allowed: false, retryAfter: Math.ceil((entry.resetAt - now) / 1000) };
+  }
+  entry.count++;
+  return { allowed: true };
+}
+
 import * as ai from "./lib/ai-service.js";
 import * as docConv from "./lib/document-converter.js";
 import { cleanMarkdownForAi, estimateTokens } from "./lib/markdown-utils.js";
@@ -429,6 +449,8 @@ app.get("/api/leads", async (c) => {
   const page = Math.max(1, parseInt(c.req.query('page') || '1', 10));
   const pageSize = Math.min(500, Math.max(1, parseInt(c.req.query('pageSize') || '50', 10)));
   const { status, source, search, owner, outreachStatus } = c.req.query();
+  const sortBy = c.req.query('sortBy') || 'createdAt';
+  const sortOrder = c.req.query('sortOrder') || 'desc';
 
   const conditions = [isNull(schema.leads.deletedAt)];
 
@@ -456,6 +478,20 @@ app.get("/api/leads", async (c) => {
     );
   }
 
+  // Build orderBy dynamically
+  const validSortColumns: Record<string, any> = {
+    createdAt: schema.leads.createdAt,
+    updatedAt: schema.leads.updatedAt,
+    firstName: schema.leads.firstName,
+    lastName: schema.leads.lastName,
+    email: schema.leads.email,
+    companyName: schema.leads.companyName,
+    status: schema.leads.status,
+    outreachStatus: schema.leads.outreachStatus,
+  };
+  const sortColumn = validSortColumns[sortBy] || schema.leads.createdAt;
+  const orderByClause = sortOrder === 'asc' ? asc(sortColumn) : desc(sortColumn);
+
   // Get total count
   const countResult = await db.select({ count: sql<number>`count(*)` }).from(schema.leads).where(and(...conditions));
   const total = countResult[0]?.count ?? 0;
@@ -463,7 +499,7 @@ app.get("/api/leads", async (c) => {
   // Get paginated rows
   const rows = await db.select().from(schema.leads)
     .where(and(...conditions))
-    .orderBy(desc(schema.leads.createdAt))
+    .orderBy(orderByClause)
     .limit(pageSize)
     .offset((page - 1) * pageSize);
 
@@ -655,6 +691,130 @@ app.delete("/api/leads/:id", async (c) => {
   return c.json({ success: true });
 });
 
+// ─── LEAD BULK ACTIONS ─────────────────────────────────────────────
+
+app.post("/api/leads/bulk", async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const role = getRole(c);
+  const isSuperadmin = c.get("isSuperadmin");
+  const caller = { userId: c.get("userId"), isSuperadmin };
+  if (!role) return c.json({ error: "Forbidden." }, 403);
+
+  const body = await c.req.json();
+  const ids = body.ids as string[];
+  const action = body.action as 'delete' | 'update_status' | 'update_outreach_status';
+
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return c.json({ error: "No IDs provided." }, 400);
+  }
+  if (ids.length > 500) {
+    return c.json({ error: "Maximum 500 items per bulk action." }, 413);
+  }
+  if (!['delete', 'update_status', 'update_outreach_status'].includes(action)) {
+    return c.json({ error: "Invalid action." }, 400);
+  }
+
+  // Rate limit: 10 bulk actions per minute per user
+  const rl = checkRateLimit(`bulk:leads:${caller.userId}`, 10, 60000);
+  if (!rl.allowed) {
+    c.header('Retry-After', String(rl.retryAfter));
+    return c.json({ error: `Rate limit exceeded. Try again in ${rl.retryAfter} seconds.` }, 429);
+  }
+
+  // Verify all leads exist and caller has permission
+  // Safe approach: fetch all accessible non-deleted leads, then filter by ID in JS
+  const accessConditions = [isNull(schema.leads.deletedAt)];
+  if (!isSuperadmin) {
+    accessConditions.push(eq(schema.leads.ownerId, caller.userId));
+  }
+  const allAccessibleLeads = await db.select().from(schema.leads).where(and(...accessConditions));
+  const allLeads = allAccessibleLeads.filter((l) => ids.includes(l.id));
+
+  if (allLeads.length === 0) {
+    return c.json({ error: "No leads found." }, 404);
+  }
+
+  const notFound = ids.filter(id => !allLeads.find(l => l.id === id));
+  if (notFound.length > 0) {
+    return c.json({ error: `Some leads not found: ${notFound.join(', ')}` }, 404);
+  }
+
+  for (const lead of allLeads) {
+    if (!can(isSuperadmin, role, action === 'delete' ? 'delete' : 'edit', { ownerId: lead.ownerId }, caller)) {
+      return c.json({ error: `Forbidden on lead ${lead.id}.` }, 403);
+    }
+  }
+
+  let updatedCount = 0;
+  let deletedCount = 0;
+
+  if (action === 'delete') {
+    const now = new Date();
+    for (const lead of allLeads) {
+      await db.update(schema.leads).set({
+        deletedAt: now,
+        deletedBy: caller.userId,
+      }).where(eq(schema.leads.id, lead.id));
+      await withAudit(db, schema.auditLog, {
+        actorUserId: caller.userId,
+        action: "delete",
+        resourceType: "lead",
+        resourceId: lead.id,
+        before: lead,
+        app: "crm",
+      });
+      deletedCount++;
+    }
+  } else if (action === 'update_status') {
+    const status = body.status as string;
+    if (!status) return c.json({ error: "Missing 'status' field." }, 400);
+    const now = new Date();
+    for (const lead of allLeads) {
+      await db.update(schema.leads).set({
+        status: status as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+        updatedAt: now,
+      }).where(eq(schema.leads.id, lead.id));
+      await withAudit(db, schema.auditLog, {
+        actorUserId: caller.userId,
+        action: "edit",
+        resourceType: "lead",
+        resourceId: lead.id,
+        before: lead,
+        after: { ...lead, status, updatedAt: now },
+        app: "crm",
+      });
+      updatedCount++;
+    }
+  } else if (action === 'update_outreach_status') {
+    const outreachStatus = body.outreachStatus as string;
+    if (!outreachStatus) return c.json({ error: "Missing 'outreachStatus' field." }, 400);
+    const now = new Date();
+    for (const lead of allLeads) {
+      await db.update(schema.leads).set({
+        outreachStatus: outreachStatus as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+        updatedAt: now,
+      }).where(eq(schema.leads.id, lead.id));
+      await withAudit(db, schema.auditLog, {
+        actorUserId: caller.userId,
+        action: "edit",
+        resourceType: "lead",
+        resourceId: lead.id,
+        before: lead,
+        after: { ...lead, outreachStatus, updatedAt: now },
+        app: "crm",
+      });
+      updatedCount++;
+    }
+  }
+
+  return c.json({
+    success: true,
+    action,
+    processed: action === 'delete' ? deletedCount : updatedCount,
+    total: ids.length,
+  });
+});
+
 // ─── LEAD EXPORT ─────────────────────────────────────────────
 
 function escapeCsv(val: unknown): string {
@@ -717,6 +877,16 @@ app.get("/api/leads/export.csv", async (c) => {
 
   c.header('Content-Type', 'text/csv; charset=utf-8');
   c.header('Content-Disposition', 'attachment; filename="skarion-leads.csv"');
+  
+  await withAudit(db, schema.auditLog, {
+    actorUserId: caller.userId,
+    action: 'export',
+    resourceType: 'leads',
+    resourceId: 'bulk',
+    after: { count: rows.length, filters: { status, source, search, outreachStatus } },
+    app: 'crm',
+  });
+  
   return c.body(csv);
 });
 
@@ -1472,6 +1642,13 @@ app.post("/api/import/leads/preview", async (c) => {
     return c.json({ error: "Forbidden." }, 403);
   }
 
+  // Rate limit: 30 previews per minute per user
+  const rl = checkRateLimit(`import:leads:preview:${caller.userId}`, 30, 60000);
+  if (!rl.allowed) {
+    c.header('Retry-After', String(rl.retryAfter));
+    return c.json({ error: `Rate limit exceeded. Try again in ${rl.retryAfter} seconds.` }, 429);
+  }
+
   const body = await c.req.json();
   const csvText = body.csv;
   if (!csvText || typeof csvText !== "string") {
@@ -1479,6 +1656,9 @@ app.post("/api/import/leads/preview", async (c) => {
   }
 
   const parsed = parseLeadsCsv(csvText);
+  if (parsed.success.length > 500) {
+    return c.json({ error: "CSV too large. Maximum 500 rows allowed per import." }, 413);
+  }
   // Check DB for existing duplicates
   const enriched = await Promise.all(
     parsed.success.map(async (row) => {
@@ -1530,6 +1710,13 @@ app.post("/api/import/leads", async (c) => {
     return c.json({ error: "Forbidden." }, 403);
   }
 
+  // Rate limit: 10 imports per minute per user, max 500 rows per CSV
+  const rl = checkRateLimit(`import:leads:${caller.userId}`, 10, 60000);
+  if (!rl.allowed) {
+    c.header('Retry-After', String(rl.retryAfter));
+    return c.json({ error: `Rate limit exceeded. Try again in ${rl.retryAfter} seconds.` }, 429);
+  }
+
   const body = await c.req.json();
   const csvText = body.csv;
   if (!csvText || typeof csvText !== "string") {
@@ -1537,6 +1724,9 @@ app.post("/api/import/leads", async (c) => {
   }
 
   const parsed = parseLeadsCsv(csvText);
+  if (parsed.success.length > 500) {
+    return c.json({ error: "CSV too large. Maximum 500 rows allowed per import." }, 413);
+  }
   const created: typeof schema.leads.$inferInsert[] = [];
   const dbDuplicates: { row: number; reason: string }[] = [];
   for (const row of parsed.success) {

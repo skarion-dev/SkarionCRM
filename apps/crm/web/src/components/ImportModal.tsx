@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { useCreateEntity } from '../hooks/use-api.js';
 import { crmFetch } from '../api.js';
+import { showToast } from '../stores/toast.js';
 import { Upload, AlertCircle, CheckCircle2, X, Eye, FileCheck, ArrowLeft, User, Mail, Building2, Linkedin } from 'lucide-react';
 import Modal from './ui/Modal.js';
 
@@ -91,6 +92,16 @@ export default function ImportModal({ open, onClose, type, title, sampleCsv }: I
             warnings: { row: number; message: string }[];
           });
           setStep('done');
+          const d = data as unknown as { imported: number; errors: unknown[]; duplicates: unknown[] };
+          if (d.imported > 0) {
+            showToast(`Successfully imported ${d.imported} rows`, 'success');
+          } else if (d.errors.length > 0) {
+            showToast(`Import failed: ${d.errors.length} errors`, 'error');
+          } else if (d.duplicates.length > 0) {
+            showToast(`${d.duplicates.length} duplicates skipped`, 'warning');
+          } else {
+            showToast('No rows imported', 'warning');
+          }
         },
         onError: (err) => {
           setResult({
@@ -100,6 +111,7 @@ export default function ImportModal({ open, onClose, type, title, sampleCsv }: I
             warnings: [],
           });
           setStep('done');
+          showToast(err instanceof Error ? err.message : 'Import failed', 'error');
         },
       }
     );

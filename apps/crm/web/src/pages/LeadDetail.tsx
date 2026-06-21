@@ -1,5 +1,6 @@
 import { useNavigate, useParams } from 'react-router-dom';
 import { useLead, useDeleteEntity } from '../hooks/use-api.js';
+import { showToast } from '../stores/toast.js';
 import { ArrowLeft, Mail, Phone, Building2, Calendar, FileText, Pencil, Trash2, Linkedin, Target, BarChart3, Hash, Tag, Layers, AlertTriangle } from 'lucide-react';
 import { cn } from '../lib/utils.js';
 import { useState } from 'react';
@@ -87,7 +88,7 @@ export default function LeadDetail() {
             <button
               onClick={() => {
                 if (window.confirm('Are you sure you want to delete this lead? This action cannot be undone.')) {
-                  deleteMutation.mutate({ type: 'leads', id: lead.id }, { onSuccess: () => navigate('/leads') });
+                  deleteMutation.mutate({ type: 'leads', id: lead.id }, { onSuccess: () => { showToast('Lead deleted', 'success'); navigate('/leads'); } });
                 }
               }}
               className="p-2 rounded hover:bg-red-100 text-red-500"

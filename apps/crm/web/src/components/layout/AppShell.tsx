@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { cn } from '../../lib/utils.js';
 import { bootstrapAuth } from '../../api.js';
 import { useChatHistory, useSendChatMessage } from '../../hooks/use-api.js';
+import ToastContainer from '../ToastContainer.js';
 import {
   LayoutDashboard, Users, Building2, Contact, Target, CheckSquare, Settings, LogOut,
   BarChart, ChevronLeft, ChevronRight, Bell, Search, Menu, X, MessageSquare,
@@ -162,6 +163,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </main>
       </div>
       <AiWidget />
+      <ToastContainer />
     </div>
   );
 }

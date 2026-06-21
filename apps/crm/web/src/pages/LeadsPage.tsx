@@ -1,14 +1,17 @@
 import { useState, useEffect } from 'react';
-import { useLeads, useDeleteEntity } from '../hooks/use-api.js';
+import { useLeads, useDeleteEntity, useBulkLeads } from '../hooks/use-api.js';
 import { useNavigate } from 'react-router-dom';
-import { Target, Plus, Search, Trash2, ArrowRight, Pencil, Upload, Linkedin, ChevronLeft, ChevronRight, Download } from 'lucide-react';
+import { Target, Plus, Search, Trash2, ArrowRight, Pencil, Upload, Linkedin, ChevronLeft, ChevronRight, Download, ArrowUpDown, ArrowUp, ArrowDown, Square, SquareCheck, X } from 'lucide-react';
 import { cn } from '../lib/utils.js';
 import LeadForm from '../components/forms/LeadForm.js';
 import ImportModal from '../components/ImportModal.js';
 import type { Lead, LeadStatus, OutreachStatus } from '../api.js';
 import { crmFetch, CRM_API_URL, getAccessToken } from '../api.js';
+import { showToast } from '../stores/toast.js';
 
 const PAGE_SIZES = [25, 50, 100, 250];
+const LEAD_STATUSES: LeadStatus[] = ['new', 'contacted', 'qualified', 'disqualified', 'converted'];
+const OUTREACH_STATUSES: OutreachStatus[] = ['not_approached', 'approached', 'connected', 'replied', 'booked_call', 'not_interested', 'bad_fit'];
 
 export default function LeadsPage() {
   const [page, setPage] = useState(1);
@@ -17,6 +20,10 @@ export default function LeadsPage() {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | LeadStatus>('all');
   const [outreachFilter, setOutreachFilter] = useState<'all' | OutreachStatus>('all');
+  const [sortBy, setSortBy] = useState<string>('createdAt');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkActionOpen, setBulkActionOpen] = useState<false | 'status' | 'outreach'>(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [editLead, setEditLead] = useState<Lead | null>(null);
@@ -26,10 +33,24 @@ export default function LeadsPage() {
     pageSize,
     statusFilter === 'all' ? undefined : statusFilter,
     debouncedSearch || undefined,
-    outreachFilter === 'all' ? undefined : outreachFilter
+    outreachFilter === 'all' ? undefined : outreachFilter,
+    sortBy,
+    sortOrder
   );
   const deleteMutation = useDeleteEntity();
+  const bulkMutation = useBulkLeads();
   const navigate = useNavigate();
+
+  const leads = data?.leads ?? [];
+  const total = data?.total ?? 0;
+  const totalPages = data?.totalPages ?? 1;
+  const statusCounts = data?.statusCounts ?? { new: 0, contacted: 0, qualified: 0, disqualified: 0, converted: 0 };
+  const outreachStatusCounts = data?.outreachStatusCounts ?? { not_approached: 0, approached: 0, connected: 0, replied: 0, booked_call: 0, not_interested: 0, bad_fit: 0 };
+
+  // Reset selection when page/filter changes
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [page, statusFilter, outreachFilter, debouncedSearch, pageSize, sortBy, sortOrder]);
 
   // Debounce search
   useEffect(() => {
@@ -37,10 +58,19 @@ export default function LeadsPage() {
     return () => clearTimeout(timer);
   }, [search]);
 
-  // Reset to page 1 when filter or search changes
+  // Reset to page 1 when filter, search, or sort changes
   useEffect(() => {
     setPage(1);
-  }, [statusFilter, outreachFilter, debouncedSearch, pageSize]);
+  }, [statusFilter, outreachFilter, debouncedSearch, pageSize, sortBy, sortOrder]);
+
+  const toggleSort = (column: string) => {
+    if (sortBy === column) {
+      setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortBy(column);
+      setSortOrder('asc');
+    }
+  };
 
   const openCreate = () => { setEditLead(null); setModalOpen(true); };
   const openEdit = (lead: Lead) => { setEditLead(lead); setModalOpen(true); };
@@ -57,7 +87,7 @@ export default function LeadsPage() {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     if (!res.ok) {
-      alert('Export failed');
+      showToast('Export failed', 'error');
       return;
     }
     const blob = await res.blob();
@@ -67,13 +97,72 @@ export default function LeadsPage() {
     a.download = `skarion-leads-${dateStr}.csv`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    showToast('Export downloaded', 'success');
   };
 
-  const leads = data?.leads ?? [];
-  const total = data?.total ?? 0;
-  const totalPages = data?.totalPages ?? 1;
-  const statusCounts = data?.statusCounts ?? { new: 0, contacted: 0, qualified: 0, disqualified: 0, converted: 0 };
-  const outreachStatusCounts = data?.outreachStatusCounts ?? { not_approached: 0, approached: 0, connected: 0, replied: 0, booked_call: 0, not_interested: 0, bad_fit: 0 };
+  // Selection helpers
+  const allSelected = leads.length > 0 && leads.every((l) => selectedIds.has(l.id));
+  const someSelected = selectedIds.size > 0 && !allSelected;
+  const selectionCount = selectedIds.size;
+
+  const toggleSelectAll = () => {
+    if (allSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(leads.map((l) => l.id)));
+    }
+  };
+
+  const toggleSelectRow = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleBulkDelete = () => {
+    if (!window.confirm(`Are you sure you want to delete ${selectionCount} leads? This action cannot be undone.`)) return;
+    bulkMutation.mutate(
+      { ids: Array.from(selectedIds), action: 'delete' },
+      {
+        onSuccess: (res) => {
+          showToast(`${res.processed} leads deleted`, 'success');
+          setSelectedIds(new Set());
+        },
+        onError: () => showToast('Bulk delete failed', 'error'),
+      }
+    );
+  };
+
+  const handleBulkUpdateStatus = (status: string) => {
+    bulkMutation.mutate(
+      { ids: Array.from(selectedIds), action: 'update_status', status },
+      {
+        onSuccess: (res) => {
+          showToast(`${res.processed} leads updated to ${status}`, 'success');
+          setSelectedIds(new Set());
+          setBulkActionOpen(false);
+        },
+        onError: () => showToast('Bulk update failed', 'error'),
+      }
+    );
+  };
+
+  const handleBulkUpdateOutreach = (outreachStatus: string) => {
+    bulkMutation.mutate(
+      { ids: Array.from(selectedIds), action: 'update_outreach_status', outreachStatus },
+      {
+        onSuccess: (res) => {
+          showToast(`${res.processed} leads updated to ${outreachStatus.replace(/_/g, ' ')}`, 'success');
+          setSelectedIds(new Set());
+          setBulkActionOpen(false);
+        },
+        onError: () => showToast('Bulk update failed', 'error'),
+      }
+    );
+  };
 
   if (isLoading) return <div className="text-slate-500">Loading leads...</div>;
 
@@ -159,23 +248,121 @@ export default function LeadsPage() {
         </select>
       </div>
 
+      {/* Bulk action bar */}
+      {selectionCount > 0 && (
+        <div className="flex items-center gap-3 bg-slate-100 border border-slate-200 rounded-lg px-4 py-2">
+          <span className="text-sm font-medium text-slate-700">{selectionCount} selected</span>
+          <div className="flex-1" />
+          <div className="flex gap-2">
+            <button
+              onClick={() => setBulkActionOpen('status')}
+              className="px-3 py-1.5 text-sm border border-slate-300 rounded-md bg-white hover:bg-slate-50 text-slate-700"
+            >
+              Change Status
+            </button>
+            <button
+              onClick={() => setBulkActionOpen('outreach')}
+              className="px-3 py-1.5 text-sm border border-slate-300 rounded-md bg-white hover:bg-slate-50 text-slate-700"
+            >
+              Change Outreach
+            </button>
+            <button
+              onClick={handleBulkDelete}
+              className="px-3 py-1.5 text-sm border border-red-200 rounded-md bg-red-50 hover:bg-red-100 text-red-600"
+            >
+              <Trash2 size={14} className="inline mr-1" /> Delete
+            </button>
+            <button
+              onClick={() => setSelectedIds(new Set())}
+              className="p-1.5 rounded-md hover:bg-slate-200 text-slate-500"
+              title="Clear selection"
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk action dropdowns */}
+      {bulkActionOpen === 'status' && (
+        <div className="flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-lg px-4 py-2">
+          <span className="text-sm text-blue-700 font-medium">Set status to:</span>
+          {LEAD_STATUSES.map((s) => (
+            <button
+              key={s}
+              onClick={() => handleBulkUpdateStatus(s)}
+              className="px-3 py-1 text-xs border border-slate-300 rounded-md bg-white hover:bg-slate-50 capitalize"
+            >
+              {s}
+            </button>
+          ))}
+          <button onClick={() => setBulkActionOpen(false)} className="p-1 rounded hover:bg-blue-100 text-blue-600">
+            <X size={14} />
+          </button>
+        </div>
+      )}
+      {bulkActionOpen === 'outreach' && (
+        <div className="flex items-center gap-2 bg-purple-50 border border-purple-200 rounded-lg px-4 py-2">
+          <span className="text-sm text-purple-700 font-medium">Set outreach to:</span>
+          {OUTREACH_STATUSES.map((s) => (
+            <button
+              key={s}
+              onClick={() => handleBulkUpdateOutreach(s)}
+              className="px-3 py-1 text-xs border border-slate-300 rounded-md bg-white hover:bg-slate-50 capitalize"
+            >
+              {s.replace(/_/g, ' ')}
+            </button>
+          ))}
+          <button onClick={() => setBulkActionOpen(false)} className="p-1 rounded hover:bg-purple-100 text-purple-600">
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
       <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
-                <th className="text-left px-4 py-3 font-medium text-slate-600">Name</th>
-                <th className="text-left px-4 py-3 font-medium text-slate-600">Company</th>
-                <th className="text-left px-4 py-3 font-medium text-slate-600">Email</th>
+                <th className="px-2 py-3 w-10">
+                  <button
+                    onClick={toggleSelectAll}
+                    className="p-1 rounded hover:bg-slate-200 text-slate-500"
+                    title={allSelected ? 'Deselect all' : 'Select all'}
+                  >
+                    {allSelected ? <SquareCheck size={18} /> : someSelected ? <SquareCheck size={18} className="text-blue-600" /> : <Square size={18} />}
+                  </button>
+                </th>
+                <th className="text-left px-4 py-3 font-medium text-slate-600 cursor-pointer select-none hover:bg-slate-100" onClick={() => toggleSort('firstName')}>
+                  <div className="flex items-center gap-1">Name {sortBy === 'firstName' ? (sortOrder === 'asc' ? <ArrowUp size={14} /> : <ArrowDown size={14} />) : <ArrowUpDown size={14} className="text-slate-300" />}</div>
+                </th>
+                <th className="text-left px-4 py-3 font-medium text-slate-600 cursor-pointer select-none hover:bg-slate-100" onClick={() => toggleSort('companyName')}>
+                  <div className="flex items-center gap-1">Company {sortBy === 'companyName' ? (sortOrder === 'asc' ? <ArrowUp size={14} /> : <ArrowDown size={14} />) : <ArrowUpDown size={14} className="text-slate-300" />}</div>
+                </th>
+                <th className="text-left px-4 py-3 font-medium text-slate-600 cursor-pointer select-none hover:bg-slate-100" onClick={() => toggleSort('email')}>
+                  <div className="flex items-center gap-1">Email {sortBy === 'email' ? (sortOrder === 'asc' ? <ArrowUp size={14} /> : <ArrowDown size={14} />) : <ArrowUpDown size={14} className="text-slate-300" />}</div>
+                </th>
                 <th className="text-left px-4 py-3 font-medium text-slate-600">LinkedIn</th>
-                <th className="text-left px-4 py-3 font-medium text-slate-600">Outreach</th>
-                <th className="text-left px-4 py-3 font-medium text-slate-600">Status</th>
+                <th className="text-left px-4 py-3 font-medium text-slate-600 cursor-pointer select-none hover:bg-slate-100" onClick={() => toggleSort('outreachStatus')}>
+                  <div className="flex items-center gap-1">Outreach {sortBy === 'outreachStatus' ? (sortOrder === 'asc' ? <ArrowUp size={14} /> : <ArrowDown size={14} />) : <ArrowUpDown size={14} className="text-slate-300" />}</div>
+                </th>
+                <th className="text-left px-4 py-3 font-medium text-slate-600 cursor-pointer select-none hover:bg-slate-100" onClick={() => toggleSort('status')}>
+                  <div className="flex items-center gap-1">Status {sortBy === 'status' ? (sortOrder === 'asc' ? <ArrowUp size={14} /> : <ArrowDown size={14} />) : <ArrowUpDown size={14} className="text-slate-300" />}</div>
+                </th>
                 <th className="text-right px-4 py-3 font-medium text-slate-600">Actions</th>
               </tr>
             </thead>
             <tbody>
               {leads.map((lead) => (
-                <tr key={lead.id} className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer" onClick={() => navigate(`/leads/${lead.id}`)}>
+                <tr key={lead.id} className={cn("border-b border-slate-100 hover:bg-slate-50 cursor-pointer", selectedIds.has(lead.id) && "bg-blue-50")} onClick={() => navigate(`/leads/${lead.id}`)}>
+                  <td className="px-2 py-3" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      onClick={() => toggleSelectRow(lead.id)}
+                      className="p-1 rounded hover:bg-slate-200 text-slate-500"
+                    >
+                      {selectedIds.has(lead.id) ? <SquareCheck size={18} className="text-blue-600" /> : <Square size={18} />}
+                    </button>
+                  </td>
                   <td className="px-4 py-3">
                     <div className="font-medium">{lead.firstName} {lead.lastName}</div>
                   </td>
@@ -219,7 +406,7 @@ export default function LeadsPage() {
                       <button onClick={(e) => { e.stopPropagation(); navigate(`/leads/${lead.id}`); }} className="p-1.5 rounded hover:bg-slate-200 text-slate-500">
                         <ArrowRight size={14} />
                       </button>
-                      <button onClick={(e) => { e.stopPropagation(); if (window.confirm('Are you sure you want to delete this lead? This action cannot be undone.')) { deleteMutation.mutate({ type: 'leads', id: lead.id }); } }} className="p-1.5 rounded hover:bg-red-100 text-red-500">
+                      <button onClick={(e) => { e.stopPropagation(); if (window.confirm('Are you sure you want to delete this lead? This action cannot be undone.')) { deleteMutation.mutate({ type: 'leads', id: lead.id }, { onSuccess: () => showToast('Lead deleted', 'success') }); } }} className="p-1.5 rounded hover:bg-red-100 text-red-500">
                         <Trash2 size={14} />
                       </button>
                     </div>
@@ -227,7 +414,7 @@ export default function LeadsPage() {
                 </tr>
               ))}
               {leads.length === 0 && (
-                <tr><td colSpan={7} className="px-4 py-12 text-center text-slate-400">No leads found</td></tr>
+                <tr><td colSpan={8} className="px-4 py-12 text-center text-slate-400">No leads found</td></tr>
               )}
             </tbody>
           </table>

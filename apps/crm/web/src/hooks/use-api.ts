@@ -48,14 +48,16 @@ export function useContacts() {
   return useCrmQuery(['contacts'], () => crmFetch<{ contacts: Contact[] }>('/api/contacts'));
 }
 
-export function useLeads(page: number = 1, pageSize: number = 50, status?: string, search?: string, outreachStatus?: string) {
+export function useLeads(page: number = 1, pageSize: number = 50, status?: string, search?: string, outreachStatus?: string, sortBy?: string, sortOrder?: string) {
   const qs = new URLSearchParams();
   qs.append('page', String(page));
   qs.append('pageSize', String(pageSize));
   if (status) qs.append('status', status);
   if (search) qs.append('search', search);
   if (outreachStatus) qs.append('outreachStatus', outreachStatus);
-  return useCrmQuery(['leads', String(page), String(pageSize), status ?? '', search ?? '', outreachStatus ?? ''], () =>
+  if (sortBy) qs.append('sortBy', sortBy);
+  if (sortOrder) qs.append('sortOrder', sortOrder);
+  return useCrmQuery(['leads', String(page), String(pageSize), status ?? '', search ?? '', outreachStatus ?? '', sortBy ?? '', sortOrder ?? ''], () =>
     crmFetch<{ leads: Lead[]; page: number; pageSize: number; total: number; totalPages: number; statusCounts: Record<string, number>; outreachStatusCounts: Record<string, number> }>(`/api/leads?${qs.toString()}`)
   );
 }
@@ -93,6 +95,26 @@ export function useDeleteEntity() {
     },
     onSuccess: ({ type }) => {
       qc.invalidateQueries({ queryKey: [type] });
+    },
+  });
+}
+
+export function useBulkLeads() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: {
+      ids: string[];
+      action: 'delete' | 'update_status' | 'update_outreach_status';
+      status?: string;
+      outreachStatus?: string;
+    }) => {
+      return crmFetch<{ success: boolean; action: string; processed: number; total: number }>('/api/leads/bulk', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['leads'] });
     },
   });
 }
