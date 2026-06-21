@@ -88,16 +88,28 @@ export async function crmFetch<T>(path: string, init: RequestInit = {}): Promise
     }
   }
 
-  let response = await fetch(`${CRM_API_URL}${path}`, {
-    ...init,
-    headers: {
-      ...(init.body instanceof FormData
-        ? {}
-        : { 'Content-Type': 'application/json' }),
-      Authorization: `Bearer ${accessToken}`,
-      ...init.headers,
-    },
-  });
+  const url = `${CRM_API_URL}${path}`;
+  const headers = {
+    ...(init.body instanceof FormData
+      ? {}
+      : { 'Content-Type': 'application/json' }),
+    Authorization: `Bearer ${accessToken}`,
+    ...init.headers,
+  };
+  // Debug: log crmFetch attempt
+  (window as any).__CRM_FETCH_DEBUG = { url, accessTokenExists: !!accessToken, headers: Object.keys(headers) };
+
+  let response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers,
+    });
+  } catch (fetchErr: any) {
+    (window as any).__CRM_FETCH_DEBUG.error = fetchErr.message;
+    (window as any).__CRM_FETCH_DEBUG.errorType = fetchErr.name;
+    throw fetchErr;
+  }
 
   if (response.status === 401) {
     const refreshed = await refreshAccessToken();
