@@ -9,12 +9,13 @@ Last updated: 2026-06-21
 | CRM Frontend | Cloudflare Pages | `https://skarion-crm.pages.dev` | ✅ Deployed |
 | CRM Worker/API | Cloudflare Worker | `https://skarion-crm-platform.alsaki1999.workers.dev` | ✅ Deployed |
 | Identity Worker/API | Cloudflare Worker | `https://skarion-identity.alsaki1999.workers.dev` | ✅ Deployed |
-| Identity Login Pages | Cloudflare Pages | `https://skarion-identity-login.pages.dev` | ⚠️ Created, 0 deployments |
-| Identity Admin Pages | Cloudflare Pages | `https://skarion-identity-admin.pages.dev` | ⚠️ Created, 0 deployments |
-| Embeddings Builder | Cloudflare Worker | `https://skarion-embeddings-builder.alsaki1999.workers.dev` | ❌ Not deployed |
-| Workflow Runner | Cloudflare Worker | `https://skarion-workflow-runner.alsaki1999.workers.dev` | ❌ Not deployed |
-| Cron Worker | Cloudflare Worker | `https://skarion-cron.alsaki1999.workers.dev` | ❌ Not deployed |
-| Email Inbound | Cloudflare Worker | `https://skarion-email-inbound.alsaki1999.workers.dev` | ❌ Not deployed |
+| Identity Login Pages | Cloudflare Pages | `https://skarion-identity-login.pages.dev` | ✅ Deployed |
+| Identity Admin Pages | Cloudflare Pages | `https://skarion-identity-admin.pages.dev` | ✅ Deployed |
+| Embeddings Builder | Cloudflare Worker | `https://skarion-embeddings-builder.alsaki1999.workers.dev` | ✅ Deployed |
+| Workflow Runner | Cloudflare Worker | `https://skarion-workflow-runner.alsaki1999.workers.dev` | ✅ Deployed |
+| Cron Worker | Cloudflare Worker | `https://skarion-cron.alsaki1999.workers.dev` | ✅ Deployed |
+| Email Inbound | Cloudflare Worker | `https://skarion-email-inbound.alsaki1999.workers.dev` | ✅ Deployed |
+| Document Converter | Docker/FastAPI | `https://your-converter-service.example.com` | ⚠️ Optional — deploy separately |
 
 ## Old Workers (Still Exist, Not Used)
 
@@ -25,12 +26,12 @@ Last updated: 2026-06-21
 
 | Workflow | File | Trigger | Deploys |
 |----------|------|---------|---------|
-| Deploy CRM | `.github/workflows/deploy-crm.yml` | push `main` + `workflow_dispatch` | CRM Worker + migrations |
-| Deploy Identity | `.github/workflows/deploy-identity.yml` | push `main` + `workflow_dispatch` | Identity Worker + Login Pages + Admin Pages + migrations |
-| Deploy Embeddings Builder | `.github/workflows/deploy-embeddings-builder.yml` | push `main` + `workflow_dispatch` | Embeddings Builder Worker |
-| Deploy Workflow Runner | `.github/workflows/deploy-workflow-runner.yml` | push `main` + `workflow_dispatch` | Workflow Runner Worker |
-| Deploy Cron | `.github/workflows/deploy-cron.yml` | push `main` + `workflow_dispatch` | Cron Worker |
-| Deploy Email Inbound | `.github/workflows/deploy-email-inbound.yml` | push `main` + `workflow_dispatch` | Email Inbound Worker |
+| Deploy CRM | `.github/workflows/deploy-crm.yml` | push `cloudflare-platform-rewrite` + `workflow_dispatch` | CRM Worker + migrations + Pages |
+| Deploy Identity | `.github/workflows/deploy-identity.yml` | push `cloudflare-platform-rewrite` + `workflow_dispatch` | Identity Worker + Login Pages + Admin Pages + migrations |
+| Deploy Embeddings Builder | `.github/workflows/deploy-embeddings-builder.yml` | push `cloudflare-platform-rewrite` + `workflow_dispatch` | Embeddings Builder Worker |
+| Deploy Workflow Runner | `.github/workflows/deploy-workflow-runner.yml` | push `cloudflare-platform-rewrite` + `workflow_dispatch` | Workflow Runner Worker |
+| Deploy Cron | `.github/workflows/deploy-cron.yml` | push `cloudflare-platform-rewrite` + `workflow_dispatch` | Cron Worker |
+| Deploy Email Inbound | `.github/workflows/deploy-email-inbound.yml` | push `cloudflare-platform-rewrite` + `workflow_dispatch` | Email Inbound Worker |
 
 ## Required GitHub Secrets
 
@@ -41,12 +42,13 @@ Last updated: 2026-06-21
 | `DATABASE_URL` | CRM, Identity, Embeddings, Workflow Runner, Email Inbound | Neon PostgreSQL connection string |
 | `JWT_SECRET` | CRM, Identity | HS256 signing key for JWTs |
 | `GOOGLE_API_KEY` | CRM, Embeddings Builder | Google Gemini API key |
-| `GOOGLE_CHAT_MODEL` | CRM | Gemini chat model (default: `gemini-1.5-flash`) |
+| `GOOGLE_CHAT_MODEL` | CRM | Gemini chat model (default: `gemini-2.5-flash-lite`) |
 | `GOOGLE_EMBEDDING_MODEL` | CRM, Embeddings Builder | Gemini embedding model (default: `embedding-001`) |
 | `RESEND_API_KEY` | Identity, Email Inbound | Resend email API key |
 | `MFA_ENCRYPTION_KEY` | Identity | Encryption key for MFA secrets |
 | `INVITATION_TOKEN_PEPPER` | Identity | Pepper for invitation token hashing |
 | `WORKFLOW_RUNNER_SECRET` | Cron, Workflow Runner | Shared secret for cron→workflow-runner auth |
+| `DOCUMENT_CONVERTER_SECRET` | CRM | Shared secret for CRM→document converter auth (optional) |
 
 ## Required GitHub Variables (Not Secrets)
 
@@ -62,10 +64,23 @@ Set in Cloudflare dashboard for each Pages project:
 |---------|-----|-------|
 | `skarion-crm` | `VITE_API_URL` | `https://skarion-crm-platform.alsaki1999.workers.dev` |
 | `skarion-crm` | `VITE_IDENTITY_API_URL` | `https://skarion-identity.alsaki1999.workers.dev` |
+| `skarion-crm` | `VITE_IDENTITY_LOGIN_URL` | `https://skarion-identity-login.pages.dev` |
 | `skarion-identity-login` | `VITE_IDENTITY_API_URL` | `https://skarion-identity.alsaki1999.workers.dev` |
 | `skarion-identity-admin` | `VITE_IDENTITY_API_URL` | `https://skarion-identity.alsaki1999.workers.dev` |
 
-## Cloudflare Worker Secrets (Set via Wrangler)
+## Cloudflare Worker Vars (Set via wrangler.toml)
+
+| Worker | Var | Value |
+|--------|-----|-------|
+| `skarion-crm-platform` | `APP_URL` | `https://skarion-crm.pages.dev` |
+| `skarion-crm-platform` | `AI_PROVIDER` | `google` |
+| `skarion-crm-platform` | `GOOGLE_MODEL` | `gemini-2.5-flash-lite` |
+| `skarion-crm-platform` | `GOOGLE_FALLBACK_MODEL` | `gemini-2.5-flash` |
+| `skarion-crm-platform` | `GOOGLE_EMBEDDING_MODEL` | `embedding-001` |
+| `skarion-crm-platform` | `DOCUMENT_CONVERTER_URL` | `https://your-converter-service.example.com` (optional) |
+| `skarion-crm-platform` | `DOCUMENT_AI_MAX_CHARS` | `50000` (optional) |
+
+## Cloudflare Worker Secrets (Set via GitHub Actions)
 
 After deployment, secrets are pushed via GitHub Actions. Manual fallback:
 
@@ -73,6 +88,7 @@ After deployment, secrets are pushed via GitHub Actions. Manual fallback:
 cd apps/crm && wrangler secret put DATABASE_URL
 cd apps/crm && wrangler secret put JWT_SECRET
 cd apps/crm && wrangler secret put GOOGLE_API_KEY
+cd apps/crm && wrangler secret put DOCUMENT_CONVERTER_SECRET
 cd apps/identity && wrangler secret put DATABASE_URL
 cd apps/identity && wrangler secret put JWT_SECRET
 cd apps/identity && wrangler secret put RESEND_API_KEY
@@ -116,6 +132,9 @@ cd apps/workers/cron && wrangler deploy
 
 # Email Inbound
 cd apps/workers/email-inbound && wrangler deploy
+
+# Document Converter (Docker-based, deploy separately)
+cd apps/document-converter && docker build -t skarion-document-converter .
 ```
 
 ## Migrations
@@ -153,27 +172,23 @@ DATABASE_URL=... npx tsx src/scripts/seed-admin.ts
 
 | Blocker | Impact | Resolution |
 |---------|--------|------------|
-| Identity Pages not deployed | Login/admin UIs not accessible | Trigger GitHub Actions deploy-identity workflow |
-| Embeddings builder not deployed | No auto-embeddings for RAG | Trigger deploy-embeddings-builder workflow |
-| Workflow runner not deployed | Workflow rules don't execute | Trigger deploy-workflow-runner workflow |
-| Cron not deployed | Time-based rules don't run | Trigger deploy-cron workflow |
-| Email inbound not deployed | No email processing | Trigger deploy-email-inbound workflow |
-| GOOGLE_API_KEY not set | AI chat returns fallback message | Set secret in CRM + Embeddings workers |
-| No admin user seeded | Cannot log in | Run seed-admin.ts script |
+| Document Converter not deployed | PDF/DOCX imports use fallback extractor | Deploy Docker container to Render/Fly/Railway/Cloud Run |
+| Email sending not wired | Emails are logged but not sent | Set RESEND_API_KEY in Identity + Email Inbound workers |
 
 ## AI Setup Status
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| AI Chat endpoint | ✅ Backend ready | Needs GOOGLE_API_KEY |
-| AI Widget | ✅ Frontend ready | Floating widget in AppShell |
-| RAG / Embeddings | ✅ Backend ready | Needs embeddings-builder deployed + GOOGLE_API_KEY |
+| AI Chat endpoint | ✅ Ready | Needs GOOGLE_API_KEY |
+| AI Widget | ✅ Ready | Floating widget in AppShell |
+| RAG / Embeddings | ✅ Ready | Needs embeddings-builder deployed + GOOGLE_API_KEY |
 | Lead summarization | ✅ Ready | Endpoint + UI on lead detail page |
 | Outreach drafting | ✅ Ready | Endpoint + UI on lead detail page |
 | Lead scoring | ✅ Ready | Endpoint + UI on lead detail page |
 | Next action suggestion | ✅ Ready | Endpoint + UI on lead detail page |
 | Company/Contact summary | ✅ Ready | Endpoints ready |
-| PDF-to-lead import | ✅ Ready | Backend + frontend modal ready |
+| Document import (PDF/DOCX/PPTX/XLSX/CSV/TXT) | ✅ Ready | Uses MarkItDown converter if available, falls back to local PDF extractor |
+| Document conversion tracking | ✅ Ready | `document_imports` table tracks conversions |
 
 ## Feature Checklist
 
@@ -188,7 +203,7 @@ DATABASE_URL=... npx tsx src/scripts/seed-admin.ts
 | Tasks + completion | ✅ |
 | Activities timeline | ✅ |
 | CSV import | ✅ |
-| PDF import | ✅ |
+| Document import (PDF/DOCX/PPTX/XLSX/CSV/TXT) | ✅ |
 | AI chat widget | ✅ |
 | AI summarization | ✅ |
 | AI outreach drafting | ✅ |
@@ -211,3 +226,5 @@ See [DOMAIN_MIGRATION_LATER.md](./DOMAIN_MIGRATION_LATER.md) for the planned cus
 - No feature depends on `skarion.com` DNS.
 - Custom domain migration is documented but postponed.
 - `pnpm typecheck` and `pnpm lint` must pass before every commit.
+- Document Converter is a separate Docker service (Python FastAPI + MarkItDown). It does not deploy via Cloudflare Workers.
+- CRM Worker falls back to local PDF text extractor if Document Converter is unavailable.

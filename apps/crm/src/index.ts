@@ -8,6 +8,9 @@ import * as schema from "./db/schema.js";
 import { eq, and, isNull, like, sql, desc, asc } from "drizzle-orm";
 import type { CrmDb } from "./db/types.js";
 import * as ai from "./lib/ai-service.js";
+import * as docConv from "./lib/document-converter.js";
+import { cleanMarkdownForAi, markdownPreview, estimateTokens } from "./lib/markdown-utils.js";
+
 
 interface Env {
   DATABASE_URL: string;
@@ -21,6 +24,12 @@ interface Env {
   GOOGLE_FALLBACK_MODEL?: string;
   GOOGLE_CHAT_MODEL?: string;
   GOOGLE_EMBEDDING_MODEL?: string;
+  /** External document converter service (MarkItDown-based). Optional — falls back to local PDF text extractor if not set. */
+  DOCUMENT_CONVERTER_URL?: string;
+  /** Shared secret for converter auth. Optional — if not set, converter calls are unauthenticated (dev only). */
+  DOCUMENT_CONVERTER_SECRET?: string;
+  /** Max chars to send to AI from converted documents. Default 50000. */
+  DOCUMENT_AI_MAX_CHARS?: string;
 }
 
 /** Basic email stub — logs what would be sent. Full Resend wiring in a future ticket. */
@@ -1732,7 +1741,7 @@ app.post('/api/contacts/:id/summarize', async (c) => {
 
 // ─── PDF LEAD IMPORT ───────────────────────────────────────────────────────
 
-app.post('/api/leads/import/pdf', async (c) => {
+app.post('/api/leads/import/document', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const role = getRole(c);
   const isSuperadmin = c.get('isSuperadmin');
@@ -1746,31 +1755,103 @@ app.post('/api/leads/import/pdf', async (c) => {
   const leadType = (body['leadType'] as string) ?? 'other';
 
   if (!file) return c.json({ error: 'Missing file.' }, 400);
-  if (file.type !== 'application/pdf') return c.json({ error: 'Only PDF files are accepted.' }, 400);
   if (file.size > 10 * 1024 * 1024) return c.json({ error: 'File too large. Max 10MB.' }, 400);
+
+  // Expanded MIME type support: PDF, DOCX, PPTX, XLSX, CSV, TXT
+  const allowedTypes = [
+    'application/pdf',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'text/csv',
+    'text/plain',
+  ];
+  const isPdf = file.type === 'application/pdf';
+  const isKnownType = allowedTypes.includes(file.type);
+  if (!isKnownType && !isPdf) {
+    return c.json({ error: `Unsupported file type: ${file.type}. Allowed: PDF, DOCX, PPTX, XLSX, CSV, TXT.` }, 415);
+  }
 
   const arrayBuffer = await file.arrayBuffer();
   const bytes = new Uint8Array(arrayBuffer);
 
-  // Try to extract text from PDF (basic text extraction, no OCR)
-  const rawText = extractTextFromPdf(bytes);
-  if (!rawText || rawText.trim().length === 0) {
-    return c.json({ error: 'No selectable text found in PDF. OCR is not implemented yet. Please upload a text-based PDF.' }, 422);
+  // ── Step 1: Try external document converter (MarkItDown) ────────────────
+  let rawText = '';
+  let markdownPreview = '';
+  let conversionWarnings: string[] = [];
+  let estimatedTokens = 0;
+  let usedFallback = false;
+  let fallbackReason = '';
+  let charCount = 0;
+  let fileHash = '';
+
+  const convResult = await docConv.convertDocument(bytes, file.name, file.type, c.env, leadType);
+
+  if ('usedFallback' in convResult && convResult.usedFallback) {
+    // ── Fallback: local PDF text extractor ───────────────────────────────
+    usedFallback = true;
+    fallbackReason = convResult.fallbackReason;
+
+    if (isPdf) {
+      rawText = extractTextFromPdf(bytes);
+      if (!rawText || rawText.trim().length === 0) {
+        return c.json({ error: 'No selectable text found in PDF. OCR is not implemented yet. Please upload a text-based PDF.' }, 422);
+      }
+    } else {
+      return c.json({ error: `Document converter not available for ${file.type}. Only PDFs can be processed without the converter service.` }, 503);
+    }
+  } else {
+    // ── Converter succeeded ──────────────────────────────────────────────
+    const result = convResult as docConv.ConverterResult;
+    rawText = result.markdown;
+    markdownPreview = result.markdownPreview;
+    conversionWarnings = result.warnings;
+    estimatedTokens = result.estimatedTokens;
+    charCount = result.charCount;
+    fileHash = result.sha256;
   }
 
-  // Regex extraction for common fields
-  const regexResult = regexExtractFromText(rawText);
+  // Clean markdown for AI (strip base64, cap length, etc.)
+  const maxChars = parseInt(c.env.DOCUMENT_AI_MAX_CHARS ?? '50000', 10);
+  const cleanedText = cleanMarkdownForAi(rawText, maxChars);
 
-  // AI extraction if key is available
+  // ── Step 2: Regex extraction ──────────────────────────────────────────
+  const regexResult = regexExtractFromText(cleanedText);
+
+  // ── Step 3: AI extraction ─────────────────────────────────────────────
   let aiResult: ai.ExtractedLeadDraft | null = null;
   if (c.env.GOOGLE_API_KEY) {
-    aiResult = await ai.extractLeadFromPdfText(rawText, leadType, c.env);
+    aiResult = await ai.extractLeadFromPdfText(cleanedText, leadType, c.env);
   }
 
-  // Merge regex + AI results (regex wins for email/phone/URL as it's more reliable)
-  const draftLead = mergeExtractionResults(regexResult, aiResult, leadType, rawText);
+  // Merge regex + AI results
+  const draftLead = mergeExtractionResults(regexResult, aiResult, leadType, cleanedText);
 
-  // Check for duplicates by email
+  // ── Step 4: Store document import record ──────────────────────────────
+  if (!fileHash) {
+    // Compute hash locally using Web Crypto API (Cloudflare Workers compatible)
+    const hashBuffer = await crypto.subtle.digest('SHA-256', bytes);
+    fileHash = Array.from(new Uint8Array(hashBuffer))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+
+  await db.insert(schema.documentImports).values({
+    fileHash,
+    originalFilename: file.name,
+    mimeType: file.type,
+    source: 'pdf_upload',
+    markdownPreview: markdownPreview || cleanedText.substring(0, 2000),
+    conversionStatus: usedFallback ? 'failed' : 'converted',
+    conversionWarnings: conversionWarnings.length > 0 ? conversionWarnings : null,
+    estimatedTokens: estimatedTokens || estimateTokens(cleanedText.length),
+    charCount: charCount || cleanedText.length,
+    usedFallback,
+    fallbackReason: fallbackReason || null,
+    ownerId: caller.userId,
+  });
+
+  // ── Step 5: Duplicate check ───────────────────────────────────────────
   const duplicates: { id: string; firstName: string; lastName: string; email: string; phone: string | null }[] = [];
   if (draftLead.email) {
     const byEmail = await db.select().from(schema.leads)
@@ -1789,10 +1870,25 @@ app.post('/api/leads/import/pdf', async (c) => {
     for (const d of byPhone) duplicates.push({ id: d.id, firstName: d.firstName, lastName: d.lastName, email: d.email, phone: d.phone });
   }
 
-  return c.json({ draftLead, duplicates: duplicates.slice(0, 5), rawTextPreview: rawText.substring(0, 2000) });
+  return c.json({
+    draftLead,
+    duplicates: duplicates.slice(0, 5),
+    rawTextPreview: cleanedText.substring(0, 2000),
+    markdownPreview: markdownPreview || cleanedText.substring(0, 2000),
+    conversionWarnings,
+    estimatedTokens: estimatedTokens || estimateTokens(cleanedText.length),
+    charCount: charCount || cleanedText.length,
+    usedFallback,
+    fallbackReason: fallbackReason || null,
+  });
 });
 
-app.post('/api/leads/import/pdf/confirm', async (c) => {
+// Keep old route as alias for backward compatibility
+app.post('/api/leads/import/pdf', async (c) => {
+  return c.json({ error: 'Please use /api/leads/import/document instead.' }, 301);
+});
+
+app.post('/api/leads/import/document/confirm', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const role = getRole(c);
   const isSuperadmin = c.get('isSuperadmin');
@@ -1864,6 +1960,21 @@ app.post('/api/leads/import/pdf/confirm', async (c) => {
   }).returning();
   if (!lead) return c.json({ error: 'Internal error' }, 500);
 
+  // Link the most recent pending document import for this user to the new lead
+  // Using raw SQL because Drizzle update builder doesn't support orderBy + limit in one chain
+  await db.execute(sql`
+    UPDATE crm.document_imports
+    SET lead_id = ${lead.id}, conversion_status = 'linked'
+    WHERE id = (
+      SELECT id FROM crm.document_imports
+      WHERE owner_id = ${caller.userId}
+        AND conversion_status = 'converted'
+        AND lead_id IS NULL
+      ORDER BY created_at DESC
+      LIMIT 1
+    )
+  `);
+
   await withAudit(db, schema.auditLog, {
     actorUserId: caller.userId,
     action: 'create',
@@ -1874,6 +1985,11 @@ app.post('/api/leads/import/pdf/confirm', async (c) => {
   });
 
   return c.json({ lead, contactId, companyId }, 201);
+});
+
+// Keep old route as alias for backward compatibility
+app.post('/api/leads/import/pdf/confirm', async (c) => {
+  return c.json({ error: 'Please use /api/leads/import/document/confirm instead.' }, 301);
 });
 
 // ─── PDF TEXT EXTRACTION HELPERS ───────────────────────────────────────────

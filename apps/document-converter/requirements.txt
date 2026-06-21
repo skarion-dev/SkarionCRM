@@ -1,0 +1,7 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+markitdown[pdf,docx,pptx,xlsx]>=0.1.0
+python-magic==0.4.27
+pytest==8.3.4
+httpx==0.28.1

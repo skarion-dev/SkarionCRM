@@ -337,3 +337,42 @@ export const chatMessages = crmSchema.table(
 
 export const embeddingsRelations = relations(embeddings, () => ({}));
 export const chatMessagesRelations = relations(chatMessages, () => ({}));
+
+
+// ─────────────────────────────────────────────────────────
+// document_imports (conversion tracking for PDF/DOCX/etc imports)
+// ─────────────────────────────────────────────────────────
+export const documentImportStatusEnum = crmSchema.enum("document_import_status", [
+  "pending", "converted", "failed", "linked",
+]);
+
+export const documentImports = crmSchema.table(
+  "document_imports",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    fileHash: text("file_hash").notNull(), // sha256 of uploaded file
+    originalFilename: text("original_filename").notNull(),
+    mimeType: text("mime_type").notNull(),
+    source: leadSourceEnum("source").default("other").notNull(), // pdf_upload, etc.
+    markdownPreview: text("markdown_preview"), // first 2000 chars of converted markdown
+    conversionStatus: documentImportStatusEnum("conversion_status").default("pending").notNull(),
+    conversionWarnings: jsonb("conversion_warnings"), // array of warning strings
+    estimatedTokens: integer("estimated_tokens"),
+    charCount: integer("char_count"),
+    usedFallback: boolean("used_fallback").default(false).notNull(), // true if local extractor was used
+    fallbackReason: text("fallback_reason"), // why fallback was used
+    leadId: uuid("lead_id"), // set when linked to a confirmed lead
+    ownerId: uuid("owner_id").notNull(),
+    ...timestamps(),
+  },
+  (table) => [
+    index("idx_document_imports_hash").on(table.fileHash),
+    index("idx_document_imports_lead").on(table.leadId),
+    index("idx_document_imports_owner").on(table.ownerId),
+    index("idx_document_imports_status").on(table.conversionStatus),
+  ]
+);
+
+export const documentImportsRelations = relations(documentImports, ({ one }) => ({
+  lead: one(leads, { fields: [documentImports.leadId], references: [leads.id] }),
+}));

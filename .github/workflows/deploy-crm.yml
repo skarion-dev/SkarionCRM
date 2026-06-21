@@ -96,6 +96,18 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           GOOGLE_EMBEDDING_MODEL: ${{ secrets.GOOGLE_EMBEDDING_MODEL }}
+      - name: Set DOCUMENT_CONVERTER_SECRET secret
+        working-directory: apps/crm
+        run: |
+          if [ -n "$DOCUMENT_CONVERTER_SECRET" ]; then
+            printf '%s' "$DOCUMENT_CONVERTER_SECRET" | wrangler secret put DOCUMENT_CONVERTER_SECRET
+          else
+            echo "DOCUMENT_CONVERTER_SECRET not set, skipping"
+          fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DOCUMENT_CONVERTER_SECRET: ${{ secrets.DOCUMENT_CONVERTER_SECRET }}
 
   # CRM Pages is deployed via Cloudflare's GitHub integration (auto-build on push).
   # Project: skarion-crm | Branch: main | Root: apps/crm/web

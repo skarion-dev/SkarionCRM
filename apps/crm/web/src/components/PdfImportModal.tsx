@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { useImportPdf, useConfirmPdfImport, type PdfImportResult } from '../hooks/use-api.js';
+import { useImportDocument, useConfirmDocumentImport, type DocumentImportResult } from '../hooks/use-api.js';
 import { Upload, FileText, AlertTriangle, X, Check, Loader2, Building2, User, Mail, Phone, Link, MapPin, Tag, Briefcase, AlertCircle } from 'lucide-react';
 import { cn } from '../lib/utils.js';
 
@@ -19,16 +19,16 @@ const LEAD_TYPE_OPTIONS = [
 export default function PdfImportModal({ open, onClose }: PdfImportModalProps) {
   const [leadType, setLeadType] = useState('candidate');
   const [file, setFile] = useState<File | null>(null);
-  const [result, setResult] = useState<PdfImportResult | null>(null);
+  const [result, setResult] = useState<DocumentImportResult | null>(null);
   const [step, setStep] = useState<'upload' | 'review' | 'success'>('upload');
-  const [editedLead, setEditedLead] = useState<PdfImportResult['draftLead'] | null>(null);
+  const [editedLead, setEditedLead] = useState<DocumentImportResult['draftLead'] | null>(null);
   const [createCompany, setCreateCompany] = useState(true);
   const [createContact, setCreateContact] = useState(true);
   const [force, setForce] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const importMutation = useImportPdf();
-  const confirmMutation = useConfirmPdfImport();
+  const importMutation = useImportDocument();
+  const confirmMutation = useConfirmDocumentImport();
 
   if (!open) return null;
 
@@ -120,15 +120,15 @@ export default function PdfImportModal({ open, onClose }: PdfImportModalProps) {
               >
                 <FileText size={32} className="mx-auto mb-2 text-slate-400" />
                 <p className="text-sm font-medium text-slate-700">
-                  {file ? file.name : 'Click to upload a PDF'}
+                  {file ? file.name : 'Click to upload a document'}
                 </p>
                 <p className="text-xs text-slate-500 mt-1">
-                  {file ? `${(file.size / 1024).toFixed(1)} KB` : 'Max 10MB. Text-based PDFs only.'}
+                  {file ? `${(file.size / 1024).toFixed(1)} KB` : 'PDF, DOCX, PPTX, XLSX, CSV, TXT. Max 10MB.'}
                 </p>
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept="application/pdf"
+                  accept=".pdf,.docx,.pptx,.xlsx,.csv,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,text/plain"
                   className="hidden"
                   onChange={handleFileChange}
                 />
@@ -184,6 +184,37 @@ export default function PdfImportModal({ open, onClose }: PdfImportModalProps) {
                 </div>
               </div>
 
+              {/* Conversion metadata */}
+              <div className="flex items-center gap-3 p-3 bg-blue-50 rounded-lg">
+                <div className={cn(
+                  'w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm',
+                  result.usedFallback ? 'bg-amber-500' : 'bg-blue-500'
+                )}>
+                  {result.usedFallback ? '!' : 'MD'}
+                </div>
+                <div>
+                  <div className="text-sm font-medium">
+                    {result.usedFallback ? 'Local PDF extraction (fallback)' : 'Document converted to Markdown'}
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    {result.estimatedTokens ? `~${result.estimatedTokens.toLocaleString()} tokens` : ''}
+                    {result.charCount ? ` · ${result.charCount.toLocaleString()} chars` : ''}
+                    {result.fallbackReason ? ` · ${result.fallbackReason}` : ''}
+                  </div>
+                </div>
+              </div>
+
+              {/* Conversion warnings */}
+              {result.conversionWarnings && result.conversionWarnings.length > 0 && (
+                <div className="flex items-start gap-2 p-3 bg-amber-50 text-amber-800 rounded-lg text-sm">
+                  <AlertTriangle size={16} className="shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-medium">Conversion warnings:</span>{' '}
+                    {result.conversionWarnings.join(', ')}
+                  </div>
+                </div>
+              )}
+
               {/* Missing fields warning */}
               {editedLead.missingFields.length > 0 && (
                 <div className="flex items-start gap-2 p-3 bg-amber-50 text-amber-800 rounded-lg text-sm">
@@ -231,7 +262,7 @@ export default function PdfImportModal({ open, onClose }: PdfImportModalProps) {
                   <label className="block text-xs font-medium text-slate-500 mb-1">Lead Type</label>
                   <select
                     value={editedLead.leadType}
-                    onChange={(e) => setEditedLead({ ...editedLead, leadType: e.target.value as PdfImportResult['draftLead']['leadType'] })}
+                    onChange={(e) => setEditedLead({ ...editedLead, leadType: e.target.value as DocumentImportResult['draftLead']['leadType'] })}
                     className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   >
                     {LEAD_TYPE_OPTIONS.map((o) => (
