@@ -6,6 +6,7 @@ import { cn } from '../lib/utils.js';
 import LeadForm from '../components/forms/LeadForm.js';
 import ImportModal from '../components/ImportModal.js';
 import type { Lead, LeadStatus, OutreachStatus } from '../api.js';
+import { bootstrapAuth } from '../api.js';
 
 const PAGE_SIZES = [25, 50, 100, 250];
 
@@ -39,6 +40,10 @@ export default function LeadsPage() {
   useEffect(() => {
     (async () => {
       try {
+        // Test bootstrapAuth from component context
+        const bootstrapResult = await bootstrapAuth();
+        window.__LEADS_BOOTSTRAP = { success: !!bootstrapResult, user: bootstrapResult ? { id: bootstrapResult.id, email: bootstrapResult.email, role: bootstrapResult.role } : null };
+
         const refresh = await fetch('https://skarion-identity.alsaki1999.workers.dev/auth/refresh', { method: 'POST', credentials: 'include' });
         const refreshData = await refresh.json();
         const token = refreshData.access_token;
