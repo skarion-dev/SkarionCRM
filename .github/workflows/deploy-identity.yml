@@ -125,17 +125,26 @@ jobs:
         working-directory: apps/identity/login
         run: |
           pnpm exec wrangler --version
-          pnpm exec wrangler whoami || true
-          pnpm exec wrangler pages project list || true
+          ls -la dist/
+          pnpm exec wrangler pages deploy dist --project-name=skarion-identity-login --dry-run 2>&1 || true
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      - name: Deploy to Cloudflare Pages
+      - name: Deploy to Cloudflare Pages (with log capture)
         working-directory: apps/identity/login
-        run: pnpm exec wrangler pages deploy dist --project-name=skarion-identity-login
+        run: |
+          pnpm exec wrangler pages deploy dist --project-name=skarion-identity-login 2>&1 | tee deploy.log
+          exit ${PIPESTATUS[0]}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Upload deploy log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-login-log
+          path: apps/identity/login/deploy.log
+
 
   deploy-admin:
     name: Deploy identity admin Pages site
@@ -164,9 +173,17 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      - name: Deploy to Cloudflare Pages
+      - name: Deploy to Cloudflare Pages (with log capture)
         working-directory: apps/identity/admin
-        run: pnpm exec wrangler pages deploy dist --project-name=skarion-identity-admin
+        run: |
+          pnpm exec wrangler pages deploy dist --project-name=skarion-identity-admin 2>&1 | tee deploy.log
+          exit ${PIPESTATUS[0]}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Upload deploy log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-admin-log
+          path: apps/identity/admin/deploy.log
