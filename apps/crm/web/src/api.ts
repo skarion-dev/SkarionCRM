@@ -91,7 +91,9 @@ export async function crmFetch<T>(path: string, init: RequestInit = {}): Promise
   let response = await fetch(`${CRM_API_URL}${path}`, {
     ...init,
     headers: {
-      'Content-Type': 'application/json',
+      ...(init.body instanceof FormData
+        ? {}
+        : { 'Content-Type': 'application/json' }),
       Authorization: `Bearer ${accessToken}`,
       ...init.headers,
     },
@@ -106,7 +108,9 @@ export async function crmFetch<T>(path: string, init: RequestInit = {}): Promise
     response = await fetch(`${CRM_API_URL}${path}`, {
       ...init,
       headers: {
-        'Content-Type': 'application/json',
+        ...(init.body instanceof FormData
+          ? {}
+          : { 'Content-Type': 'application/json' }),
         Authorization: `Bearer ${accessToken}`,
         ...init.headers,
       },
@@ -148,7 +152,7 @@ export interface Contact {
 }
 
 export type LeadStatus = 'new' | 'contacted' | 'qualified' | 'disqualified' | 'converted';
-export type LeadSource = 'website' | 'referral' | 'social_media' | 'cold_call' | 'email_campaign' | 'event' | 'other';
+export type LeadSource = 'website' | 'referral' | 'social_media' | 'cold_call' | 'email_campaign' | 'event' | 'pdf_upload' | 'other';
 
 export interface Lead {
   id: string;

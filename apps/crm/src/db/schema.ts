@@ -33,7 +33,7 @@ export const activityTypeEnum = crmSchema.enum("activity_type", [
 ]);
 
 export const leadSourceEnum = crmSchema.enum("lead_source", [
-  "website", "referral", "social_media", "cold_call", "email_campaign", "event", "other",
+  "website", "referral", "social_media", "cold_call", "email_campaign", "event", "pdf_upload", "other",
 ]);
 
 export const currencyEnum = crmSchema.enum("currency", [

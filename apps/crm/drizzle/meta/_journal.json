@@ -15,6 +15,13 @@
       "when": 1781992183701,
       "tag": "0001_mute_silhouette",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1782012678037,
+      "tag": "0002_yummy_trauma",
+      "breakpoints": true
     }
   ]
 }
