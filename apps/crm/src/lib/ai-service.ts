@@ -12,6 +12,8 @@ interface Env {
   GOOGLE_EMBEDDING_MODEL?: string;
 }
 
+import { and, eq } from 'drizzle-orm';
+
 export const DEFAULT_CHAT_MODEL = 'gemini-2.5-flash-lite';
 export const DEFAULT_FALLBACK_MODEL = 'gemini-2.5-flash';
 export const DEFAULT_EMBEDDING_MODEL = 'embedding-001';
@@ -50,6 +52,35 @@ export function cosineSimilarity(a: number[], b: number[]): number {
     nb += bi * bi;
   }
   return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+// ── Auto-embedding (RAG pipeline) ───────────────────────────────────────────
+
+/** Upsert an embedding for a CRM entity. Deletes any old embedding first. */
+export async function autoEmbed(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  schema: any,
+  resourceType: string,
+  resourceId: string,
+  content: string,
+  ownerId: string,
+  env: Env,
+): Promise<void> {
+  if (!env.GOOGLE_API_KEY) return;
+  const embedding = await getEmbedding(content, env);
+  if (!embedding) return;
+  await db.delete(schema.embeddings)
+    .where(and(eq(schema.embeddings.resourceType, resourceType), eq(schema.embeddings.resourceId, resourceId)));
+  await db.insert(schema.embeddings).values({
+    resourceType,
+    resourceId,
+    content,
+    embedding,
+    ownerId,
+    updatedAt: new Date(),
+  });
 }
 
 // ── Chat / Completion ─────────────────────────────────────────────────────

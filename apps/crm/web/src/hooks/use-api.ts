@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { crmFetch, redirectToLogin, type Company, type Contact, type Lead, type Opportunity, type Task, type Activity } from '../api.js';
 
-function useCrmQuery<T>(key: string[], fetcher: () => Promise<T>) {
+function useCrmQuery<T>(key: string[], fetcher: () => Promise<T>, enabled = true) {
   return useQuery({
     queryKey: key,
     queryFn: async () => {
@@ -14,6 +14,7 @@ function useCrmQuery<T>(key: string[], fetcher: () => Promise<T>) {
         throw err;
       }
     },
+    enabled,
   });
 }
 
@@ -70,20 +71,20 @@ export function useTasks() {
   return useCrmQuery(['tasks'], () => crmFetch<{ tasks: Task[] }>('/api/tasks'));
 }
 
-export function useLead(id: string) {
-  return useCrmQuery(['leads', id], () => crmFetch<{ lead: Lead }>(`/api/leads/${id}`));
+export function useLead(id: string, enabled = true) {
+  return useCrmQuery(['leads', id], () => crmFetch<{ lead: Lead }>(`/api/leads/${id}`), enabled);
 }
 
-export function useCompany(id: string) {
-  return useCrmQuery(['companies', id], () => crmFetch<{ company: Company }>(`/api/companies/${id}`));
+export function useCompany(id: string, enabled = true) {
+  return useCrmQuery(['companies', id], () => crmFetch<{ company: Company }>(`/api/companies/${id}`), enabled);
 }
 
-export function useContact(id: string) {
-  return useCrmQuery(['contacts', id], () => crmFetch<{ contact: Contact }>(`/api/contacts/${id}`));
+export function useContact(id: string, enabled = true) {
+  return useCrmQuery(['contacts', id], () => crmFetch<{ contact: Contact }>(`/api/contacts/${id}`), enabled);
 }
 
-export function useOpportunity(id: string) {
-  return useCrmQuery(['opportunities', id], () => crmFetch<{ opportunity: Opportunity }>(`/api/opportunities/${id}`));
+export function useOpportunity(id: string, enabled = true) {
+  return useCrmQuery(['opportunities', id], () => crmFetch<{ opportunity: Opportunity }>(`/api/opportunities/${id}`), enabled);
 }
 
 export function useDeleteEntity() {
@@ -300,4 +301,69 @@ export function useSendChatMessage() {
     },
   });
 }
+
+// ─── SEARCH ───
+
+export interface SearchResult {
+  id: string;
+  type: 'lead' | 'company' | 'contact' | 'opportunity';
+  title: string;
+  subtitle?: string;
+}
+
+export function useSearch(query: string) {
+  return useCrmQuery(
+    ['search', query],
+    () => crmFetch<{ results: SearchResult[] }>(`/api/search?q=${encodeURIComponent(query)}`),
+    query.length >= 2
+  );
+}
+
+// ─── NOTIFICATIONS ───
+
+export interface NotificationItem {
+  id: string;
+  message: string;
+  read: boolean;
+  createdAt: string;
+}
+
+export function useNotifications() {
+  return useCrmQuery(['notifications'], () =>
+    crmFetch<{ notifications: NotificationItem[] }>('/api/notifications')
+  );
+}
+
+export function useNotificationCount() {
+  return useCrmQuery(['notifications', 'count'], () =>
+    crmFetch<{ count: number }>('/api/notifications/count')
+  );
+}
+
+export function useMarkNotificationRead() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      return crmFetch<{ success: boolean }>(`/api/notifications/${id}/read`, { method: 'POST' });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['notifications'] });
+    },
+  });
+}
+
+// ─── INTEGRATIONS ───
+
+export interface IntegrationStatus {
+  googleApiKey: boolean;
+  resendConfigured: boolean;
+  documentConverter: boolean;
+}
+
+export function useIntegrationStatus() {
+  return useCrmQuery(['integrations', 'status'], () =>
+    crmFetch<IntegrationStatus>('/api/integrations/status')
+  );
+}
+
 

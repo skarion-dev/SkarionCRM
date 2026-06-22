@@ -10,9 +10,9 @@
     "./db/types": "./src/db/types.ts"
   },
   "scripts": {
-    "build": "echo '(stub) no build yet for @skarion/crm'",
-    "dev": "echo '(stub) no dev yet for @skarion/crm'",
-    "test": "echo '(stub) no tests yet for @skarion/crm'",
+    "build": "wrangler build --dry-run 2>/dev/null || tsc --noEmit",
+    "dev": "wrangler dev --port 8787",
+    "test": "echo '(stub) tests coming soon - need vitest + miniflare setup'",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings=0",
     "db:generate": "drizzle-kit generate",
@@ -32,6 +32,7 @@
     "drizzle-orm": "0.45.2",
     "hono": "^4.12.26",
     "kysely": "0.29.2",
+    "papaparse": "^5.5.2",
     "zod": "^3.25.5"
   }
 }

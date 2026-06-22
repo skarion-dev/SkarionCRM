@@ -344,7 +344,31 @@ export const chatMessages = crmSchema.table(
   ]
 );
 
-export const embeddingsRelations = relations(embeddings, () => ({}));
+// ─────────────────────────────────────────────────────────
+// notifications
+// ─────────────────────────────────────────────────────────
+export const notifications = crmSchema.table(
+  "notifications",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id").notNull(),
+    type: text("type").notNull(), // 'lead_created', 'opportunity_stage_changed', 'task_assigned', etc.
+    title: text("title").notNull(),
+    message: text("message").notNull(),
+    resourceType: text("resource_type"), // 'lead', 'company', 'opportunity', 'task'
+    resourceId: uuid("resource_id"),
+    readAt: timestamp("read_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_notifications_user").on(table.userId),
+    index("idx_notifications_resource").on(table.resourceType, table.resourceId),
+    index("idx_notifications_read").on(table.readAt),
+    index("idx_notifications_created").on(table.createdAt),
+  ]
+);
+
+export const notificationsRelations = relations(notifications, () => ({}));
 export const chatMessagesRelations = relations(chatMessages, () => ({}));
 
 
@@ -385,3 +409,5 @@ export const documentImports = crmSchema.table(
 export const documentImportsRelations = relations(documentImports, ({ one }) => ({
   lead: one(leads, { fields: [documentImports.leadId], references: [leads.id] }),
 }));
+
+export const embeddingsRelations = relations(embeddings, () => ({}));

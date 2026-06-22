@@ -56,9 +56,56 @@ interface Env {
   GIT_COMMIT_SHA?: string;
 }
 
-/** Basic email stub — logs what would be sent. Full Resend wiring in a future ticket. */
-function logEmailStub(to: string, subject: string, _html: string) {
-  console.log(`[EMAIL_STUB] to=${to} subject="${subject}" — not sent (Resend not configured)`);
+/** Send email via Resend API (if configured, otherwise log to console). */
+async function sendEmail(env: Env, to: string, subject: string, html: string) {
+  if (!env.RESEND_API_KEY) {
+    console.log(`[EMAIL_STUB] to=${to} subject="${subject}" — not sent (Resend not configured)`);
+    return;
+  }
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${env.RESEND_API_KEY}`,
+      },
+      body: JSON.stringify({ from: 'Skarion CRM <noreply@skarion.com>', to, subject, html }),
+    });
+    if (!res.ok) {
+      console.error('Resend email failed:', await res.text());
+    } else {
+      console.log(`[EMAIL_SENT] to=${to} subject="${subject}"`);
+    }
+  } catch (err) {
+    console.error('Email send error:', err);
+  }
+}
+
+/** Create a notification for a user. */
+async function createNotification(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  db: any,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  schema: any,
+  userId: string,
+  type: string,
+  title: string,
+  message: string,
+  resourceType?: string,
+  resourceId?: string,
+) {
+  try {
+    await db.insert(schema.notifications).values({
+      userId,
+      type,
+      title,
+      message,
+      resourceType: resourceType ?? null,
+      resourceId: resourceId ?? null,
+    });
+  } catch (err) {
+    console.error('Notification creation failed:', err);
+  }
 }
 
 /** Trigger workflow event evaluation (stub if WORKFLOW_RUNNER_URL not set). */
@@ -193,6 +240,11 @@ app.post("/api/companies", async (c) => {
     app: "crm",
   });
 
+  // Auto-embed for RAG chatbot
+  c.executionCtx.waitUntil(
+    ai.autoEmbed(db, schema, 'company', result.id, `${result.name} ${result.domain ?? ''} ${result.industry ?? ''} ${result.address ?? ''}`, caller.userId, c.env).catch(() => {})
+  );
+
   return c.json({ company: result }, 201);
 });
 
@@ -249,6 +301,11 @@ app.put("/api/companies/:id", async (c) => {
     after: result,
     app: "crm",
   });
+
+  // Auto-embed for RAG chatbot
+  c.executionCtx.waitUntil(
+    ai.autoEmbed(db, schema, 'company', result.id, `${result.name} ${result.domain ?? ''} ${result.industry ?? ''} ${result.address ?? ''}`, caller.userId, c.env).catch(() => {})
+  );
 
   return c.json({ company: result });
 });
@@ -344,6 +401,11 @@ app.post("/api/contacts", async (c) => {
     app: "crm",
   });
 
+  // Auto-embed for RAG chatbot
+  c.executionCtx.waitUntil(
+    ai.autoEmbed(db, schema, 'contact', result.id, `${result.firstName} ${result.lastName} ${result.email} ${result.title ?? ''}`, caller.userId, c.env).catch(() => {})
+  );
+
   return c.json({ contact: result }, 201);
 });
 
@@ -401,6 +463,11 @@ app.put("/api/contacts/:id", async (c) => {
     after: result,
     app: "crm",
   });
+
+  // Auto-embed for RAG chatbot
+  c.executionCtx.waitUntil(
+    ai.autoEmbed(db, schema, 'contact', result.id, `${result.firstName} ${result.lastName} ${result.email} ${result.title ?? ''}`, caller.userId, c.env).catch(() => {})
+  );
 
   return c.json({ contact: result });
 });
@@ -586,7 +653,17 @@ app.post("/api/leads", async (c) => {
   );
 
   // Basic email stub — will be wired to Resend in a future ticket
-  logEmailStub(result.email, 'New lead in Skarion CRM', 'Welcome to Skarion CRM');
+  sendEmail(c.env, result.email, 'New lead in Skarion CRM', 'Welcome to Skarion CRM');
+
+  // Auto-embed for RAG chatbot
+  c.executionCtx.waitUntil(
+    ai.autoEmbed(db, schema, 'lead', result.id, `${result.firstName} ${result.lastName} ${result.email} ${result.companyName ?? ''} ${result.notes ?? ''}`, caller.userId, c.env).catch(() => {})
+  );
+
+  // Notification
+  c.executionCtx.waitUntil(
+    createNotification(db, schema, caller.userId, 'lead_created', 'New lead created', `${result.firstName} ${result.lastName} was added to the CRM.`, 'lead', result.id).catch(() => {})
+  );
 
   return c.json({ lead: result }, 201);
 });
@@ -657,6 +734,11 @@ app.put("/api/leads/:id", async (c) => {
     after: result,
     app: "crm",
   });
+
+  // Auto-embed for RAG chatbot
+  c.executionCtx.waitUntil(
+    ai.autoEmbed(db, schema, 'lead', result.id, `${result.firstName} ${result.lastName} ${result.email} ${result.companyName ?? ''} ${result.notes ?? ''}`, caller.userId, c.env).catch(() => {})
+  );
 
   return c.json({ lead: result });
 });
@@ -1107,9 +1189,10 @@ app.put("/api/opportunities/:id", async (c) => {
     app: "crm",
   });
 
-  // Basic email stub on stage change — will be wired to Resend in a future ticket
+  // Email notification on stage change
   if (body.stage !== undefined && body.stage !== existing.stage) {
-    logEmailStub(
+    sendEmail(
+      c.env,
       caller.userId,
       `Opportunity stage changed: ${result.name} → ${result.stage}`,
       `Opportunity ${result.name} moved from ${existing.stage} to ${result.stage}`
@@ -1387,9 +1470,10 @@ app.post("/api/tasks", async (c) => {
     app: "crm",
   });
 
-  // Basic email stub on task assignment — will be wired to Resend in a future ticket
+  // Email notification on task assignment
   if (result.assigneeId !== caller.userId) {
-    logEmailStub(
+    sendEmail(
+      c.env,
       result.assigneeId,
       `New task assigned: ${result.title}`,
       `You have been assigned a new task: ${result.title}`
@@ -2540,5 +2624,124 @@ function mergeExtractionResults(
     missingFields: ai?.missingFields ?? [],
   };
 }
+
+// ─── GLOBAL SEARCH ───────────────────────────────────────────────────
+
+app.get("/api/search", async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const role = getRole(c);
+  if (!role) return c.json({ error: "Forbidden." }, 403);
+
+  const q = c.req.query("q");
+  if (!q || q.length < 2) return c.json({ results: [] });
+  const query = `%${q}%`;
+
+  const [leads, companies, contacts, opportunities] = await Promise.all([
+    db.select().from(schema.leads)
+      .where(and(
+        isNull(schema.leads.deletedAt),
+        or(like(sql`LOWER(${schema.leads.firstName})`, query), like(sql`LOWER(${schema.leads.lastName})`, query), like(sql`LOWER(${schema.leads.email})`, query), like(sql`LOWER(${schema.leads.companyName})`, query))
+      )).limit(10),
+    db.select().from(schema.companies)
+      .where(and(
+        isNull(schema.companies.deletedAt),
+        or(like(sql`LOWER(${schema.companies.name})`, query), like(sql`LOWER(${schema.companies.domain})`, query))
+      )).limit(10),
+    db.select().from(schema.contacts)
+      .where(and(
+        isNull(schema.contacts.deletedAt),
+        or(like(sql`LOWER(${schema.contacts.firstName})`, query), like(sql`LOWER(${schema.contacts.lastName})`, query), like(sql`LOWER(${schema.contacts.email})`, query))
+      )).limit(10),
+    db.select().from(schema.opportunities)
+      .where(and(
+        isNull(schema.opportunities.deletedAt),
+        or(like(sql`LOWER(${schema.opportunities.name})`, query), like(sql`LOWER(${schema.opportunities.notes})`, query))
+      )).limit(10),
+  ]);
+
+  const results = [
+    ...leads.map((l) => ({ type: 'lead' as const, id: l.id, title: `${l.firstName} ${l.lastName}`, subtitle: l.companyName ?? l.email })),
+    ...companies.map((c) => ({ type: 'company' as const, id: c.id, title: c.name, subtitle: c.domain ?? '' })),
+    ...contacts.map((c) => ({ type: 'contact' as const, id: c.id, title: `${c.firstName} ${c.lastName}`, subtitle: c.email })),
+    ...opportunities.map((o) => ({ type: 'opportunity' as const, id: o.id, title: o.name, subtitle: `$${o.amount ?? '0'}` })),
+  ].slice(0, 20);
+
+  return c.json({ query: q, results });
+});
+
+// ─── NOTIFICATIONS ───────────────────────────────────────────────────
+
+app.get("/api/notifications", async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const userId = c.get("userId");
+  const rows = await db.select().from(schema.notifications)
+    .where(eq(schema.notifications.userId, userId))
+    .orderBy(desc(schema.notifications.createdAt))
+    .limit(50);
+  return c.json({ notifications: rows });
+});
+
+app.get("/api/notifications/count", async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const userId = c.get("userId");
+  const rows = await db.select({ count: sql<number>`COUNT(*)` }).from(schema.notifications)
+    .where(and(eq(schema.notifications.userId, userId), isNull(schema.notifications.readAt)));
+  return c.json({ count: rows[0]?.count ?? 0 });
+});
+
+app.post("/api/notifications/:id/read", async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const userId = c.get("userId");
+  const id = c.req.param("id");
+  await db.update(schema.notifications).set({ readAt: new Date() })
+    .where(and(eq(schema.notifications.id, id), eq(schema.notifications.userId, userId)));
+  return c.json({ success: true });
+});
+
+// ─── INTEGRATIONS STATUS ───────────────────────────────────────────
+
+app.get("/api/integrations/status", async (c) => {
+  const env = c.env as Env;
+  return c.json({
+    googleAi: !!env.GOOGLE_API_KEY,
+    documentConverter: !!env.DOCUMENT_CONVERTER_URL,
+    resendEmail: !!env.RESEND_API_KEY,
+  });
+});
+
+// ─── OCR FOR SCANNED PDFS ───────────────────────────────────────────
+
+app.post("/api/ocr", async (c) => {
+  const env = c.env as Env;
+  const body = await c.req.parseBody();
+  const file = body['file'] as File;
+  if (!file) return c.json({ error: 'No file uploaded' }, 400);
+  if (!env.GOOGLE_API_KEY) return c.json({ error: 'AI not configured' }, 503);
+
+  const bytes = await file.arrayBuffer();
+  const base64 = btoa(String.fromCharCode(...new Uint8Array(bytes)));
+
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${env.GOOGLE_API_KEY}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{
+          parts: [
+            { text: 'Extract all text from this image or PDF. Return only the raw text, no formatting or commentary.' },
+            { inlineData: { mimeType: file.type, data: base64 } }
+          ]
+        }]
+      })
+    });
+    if (!res.ok) return c.json({ error: 'OCR failed', details: await res.text() }, 500);
+    const data = await res.json() as { candidates?: [{ content?: { parts?: [{ text?: string }] } }] };
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+    return c.json({ text, source: 'google_document_ai' });
+  } catch (err) {
+    console.error('OCR error:', err);
+    return c.json({ error: 'OCR processing failed' }, 500);
+  }
+});
 
 export default app;

@@ -3,12 +3,19 @@ import { useNavigate } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import { cn } from '../../lib/utils.js';
 import { bootstrapAuth } from '../../api.js';
-import { useChatHistory, useSendChatMessage } from '../../hooks/use-api.js';
+import {
+  useSearch,
+  useNotifications,
+  useNotificationCount,
+  useMarkNotificationRead,
+  type SearchResult,
+} from '../../hooks/use-api.js';
+import AiWidget from '../../components/AiWidget.js';
 import ToastContainer from '../ToastContainer.js';
 import {
   LayoutDashboard, Users, Building2, Contact, Target, CheckSquare, Settings, LogOut,
   BarChart, ChevronLeft, ChevronRight, Bell, Search, Menu, X, MessageSquare,
-  Sparkles, Bot, User, Send, Loader2, Check, Copy,
+  Check, Info,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
@@ -23,6 +30,20 @@ const NAV_ITEMS = [
   { icon: Settings, label: 'Settings', path: '/settings', roles: ['manager'] },
 ];
 
+const SEARCH_ICONS: Record<SearchResult['type'], React.ComponentType<{ size: number; className?: string }>> = {
+  lead: Target,
+  company: Building2,
+  contact: Contact,
+  opportunity: Users,
+};
+
+const SEARCH_PATHS: Record<SearchResult['type'], string> = {
+  lead: '/leads',
+  company: '/companies',
+  contact: '/contacts',
+  opportunity: '/opportunities',
+};
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const user = useAuthStore((s: AuthStore) => s.user);
   const isSuperadmin = user?.isSuperadmin ?? false;
@@ -30,6 +51,27 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const navigate = useNavigate();
+
+  // Search state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const searchRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Notification state
+  const [notifOpen, setNotifOpen] = useState(false);
+  const notifRef = useRef<HTMLDivElement>(null);
+
+  const { data: searchData } = useSearch(debouncedQuery);
+  const { data: notificationsData } = useNotifications();
+  const { data: countData } = useNotificationCount();
+  const markRead = useMarkNotificationRead();
+
+  const searchResults = searchData?.results ?? [];
+  const notifications = notificationsData?.notifications ?? [];
+  const unreadCount = countData?.count ?? 0;
 
   useEffect(() => {
     if (!user) {
@@ -51,6 +93,78 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
   }, [user]);
 
+  // Debounce search query
+  useEffect(() => {
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current);
+    }
+    searchDebounceRef.current = setTimeout(() => {
+      setDebouncedQuery(searchQuery);
+    }, 300);
+    return () => {
+      if (searchDebounceRef.current) {
+        clearTimeout(searchDebounceRef.current);
+      }
+    };
+  }, [searchQuery]);
+
+  // Close on click outside
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
+        setSearchOpen(false);
+      }
+      if (notifRef.current && !notifRef.current.contains(e.target as Node)) {
+        setNotifOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Escape key handler
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setSearchOpen(false);
+        setNotifOpen(false);
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  const handleSearchInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setSearchQuery(e.target.value);
+    setSearchOpen(true);
+  };
+
+  const handleSearchFocus = () => {
+    if (searchQuery.length > 0) {
+      setSearchOpen(true);
+    }
+  };
+
+  const handleSearchResultClick = (result: SearchResult) => {
+    navigate(`${SEARCH_PATHS[result.type]}/${result.id}`);
+    setSearchOpen(false);
+    setSearchQuery('');
+    setDebouncedQuery('');
+  };
+
+  const handleNotifClick = (id: string, read: boolean) => {
+    if (!read) {
+      markRead.mutate(id);
+    }
+  };
+
+  const groupedResults = searchResults.reduce<Record<string, SearchResult[]>>((acc, r) => {
+    const group = r.type + 's';
+    if (!acc[group]) acc[group] = [];
+    acc[group].push(r);
+    return acc;
+  }, {});
+
   const role = user?.role ?? '';
   const visibleNav = isSuperadmin
     ? NAV_ITEMS
@@ -61,6 +175,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {/* Mobile overlay */}
       {mobileOpen && (
         <div className="fixed inset-0 z-40 bg-black/50 lg:hidden" onClick={() => setMobileOpen(false)} />
+      )}
+      {/* Search overlay */}
+      {searchOpen && (
+        <div className="fixed inset-0 z-30 bg-black/30" onClick={() => setSearchOpen(false)} />
       )}
 
       {/* Sidebar */}
@@ -123,7 +241,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       {/* Main area */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {/* Top bar */}
-        <header className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-4 shrink-0">
+        <header className="h-14 bg-white border-b border-slate-200 flex items-center justify-between px-4 shrink-0 relative z-40">
           <div className="flex items-center gap-3">
             <button
               onClick={() => setMobileOpen(true)}
@@ -131,20 +249,141 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             >
               <Menu size={20} />
             </button>
-            <div className="hidden md:flex items-center bg-slate-100 rounded-md px-3 py-1.5 w-80">
-              <Search size={16} className="text-slate-400 mr-2" />
-              <input
-                type="text"
-                placeholder="Search leads, contacts, companies..."
-                className="bg-transparent text-sm outline-none w-full placeholder:text-slate-400"
-              />
+
+            {/* Search bar */}
+            <div className="relative" ref={searchRef}>
+              <div className="hidden md:flex items-center bg-slate-100 rounded-md px-3 py-1.5 w-80">
+                <Search size={16} className="text-slate-400 mr-2 shrink-0" />
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  placeholder="Search leads, contacts, companies..."
+                  className="bg-transparent text-sm outline-none w-full placeholder:text-slate-400"
+                  value={searchQuery}
+                  onChange={handleSearchInputChange}
+                  onFocus={handleSearchFocus}
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => {
+                      setSearchQuery('');
+                      setDebouncedQuery('');
+                      setSearchOpen(false);
+                    }}
+                    className="ml-1 p-0.5 rounded hover:bg-slate-200 text-slate-400 shrink-0"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+
+              {/* Search dropdown */}
+              {searchOpen && (
+                <div className="absolute top-full left-0 mt-2 w-80 md:w-96 bg-white rounded-lg shadow-xl border border-slate-200 max-h-96 overflow-y-auto">
+                  {searchQuery.length < 2 && (
+                    <div className="p-4 text-sm text-slate-400 text-center">
+                      Type at least 2 characters to search
+                    </div>
+                  )}
+                  {searchQuery.length >= 2 && searchResults.length === 0 && (
+                    <div className="p-4 text-sm text-slate-400 text-center">
+                      No results found
+                    </div>
+                  )}
+                  {Object.entries(groupedResults).map(([group, items]) => (
+                    <div key={group}>
+                      <div className="px-3 py-1.5 text-xs font-semibold text-slate-500 uppercase bg-slate-50 border-b border-slate-100">
+                        {group}
+                      </div>
+                      {items.map((result) => {
+                        const Icon = SEARCH_ICONS[result.type];
+                        return (
+                          <button
+                            key={result.id}
+                            onClick={() => handleSearchResultClick(result)}
+                            className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-slate-50 text-left transition-colors"
+                          >
+                            <Icon size={16} className="text-slate-400 shrink-0" />
+                            <div className="min-w-0">
+                              <div className="text-sm font-medium text-slate-800 truncate">{result.title}</div>
+                              {result.subtitle && (
+                                <div className="text-xs text-slate-500 truncate">{result.subtitle}</div>
+                              )}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
+
           <div className="flex items-center gap-3">
-            <button className="relative p-2 rounded hover:bg-slate-100">
-              <Bell size={20} />
-              <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full" />
-            </button>
+            {/* Notifications */}
+            <div className="relative" ref={notifRef}>
+              <button
+                onClick={() => setNotifOpen((prev) => !prev)}
+                className="relative p-2 rounded hover:bg-slate-100"
+              >
+                <Bell size={20} />
+                {unreadCount > 0 && (
+                  <span className="absolute top-1 right-1 w-4 h-4 bg-red-500 rounded-full text-white text-[10px] font-medium flex items-center justify-center">
+                    {unreadCount > 9 ? '9+' : unreadCount}
+                  </span>
+                )}
+              </button>
+
+              {/* Notification dropdown */}
+              {notifOpen && (
+                <div className="absolute top-full right-0 mt-2 w-80 max-w-sm bg-white rounded-lg shadow-xl border border-slate-200 max-h-80 overflow-y-auto z-50">
+                  <div className="px-3 py-2 border-b border-slate-100 flex items-center justify-between">
+                    <span className="text-sm font-semibold">Notifications</span>
+                    {unreadCount > 0 && (
+                      <span className="text-xs text-blue-600 font-medium">{unreadCount} unread</span>
+                    )}
+                  </div>
+                  {notifications.length === 0 && (
+                    <div className="p-4 text-sm text-slate-400 text-center">
+                      No notifications
+                    </div>
+                  )}
+                  <div className="divide-y divide-slate-50">
+                    {notifications.map((notif) => (
+                      <button
+                        key={notif.id}
+                        onClick={() => handleNotifClick(notif.id, notif.read)}
+                        className={cn(
+                          'w-full flex items-start gap-3 px-3 py-3 text-left transition-colors hover:bg-slate-50',
+                          !notif.read && 'bg-blue-50/50'
+                        )}
+                      >
+                        <div className="mt-0.5 shrink-0">
+                          {notif.read ? (
+                            <Check size={14} className="text-slate-400" />
+                          ) : (
+                            <Info size={14} className="text-blue-500" />
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className={cn('text-sm', !notif.read ? 'font-medium text-slate-800' : 'text-slate-600')}>
+                            {notif.message}
+                          </p>
+                          <p className="text-xs text-slate-400 mt-0.5">
+                            {new Date(notif.createdAt).toLocaleDateString()} {new Date(notif.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </p>
+                        </div>
+                        {!notif.read && (
+                          <div className="w-2 h-2 bg-blue-500 rounded-full shrink-0 mt-1.5" />
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div className="flex items-center gap-2">
               <div className="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center text-sm font-medium">
                 {user?.name?.charAt(0) ?? user?.email?.charAt(0) ?? '?'}
@@ -167,176 +406,3 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     </div>
   );
 }
-
-function AiWidget() {
-  const [open, setOpen] = useState(false);
-  const [input, setInput] = useState('');
-  const { data: history, isLoading: historyLoading } = useChatHistory();
-  const sendMutation = useSendChatMessage();
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const [copied, setCopied] = useState(false);
-
-  const messages = history?.messages ?? [];
-
-  useEffect(() => {
-    if (open) scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length, open]);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim() || sendMutation.isPending) return;
-    sendMutation.mutate(input.trim(), { onSuccess: () => setInput('') });
-  };
-
-  const quickPrompts = [
-    { label: 'Summarize this lead', action: () => setInput('Summarize my top leads') },
-    { label: 'Draft follow-up email', action: () => setInput('Draft a follow-up email template') },
-    { label: 'What should I do next?', action: () => setInput('What should I focus on today?') },
-    { label: 'Find missing info', action: () => setInput('Which leads are missing contact info?') },
-    { label: 'Score this lead', action: () => setInput('How do I score leads effectively?') },
-  ];
-
-  const handleCopy = (text: string) => {
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  return (
-    <>
-      {!open && (
-        <button
-          onClick={() => setOpen(true)}
-          className="fixed bottom-6 right-6 z-50 w-14 h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-lg flex items-center justify-center transition-transform hover:scale-105"
-          aria-label="Open AI assistant"
-        >
-          <Sparkles size={24} />
-        </button>
-      )}
-
-      {open && (
-        <div className="fixed bottom-6 right-6 z-50 w-[400px] max-w-[calc(100vw-3rem)] h-[550px] max-h-[calc(100vh-6rem)] bg-white rounded-xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden">
-          {/* Header */}
-          <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 bg-slate-50">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white">
-                <Bot size={18} />
-              </div>
-              <div>
-                <div className="font-medium text-sm">AI Assistant</div>
-                <div className="text-xs text-slate-500">Powered by Gemini</div>
-              </div>
-            </div>
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => setOpen(false)}
-                className="p-1.5 rounded hover:bg-slate-200 text-slate-500"
-              >
-                <X size={18} />
-              </button>
-            </div>
-          </div>
-
-          {/* Quick prompts */}
-          <div className="px-3 py-2 border-b border-slate-100 flex gap-2 overflow-x-auto scrollbar-hide">
-            {quickPrompts.map((p, i) => (
-              <button
-                key={i}
-                onClick={p.action}
-                className="shrink-0 px-2.5 py-1 text-xs bg-blue-50 text-blue-700 rounded-full hover:bg-blue-100 transition-colors"
-              >
-                {p.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Messages */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
-            {historyLoading && (
-              <div className="flex items-center justify-center text-slate-400">
-                <Loader2 size={16} className="animate-spin mr-2" /> Loading...
-              </div>
-            )}
-
-            {messages.length === 0 && !historyLoading && (
-              <div className="text-center text-slate-400 py-8">
-                <Bot size={32} className="mx-auto mb-2 text-blue-400" />
-                <p className="text-sm font-medium">How can I help?</p>
-                <p className="text-xs mt-1">Ask about leads, contacts, companies, or opportunities.</p>
-              </div>
-            )}
-
-            {messages.map((msg) => (
-              <div
-                key={msg.id}
-                className={`flex gap-2 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}
-              >
-                <div
-                  className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${
-                    msg.role === 'user'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-slate-100 text-slate-600'
-                  }`}
-                >
-                  {msg.role === 'user' ? <User size={14} /> : <Bot size={14} />}
-                </div>
-                <div className="max-w-[85%]">
-                  <div
-                    className={`rounded-lg px-3 py-2 text-sm relative group ${
-                      msg.role === 'user'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-slate-100 text-slate-800'
-                    }`}
-                  >
-                    <div className="whitespace-pre-wrap">{msg.content}</div>
-                    {msg.role === 'assistant' && (
-                      <button
-                        onClick={() => handleCopy(msg.content)}
-                        className="absolute -top-2 -right-2 p-1 bg-white rounded-full shadow border border-slate-200 text-slate-500 opacity-0 group-hover:opacity-100 transition-opacity"
-                      >
-                        {copied ? <Check size={12} /> : <Copy size={12} />}
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            ))}
-
-            {sendMutation.isPending && (
-              <div className="flex gap-2">
-                <div className="w-7 h-7 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center shrink-0">
-                  <Bot size={14} />
-                </div>
-                <div className="bg-slate-100 rounded-lg px-3 py-2 text-sm text-slate-500">
-                  <Loader2 size={14} className="animate-spin" />
-                </div>
-              </div>
-            )}
-
-            <div ref={scrollRef} />
-          </div>
-
-          {/* Input */}
-          <form onSubmit={handleSubmit} className="p-3 border-t border-slate-200 flex gap-2">
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask about your CRM..."
-              className="flex-1 rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              disabled={sendMutation.isPending}
-            />
-            <button
-              type="submit"
-              disabled={sendMutation.isPending || !input.trim()}
-              className="px-3 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
-            >
-              <Send size={14} />
-            </button>
-          </form>
-        </div>
-      )}
-    </>
-  );
-}
-
