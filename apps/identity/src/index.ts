@@ -13,6 +13,7 @@ import {
   renderPasswordResetEmail,
   renderMfaEnrolledEmail,
   renderWelcomeAfterInviteEmail,
+  renderLoginCodeEmail,
 } from '@skarion/ui/emails';
 import { requireAuth, sendEmail, type AuthedVariables } from '@skarion/auth-client';
 import * as schema from './db/schema.js';
@@ -160,24 +161,81 @@ function requireParam(c: AppContext, name: string): string {
 }
 
 // ─────────────────────────────────────────────────────────
-// /auth/*
+// /auth/* & rate limiting
 // ─────────────────────────────────────────────────────────
 
+const rateLimits = new Map<string, { count: number; resetAt: number }>();
+function checkRateLimit(
+  key: string,
+  maxRequests: number,
+  windowMs: number
+): { allowed: boolean; retryAfter?: number } {
+  const now = Date.now();
+  const entry = rateLimits.get(key);
+  if (!entry || now > entry.resetAt) {
+    rateLimits.set(key, { count: 1, resetAt: now + windowMs });
+    return { allowed: true };
+  }
+  if (entry.count >= maxRequests) {
+    return { allowed: false, retryAfter: Math.ceil((entry.resetAt - now) / 1000) };
+  }
+  entry.count++;
+  return { allowed: true };
+}
+
 app.post('/auth/login', async (c) => {
-  const body = await c.req.json<{ email: string; password: string; mfa_code?: string }>();
+  const body = await c.req.json<{ email: string; password: string }>();
   if (!body.email || !body.password) {
     return c.json({ error: 'email and password are required.' }, 400);
   }
+  const ip = c.req.header('CF-Connecting-IP') ?? c.req.header('X-Forwarded-For') ?? 'unknown';
+  const rl = checkRateLimit(`login:${body.email.toLowerCase()}:${ip}`, 5, 15 * 60 * 1000);
+  if (!rl.allowed) {
+    c.header('Retry-After', String(rl.retryAfter));
+    return c.json(
+      { error: `Too many login attempts. Try again in ${rl.retryAfter} seconds.` },
+      429
+    );
+  }
   const db = getDb(c.env, schema);
   try {
-    const result = await authService.login(db, {
+    const result = await authService.loginStep1(db, {
       email: body.email,
       password: body.password,
-      mfaCode: body.mfa_code,
+      ip: c.req.header('CF-Connecting-IP') ?? null,
+      userAgent: c.req.header('User-Agent') ?? null,
+    });
+    const email = await renderLoginCodeEmail({ code: result.code, expiresInMinutes: 10 });
+    try {
+      await sendEmail(c.env.RESEND_API_KEY, { to: body.email, ...email });
+    } catch (err) {
+      console.error('Failed to send login code email:', err);
+      return c.json({ error: 'Could not send sign-in code. Please try again shortly.' }, 502);
+    }
+    return c.json({ pending_token: result.pendingToken, expires_at: result.expiresAt });
+  } catch (err) {
+    return errorResponse(c, err);
+  }
+});
+
+app.post('/auth/login/verify', async (c) => {
+  const body = await c.req.json<{ pending_token: string; code: string }>();
+  if (!body.pending_token || !body.code) {
+    return c.json({ error: 'pending_token and code are required.' }, 400);
+  }
+  const rl = checkRateLimit(`verify:${body.pending_token}`, 10, 15 * 60 * 1000);
+  if (!rl.allowed) {
+    c.header('Retry-After', String(rl.retryAfter));
+    return c.json({ error: `Too many code attempts. Try again in ${rl.retryAfter} seconds.` }, 429);
+  }
+  const db = getDb(c.env, schema);
+  try {
+    const result = await authService.loginStep2(db, {
+      pendingToken: body.pending_token,
+      code: body.code,
       ip: c.req.header('CF-Connecting-IP') ?? null,
       userAgent: c.req.header('User-Agent') ?? null,
       jwtSecret: c.env.JWT_SECRET,
-      mfaEncryptionKey: c.env.MFA_ENCRYPTION_KEY,
     });
     setRefreshCookie(c, result.refreshToken, result.refreshTokenExpiresAt);
     return c.json({ access_token: result.accessToken, user: result.user });
@@ -370,7 +428,7 @@ app.post('/invitations/accept', async (c) => {
       displayName: body.display_name,
     });
     const me = await authService.getMe(db, userId);
-    const loginResult = await authService.login(db, {
+    const loginResult = await authService.loginInternal(db, {
       email: me.email,
       password: body.password,
       jwtSecret: c.env.JWT_SECRET,
