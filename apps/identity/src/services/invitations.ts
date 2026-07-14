@@ -11,10 +11,31 @@ import { AuthError } from './auth.js';
 
 const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
+function parseDomains(raw?: string): string[] {
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((d) => d.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function isAllowedInviteDomain(email: string, allowedDomains: string[]): boolean {
+  if (allowedDomains.length === 0) return true; // no allowlist = open
+  const domain = email.split('@')[1]?.toLowerCase();
+  return !!domain && allowedDomains.includes(domain);
+}
+
 export async function createInvitation(
   db: IdentityDb,
-  params: { email: string; app: AppName; role: string; invitedBy: string }
+  params: { email: string; app: AppName; role: string; invitedBy: string; allowedDomains?: string }
 ): Promise<{ token: string; invitationId: string }> {
+  const domains = parseDomains(params.allowedDomains);
+  if (!isAllowedInviteDomain(params.email, domains)) {
+    throw new AuthError(
+      `Invitations are only allowed for these domains: ${domains.join(', ') || 'any'}`,
+      400
+    );
+  }
   const existingActive = await db.query.invitations.findFirst({
     where: and(
       eq(schema.invitations.email, params.email),

@@ -305,6 +305,15 @@ app.get('/me', requireAuth, async (c) => {
 // /invitations
 // ─────────────────────────────────────────────────────────
 
+app.get('/invitations/allowed-domains', (c) => {
+  const raw = c.env.ALLOWED_INVITE_DOMAINS ?? '';
+  const domains = raw
+    .split(',')
+    .map((d) => d.trim().toLowerCase())
+    .filter(Boolean);
+  return c.json({ domains });
+});
+
 app.get('/invitations', requireAuth, async (c) => {
   if (!isPlatformAdmin(c)) return c.json({ error: 'Forbidden.' }, 403);
   const db = getDb(c.env, schema);
@@ -329,6 +338,7 @@ app.post('/invitations', requireAuth, async (c) => {
       app: body.app,
       role: body.role,
       invitedBy: c.get('userId'),
+      allowedDomains: c.env.ALLOWED_INVITE_DOMAINS,
     });
     const inviter = await authService.getMe(db, c.get('userId'));
     const email = await renderInvitationEmail({

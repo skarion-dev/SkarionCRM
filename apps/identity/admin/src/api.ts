@@ -189,3 +189,11 @@ export function revokeInvitation(id: string) {
 export function resendInvitation(id: string) {
   return apiFetch<{ ok: true }>(`/invitations/${id}/resend`, { method: 'POST' });
 }
+
+/** Fetch the list of email domains allowed for invitations (no auth needed — public-safe). */
+export async function fetchAllowedDomains(): Promise<string[]> {
+  const res = await fetch(`${API_URL}/invitations/allowed-domains`);
+  if (!res.ok) return [];
+  const data = (await res.json()) as { domains: string[] };
+  return data.domains ?? [];
+}

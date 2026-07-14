@@ -18,6 +18,9 @@ head_sampling_rate = 1
 # `wrangler secret put <NAME>` or the deploy workflow - never committed here.
 [vars]
 APP_URL = "https://skarion-identity.alsaki1999.workers.dev"
+# Comma-separated list of email domains allowed for invitations (e.g. "skarion.com,skarionengineering.com").
+# When empty/not set, all email domains are accepted.
+ALLOWED_INVITE_DOMAINS = "skarion.com"
 
 [env.staging.vars]
 APP_URL = "https://skarion-identity-staging.alsaki1999.workers.dev"

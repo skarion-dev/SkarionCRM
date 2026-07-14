@@ -4,6 +4,7 @@ import {
   createInvitation,
   revokeInvitation,
   resendInvitation,
+  fetchAllowedDomains,
   type InvitationRow,
 } from '../api.js';
 
@@ -16,6 +17,7 @@ export function InvitationsList() {
   const [email, setEmail] = useState('');
   const [app, setApp] = useState<'crm' | 'hr' | 'books'>('crm');
   const [role, setRole] = useState('');
+  const [allowedDomains, setAllowedDomains] = useState<string[]>([]);
 
   async function load() {
     const { invitations: rows } = await listInvitations(filter || undefined);
@@ -23,13 +25,35 @@ export function InvitationsList() {
   }
 
   useEffect(() => {
+    fetchAllowedDomains()
+      .then(setAllowedDomains)
+      .catch(() => setAllowedDomains([]));
+  }, []);
+
+  useEffect(() => {
     void load();
   }, [filter]);
 
+  function isEmailAllowed(input: string): boolean {
+    if (allowedDomains.length === 0) return true; // no allowlist = open
+    const domain = input.split('@')[1]?.toLowerCase();
+    return !!domain && allowedDomains.includes(domain);
+  }
+
   async function handleInvite(e: React.FormEvent) {
     e.preventDefault();
-    setBusy(true);
     setMessage('');
+    if (!isEmailAllowed(email)) {
+      setMessage(
+        `${
+          allowedDomains.length > 0
+            ? `Only ${allowedDomains.join(', ')} email addresses are allowed.`
+            : ''
+        }`
+      );
+      return;
+    }
+    setBusy(true);
     try {
       await createInvitation(email, app, role);
       setMessage(`Invitation sent to ${email}.`);
