@@ -14,6 +14,6 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Check hr schema
         working-directory: apps/employee-portal
-        run: npx tsx ../../scripts/check-hr-schema.mjs
+        run: npx tsx src/scripts/check-hr-schema-temp.mjs
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
