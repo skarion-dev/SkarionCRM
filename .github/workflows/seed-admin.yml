@@ -2,6 +2,23 @@ name: Seed Admin User
 
 on:
   workflow_dispatch:
+    inputs:
+      admin_email:
+        description: 'Admin email'
+        required: true
+        default: 'admin@skarion.com'
+      admin_password:
+        description: 'Admin password (plaintext, only ever passed through Actions secrets/logs for this one run - rotate after login)'
+        required: true
+      admin_name:
+        description: 'Display name'
+        required: false
+        default: 'System Admin'
+      force_reset_password:
+        description: 'If the email already exists, overwrite its password and invalidate existing sessions'
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   seed:
@@ -19,6 +36,7 @@ jobs:
         run: npx tsx src/scripts/seed-admin.ts
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          ADMIN_EMAIL: admin@skarion.com
-          ADMIN_PASSWORD: changeme-now
-          ADMIN_NAME: System Admin
+          ADMIN_EMAIL: ${{ inputs.admin_email }}
+          ADMIN_PASSWORD: ${{ inputs.admin_password }}
+          ADMIN_NAME: ${{ inputs.admin_name }}
+          FORCE_RESET_PASSWORD: ${{ inputs.force_reset_password }}
