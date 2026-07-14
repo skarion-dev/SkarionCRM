@@ -441,7 +441,7 @@ app.get('/api/time-off', async (c) => {
         status as (typeof schema.timeOffStatusEnum.enumValues)[number]
       )
     );
-  if (employeeId && isSuperadmin) {
+  if (employeeId && (isSuperadmin || role === 'manager')) {
     conditions.push(eq(schema.timeOffRequests.employeeId, employeeId));
   }
 

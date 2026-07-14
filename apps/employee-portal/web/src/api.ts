@@ -192,9 +192,11 @@ export function deleteEmployee(id: string) {
   return hrFetch<{ success: boolean }>(`/api/employees/${id}`, { method: 'DELETE' });
 }
 
-export function listTimeOff(status?: string) {
-  const params = status ? `?status=${encodeURIComponent(status)}` : '';
-  return hrFetch<{ timeOffRequests: TimeOffRequest[] }>(`/api/time-off${params}`);
+export function listTimeOff(status?: string, employeeId?: string) {
+  const params = new URLSearchParams();
+  if (status) params.set('status', status);
+  if (employeeId) params.set('employeeId', employeeId);
+  return hrFetch<{ timeOffRequests: TimeOffRequest[] }>(`/api/time-off?${params.toString()}`);
 }
 export function createTimeOff(data: {
   type: string;
