@@ -217,12 +217,36 @@ export const auditLog = identitySchema.table(
 );
 
 // ─────────────────────────────────────────────────────────
+// login_otp_codes
+// ─────────────────────────────────────────────────────────
+export const loginOtpCodes = identitySchema.table(
+  'login_otp_codes',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    codeHash: text('code_hash').notNull(),
+    pendingTokenHash: text('pending_token_hash').notNull(),
+    attemptCount: integer('attempt_count').notNull().default(0),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    consumedAt: timestamp('consumed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('idx_login_otp_pending_token_hash').on(table.pendingTokenHash),
+    index('idx_login_otp_user').on(table.userId),
+  ]
+);
+
+// ─────────────────────────────────────────────────────────
 // relations
 // ─────────────────────────────────────────────────────────
 export const usersRelations = relations(users, ({ many }) => ({
   appMemberships: many(appMemberships),
   sessions: many(sessions),
   oauthAccounts: many(oauthAccounts),
+  loginOtpCodes: many(loginOtpCodes),
 }));
 
 export const appMembershipsRelations = relations(appMemberships, ({ one }) => ({
@@ -240,4 +264,8 @@ export const sessionsRelations = relations(sessions, ({ one }) => ({
 
 export const oauthAccountsRelations = relations(oauthAccounts, ({ one }) => ({
   user: one(users, { fields: [oauthAccounts.userId], references: [users.id] }),
+}));
+
+export const loginOtpCodesRelations = relations(loginOtpCodes, ({ one }) => ({
+  user: one(users, { fields: [loginOtpCodes.userId], references: [users.id] }),
 }));
