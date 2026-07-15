@@ -8,21 +8,23 @@ import type { AppMembershipsMap } from './api.js';
 // Known app URLs for Cloudflare default-domain deployments.
 // When running on *.pages.dev or *.workers.dev, these are the exact URLs.
 const APP_PAGES_URLS: Record<string, string> = {
-  crm: 'https://skarion-crm.pages.dev',
-  hr: 'https://skarion-hr.pages.dev',
-  books: 'https://skarion-books.pages.dev',
+  crm: 'https://skarion-crm-cv9.pages.dev',
+  hr: 'https://skarion-hr-4in.pages.dev',
+  books: 'https://skarion-books-2r7.pages.dev',
 };
 
 // Allowed return_to hosts - exact list of known project origins.
 // This is a strict allowlist; do not widen with wildcards.
 const ALLOWED_ORIGINS = new Set([
-  'https://skarion-crm.pages.dev',
-  'https://skarion-hr.pages.dev',
-  'https://skarion-books.pages.dev',
-  'https://skarion-identity-login.pages.dev',
-  'https://skarion-identity-admin.pages.dev',
-  'https://skarion-identity.alsaki1999.workers.dev',
-  'https://skarion-crm-platform.alsaki1999.workers.dev',
+  'https://skarion-crm-cv9.pages.dev',
+  'https://skarion-hr-4in.pages.dev',
+  'https://skarion-books-2r7.pages.dev',
+  'https://skarion-identity-login-4hu.pages.dev',
+  'https://skarion-identity-admin-dx5.pages.dev',
+  'https://skarion-identity.skarion-talentos.workers.dev',
+  'https://skarion-crm-platform.skarion-talentos.workers.dev',
+  'https://skarion-books-platform.skarion-talentos.workers.dev',
+  'https://skarion-hr-platform.skarion-talentos.workers.dev',
   'http://localhost:5173',
   'http://localhost:5174',
   'http://localhost:5175',
@@ -61,7 +63,10 @@ export function primaryAppUrl(apps: AppMembershipsMap): string {
 
   // For pages.dev / workers.dev deployments, use the known app URLs.
   // For custom domains (*.skarion.com), derive from the current login page domain.
-  if (window.location.hostname.endsWith('.pages.dev') || window.location.hostname.endsWith('.workers.dev')) {
+  if (
+    window.location.hostname.endsWith('.pages.dev') ||
+    window.location.hostname.endsWith('.workers.dev')
+  ) {
     return APP_PAGES_URLS[firstApp] || window.location.origin;
   }
 
