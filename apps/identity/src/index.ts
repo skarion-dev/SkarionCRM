@@ -66,11 +66,15 @@ const app = new Hono<{ Bindings: Env; Variables: AuthedVariables }>();
 // real custom domains (auth.skarion.com etc.) are attached; update this
 // list, don't widen the pattern, if a new Pages/Worker project is added.
 const ALLOWED_PAGES_WORKERS_ORIGINS = new Set([
-  'https://skarion-identity-login.pages.dev',
-  'https://skarion-identity-admin.pages.dev',
-  'https://skarion-crm.pages.dev',
-  'https://skarion-identity.alsaki1999.workers.dev',
-  'https://skarion-crm-platform.alsaki1999.workers.dev',
+  'https://skarion-identity-login-4hu.pages.dev',
+  'https://skarion-identity-admin-dx5.pages.dev',
+  'https://skarion-crm-cv9.pages.dev',
+  'https://skarion-books-2r7.pages.dev',
+  'https://skarion-hr-4in.pages.dev',
+  'https://skarion-identity.skarion-talentos.workers.dev',
+  'https://skarion-crm-platform.skarion-talentos.workers.dev',
+  'https://skarion-books-platform.skarion-talentos.workers.dev',
+  'https://skarion-hr-platform.skarion-talentos.workers.dev',
 ]);
 
 function isAllowedOrigin(origin: string, appUrl: string): boolean {

@@ -42,11 +42,11 @@ function isAllowedOrigin(origin: string, appUrl: string): boolean {
   if (origin === appUrl) return true;
   if (origin.endsWith('.skarion.com')) return true;
   const knownCloudflareOrigins = new Set([
-    'https://skarion-hr.pages.dev',
-    'https://skarion-identity-login.pages.dev',
-    'https://skarion-identity-admin.pages.dev',
-    'https://skarion-identity.alsaki1999.workers.dev',
-    'https://skarion-hr-platform.alsaki1999.workers.dev',
+    'https://skarion-hr-4in.pages.dev',
+    'https://skarion-identity-login-4hu.pages.dev',
+    'https://skarion-identity-admin-dx5.pages.dev',
+    'https://skarion-identity.skarion-talentos.workers.dev',
+    'https://skarion-hr-platform.skarion-talentos.workers.dev',
   ]);
   if (knownCloudflareOrigins.has(origin)) return true;
   if (origin.startsWith('http://localhost:')) return true;

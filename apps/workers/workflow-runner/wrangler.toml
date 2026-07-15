@@ -8,7 +8,7 @@ enabled = true
 head_sampling_rate = 1
 
 [vars]
-CRM_API_URL = "https://skarion-crm.pages.dev"
+CRM_API_URL = "https://skarion-crm-platform.skarion-talentos.workers.dev"
 
 [env.staging.vars]
 CRM_API_URL = "https://skarion-crm-staging.pages.dev"

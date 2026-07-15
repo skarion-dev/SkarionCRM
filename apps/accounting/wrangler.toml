@@ -8,7 +8,7 @@ enabled = true
 head_sampling_rate = 1
 
 [vars]
-APP_URL = "https://skarion-books.pages.dev"
+APP_URL = "https://skarion-books-2r7.pages.dev"
 
 [env.staging.vars]
 APP_URL = "https://skarion-books-staging.pages.dev"

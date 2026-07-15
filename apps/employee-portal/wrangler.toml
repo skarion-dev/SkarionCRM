@@ -8,7 +8,7 @@ enabled = true
 head_sampling_rate = 1
 
 [vars]
-APP_URL = "https://skarion-hr.pages.dev"
+APP_URL = "https://skarion-hr-4in.pages.dev"
 
 [env.staging.vars]
 APP_URL = "https://skarion-hr-staging.pages.dev"
