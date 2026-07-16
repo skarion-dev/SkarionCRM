@@ -4,11 +4,16 @@ import { listAuditLog, type AuditLogEntry } from '../api.js';
 export function AuditLogPage() {
   const [entries, setEntries] = useState<AuditLogEntry[]>([]);
   const [offset, setOffset] = useState(0);
-  const pageSize = 50;
+  const pageSize = 10;
 
   useEffect(() => {
-    listAuditLog(pageSize, offset).then((r) => setEntries(r.entries));
+    // Fetch pageSize + 1 to determine if there is a next page
+    listAuditLog(pageSize + 1, offset).then((r) => setEntries(r.entries));
   }, [offset]);
+
+  const hasMore = entries.length > pageSize;
+  const displayEntries = entries.slice(0, pageSize);
+  const currentPage = Math.floor(offset / pageSize) + 1;
 
   return (
     <div>
@@ -24,7 +29,7 @@ export function AuditLogPage() {
           </tr>
         </thead>
         <tbody>
-          {entries.map((e) => (
+          {displayEntries.map((e) => (
             <tr key={e.id} style={{ borderBottom: '1px solid #f4f4f5' }}>
               <td style={{ padding: 8 }}>{new Date(e.createdAt).toLocaleString()}</td>
               <td style={{ padding: 8 }}>{e.action}</td>
@@ -37,11 +42,12 @@ export function AuditLogPage() {
           ))}
         </tbody>
       </table>
-      <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+      <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 12 }}>
         <button disabled={offset === 0} onClick={() => setOffset((o) => Math.max(0, o - pageSize))}>
           Previous
         </button>
-        <button disabled={entries.length < pageSize} onClick={() => setOffset((o) => o + pageSize)}>
+        <span style={{ fontSize: 13, color: '#71717a' }}>Page {currentPage}</span>
+        <button disabled={!hasMore} onClick={() => setOffset((o) => o + pageSize)}>
           Next
         </button>
       </div>

@@ -35,9 +35,10 @@ interface Env {
   DATABASE_URL: string;
   JWT_SECRET: string;
   APP_URL: string;
+  ALLOWED_ORIGINS?: string;
 }
 
-function isAllowedOrigin(origin: string, appUrl: string): boolean {
+function isAllowedOrigin(origin: string, appUrl: string, allowedOriginsEnv?: string): boolean {
   if (!origin) return false;
   if (origin === appUrl) return true;
   if (origin.endsWith('.skarion.com')) return true;
@@ -50,6 +51,10 @@ function isAllowedOrigin(origin: string, appUrl: string): boolean {
   ]);
   if (knownCloudflareOrigins.has(origin)) return true;
   if (origin.startsWith('http://localhost:')) return true;
+  if (allowedOriginsEnv) {
+    const origins = allowedOriginsEnv.split(',').map((o) => o.trim());
+    if (origins.includes(origin)) return true;
+  }
   return false;
 }
 
@@ -58,7 +63,7 @@ const app = new Hono<{ Bindings: Env; Variables: AuthedVariables }>();
 app.use(
   '*',
   cors({
-    origin: (origin, c) => (isAllowedOrigin(origin, c.env.APP_URL) ? origin : ''),
+    origin: (origin, c) => (isAllowedOrigin(origin, c.env.APP_URL, c.env.ALLOWED_ORIGINS) ? origin : ''),
     credentials: true,
   })
 );
@@ -66,7 +71,7 @@ app.use(
 app.use('*', async (c, next) => {
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) {
     const origin = c.req.header('Origin');
-    if (origin && !isAllowedOrigin(origin, c.env.APP_URL)) {
+    if (origin && !isAllowedOrigin(origin, c.env.APP_URL, c.env.ALLOWED_ORIGINS)) {
       return c.json({ error: 'CSRF: Invalid origin.' }, 403);
     }
   }

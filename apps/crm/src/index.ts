@@ -92,7 +92,6 @@ export function computeOutreachSummary(channels: { stage: string }[]): string {
   }
   return STAGE_TO_OUTREACH_STATUS[bestStage] ?? 'not_approached';
 }
-
 interface Env {
   DATABASE_URL: string;
   JWT_SECRET: string;
@@ -115,6 +114,8 @@ interface Env {
   GIT_BRANCH?: string;
   /** Git commit SHA, set by deploy workflow. Optional for debug endpoints. */
   GIT_COMMIT_SHA?: string;
+  /** Comma-separated list of allowed CORS origins. */
+  ALLOWED_ORIGINS?: string;
   /** R2 bucket for lead attachments (resumes, screenshots, etc.). */
   ATTACHMENTS_BUCKET?: R2Bucket;
 }
@@ -188,7 +189,7 @@ async function triggerWorkflowEvent(env: Env, trigger: string, payload: Record<s
   }
 }
 
-function isAllowedOrigin(origin: string, appUrl: string): boolean {
+function isAllowedOrigin(origin: string, appUrl: string, allowedOriginsEnv?: string): boolean {
   if (!origin) return false;
   if (origin === appUrl) return true;
   if (origin.endsWith('.skarion.com')) return true;
@@ -202,6 +203,10 @@ function isAllowedOrigin(origin: string, appUrl: string): boolean {
   ]);
   if (knownCloudflareOrigins.has(origin)) return true;
   if (origin.startsWith('http://localhost:')) return true;
+  if (allowedOriginsEnv) {
+    const origins = allowedOriginsEnv.split(',').map((o) => o.trim());
+    if (origins.includes(origin)) return true;
+  }
   return false;
 }
 
@@ -210,7 +215,7 @@ const app = new Hono<{ Bindings: Env; Variables: AuthedVariables }>();
 app.use(
   '*',
   cors({
-    origin: (origin, c) => (isAllowedOrigin(origin, c.env.APP_URL) ? origin : ''),
+    origin: (origin, c) => (isAllowedOrigin(origin, c.env.APP_URL, c.env.ALLOWED_ORIGINS) ? origin : ''),
     credentials: true,
   })
 );
@@ -218,7 +223,7 @@ app.use(
 app.use('*', async (c, next) => {
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) {
     const origin = c.req.header('Origin');
-    if (origin && !isAllowedOrigin(origin, c.env.APP_URL)) {
+    if (origin && !isAllowedOrigin(origin, c.env.APP_URL, c.env.ALLOWED_ORIGINS)) {
       return c.json({ error: 'CSRF: Invalid origin.' }, 403);
     }
   }
@@ -870,6 +875,109 @@ app.post('/api/leads', async (c) => {
   );
 
   return c.json({ lead: result }, 201);
+});
+
+function escapeCsv(val: any): string {
+  const s = val === null || val === undefined ? '' : String(val);
+  if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
+
+app.get('/api/leads/export.csv', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const role = getRole(c);
+  const isSuperadmin = c.get('isSuperadmin');
+  const caller = { userId: c.get('userId'), isSuperadmin };
+  if (!role) return c.json({ error: 'Forbidden.' }, 403);
+
+  const { status, source, search, outreachStatus } = c.req.query();
+
+  const conditions = [isNull(schema.leads.deletedAt)];
+  if (!isSuperadmin) conditions.push(eq(schema.leads.ownerId, caller.userId));
+  if (status) conditions.push(eq(schema.leads.status, status as any)); // eslint-disable-line @typescript-eslint/no-explicit-any
+  if (source) conditions.push(eq(schema.leads.source, source as any)); // eslint-disable-line @typescript-eslint/no-explicit-any
+  if (outreachStatus) conditions.push(eq(schema.leads.outreachStatus, outreachStatus));
+
+  if (search) {
+    const searchLower = search.toLowerCase();
+    conditions.push(
+      or(
+        like(sql`lower(${schema.leads.email})`, `%${searchLower}%`),
+        like(sql`lower(${schema.leads.firstName})`, `%${searchLower}%`),
+        like(sql`lower(${schema.leads.lastName})`, `%${searchLower}%`),
+        like(sql`lower(${schema.leads.companyName})`, `%${searchLower}%`),
+        like(sql`lower(${schema.leads.linkedinUrl})`, `%${searchLower}%`)
+      )!
+    );
+  }
+
+  const rows = await db
+    .select()
+    .from(schema.leads)
+    .where(and(...conditions))
+    .orderBy(desc(schema.leads.createdAt));
+
+  const headers = [
+    'firstName',
+    'lastName',
+    'email',
+    'phone',
+    'companyName',
+    'companyDomain',
+    'linkedinUrl',
+    'status',
+    'source',
+    'outreachStatus',
+    'approachedAt',
+    'connectionStatus',
+    'sourceSheet',
+    'originalRowNumber',
+    'notes',
+    'createdAt',
+    'updatedAt',
+  ];
+
+  let csv = headers.map(escapeCsv).join(',') + '\n';
+  for (const row of rows) {
+    csv +=
+      [
+        row.firstName,
+        row.lastName,
+        row.email,
+        row.phone,
+        row.companyName,
+        row.companyDomain,
+        row.linkedinUrl,
+        row.status,
+        row.source,
+        row.outreachStatus,
+        row.approachedAt ? new Date(row.approachedAt).toISOString() : '',
+        row.connectionStatus,
+        row.sourceSheet,
+        row.originalRowNumber,
+        row.notes,
+        row.createdAt ? new Date(row.createdAt).toISOString() : '',
+        row.updatedAt ? new Date(row.updatedAt).toISOString() : '',
+      ]
+        .map(escapeCsv)
+        .join(',') + '\n';
+  }
+
+  c.header('Content-Type', 'text/csv; charset=utf-8');
+  c.header('Content-Disposition', 'attachment; filename="skarion-leads.csv"');
+
+  await withAudit(db, schema.auditLog, {
+    actorUserId: caller.userId,
+    action: 'export',
+    resourceType: 'leads',
+    resourceId: 'bulk',
+    after: { count: rows.length, filters: { status, source, search, outreachStatus } },
+    app: 'crm',
+  });
+
+  return c.body(csv);
 });
 
 app.get('/api/leads/:id', async (c) => {
@@ -1638,110 +1746,7 @@ app.post('/api/leads/bulk', async (c) => {
   });
 });
 
-// ─── LEAD EXPORT ─────────────────────────────────────────────
 
-function escapeCsv(val: unknown): string {
-  const s = String(val ?? '');
-  if (s.includes(',') || s.includes('"') || s.includes('\n')) {
-    return '"' + s.replace(/"/g, '""') + '"';
-  }
-  return s;
-}
-
-app.get('/api/leads/export.csv', async (c) => {
-  const db = getDb(c.env, schema) as CrmDb;
-  const role = getRole(c);
-  const isSuperadmin = c.get('isSuperadmin');
-  const caller = { userId: c.get('userId'), isSuperadmin };
-  if (!role) return c.json({ error: 'Forbidden.' }, 403);
-
-  const { status, source, search, outreachStatus } = c.req.query();
-
-  const conditions = [isNull(schema.leads.deletedAt)];
-  if (!isSuperadmin) conditions.push(eq(schema.leads.ownerId, caller.userId));
-  if (status) conditions.push(eq(schema.leads.status, status as any)); // eslint-disable-line @typescript-eslint/no-explicit-any
-  if (source) conditions.push(eq(schema.leads.source, source as any)); // eslint-disable-line @typescript-eslint/no-explicit-any
-  if (outreachStatus) conditions.push(eq(schema.leads.outreachStatus, outreachStatus));
-
-  if (search) {
-    const searchLower = search.toLowerCase();
-    conditions.push(
-      or(
-        like(sql`lower(${schema.leads.email})`, `%${searchLower}%`),
-        like(sql`lower(${schema.leads.firstName})`, `%${searchLower}%`),
-        like(sql`lower(${schema.leads.lastName})`, `%${searchLower}%`),
-        like(sql`lower(${schema.leads.companyName})`, `%${searchLower}%`),
-        like(sql`lower(${schema.leads.linkedinUrl})`, `%${searchLower}%`)
-      )!
-    );
-  }
-
-  const rows = await db
-    .select()
-    .from(schema.leads)
-    .where(and(...conditions))
-    .orderBy(desc(schema.leads.createdAt));
-
-  const headers = [
-    'firstName',
-    'lastName',
-    'email',
-    'phone',
-    'companyName',
-    'companyDomain',
-    'linkedinUrl',
-    'status',
-    'source',
-    'outreachStatus',
-    'approachedAt',
-    'connectionStatus',
-    'sourceSheet',
-    'originalRowNumber',
-    'notes',
-    'createdAt',
-    'updatedAt',
-  ];
-
-  let csv = headers.map(escapeCsv).join(',') + '\n';
-  for (const row of rows) {
-    csv +=
-      [
-        row.firstName,
-        row.lastName,
-        row.email,
-        row.phone,
-        row.companyName,
-        row.companyDomain,
-        row.linkedinUrl,
-        row.status,
-        row.source,
-        row.outreachStatus,
-        row.approachedAt ? new Date(row.approachedAt).toISOString() : '',
-        row.connectionStatus,
-        row.sourceSheet,
-        row.originalRowNumber,
-        row.notes,
-        row.createdAt ? new Date(row.createdAt).toISOString() : '',
-        row.updatedAt ? new Date(row.updatedAt).toISOString() : '',
-      ]
-        .map(escapeCsv)
-        .join(',') + '\n';
-  }
-
-  c.header('Content-Type', 'text/csv; charset=utf-8');
-  c.header('Content-Disposition', 'attachment; filename="skarion-leads.csv"');
-
-  await withAudit(db, schema.auditLog, {
-    actorUserId: caller.userId,
-    action: 'export',
-    resourceType: 'leads',
-    resourceId: 'bulk',
-    after: { count: rows.length, filters: { status, source, search, outreachStatus } },
-    app: 'crm',
-  });
-
-  return c.body(csv);
-});
 
 app.post('/api/leads/:id/convert', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
@@ -3886,8 +3891,9 @@ app.post('/api/ocr', async (c) => {
   const base64 = btoa(String.fromCharCode(...new Uint8Array(bytes)));
 
   try {
+    const ocrModel = env.GOOGLE_MODEL || 'gemini-1.5-pro';
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${env.GOOGLE_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${ocrModel}:generateContent?key=${env.GOOGLE_API_KEY}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

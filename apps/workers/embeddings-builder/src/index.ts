@@ -36,7 +36,7 @@ function recordToText(type: string, record: Record<string, unknown>): string {
 
 async function fetchEmbedding(text: string, env: Env): Promise<number[] | null> {
   if (!env.GOOGLE_API_KEY) return null;
-  const model = env.GOOGLE_EMBEDDING_MODEL || 'embedding-001';
+  const model = env.GOOGLE_EMBEDDING_MODEL || 'text-embedding-004';
   try {
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent?key=${env.GOOGLE_API_KEY}`, {
       method: 'POST',

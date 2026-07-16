@@ -14,16 +14,20 @@ import type { BooksRole } from './stores/auth.js';
 // rather than introducing a new, unconfigured one. Identity's URL is also
 // env-configurable via VITE_IDENTITY_API_URL so it can be changed in one
 // place (dashboard env var or local .env) without a grep-and-replace.
-const _BOOKS_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8787';
+const _BOOKS_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8790';
 // Guard against misconfigured Pages dashboard env vars where VITE_API_URL
 // may accidentally be set to the identity/login URL instead of the Books API.
 export const BOOKS_API_URL = _BOOKS_API_URL.includes('identity-login') || _BOOKS_API_URL.includes('skarion-identity-login')
-  ? 'https://skarion-books-platform.alsaki1999.workers.dev'
+  ? 'https://skarion-books-platform.skarion-talentos.workers.dev'
   : _BOOKS_API_URL;
-export const IDENTITY_API_URL = import.meta.env.VITE_IDENTITY_API_URL || 'https://skarion-identity.alsaki1999.workers.dev';
+export const IDENTITY_API_URL =
+  import.meta.env.VITE_IDENTITY_API_URL ||
+  (import.meta.env.DEV ? 'http://localhost:8787' : 'https://skarion-identity.skarion-talentos.workers.dev');
 // The login page is a separate Pages site (not the Worker API). Separate env var so
 // the redirect goes to the right place while API calls still hit the worker.
-export const IDENTITY_LOGIN_URL = import.meta.env.VITE_IDENTITY_LOGIN_URL || 'https://skarion-identity-login.pages.dev';
+export const IDENTITY_LOGIN_URL =
+  import.meta.env.VITE_IDENTITY_LOGIN_URL ||
+  (import.meta.env.DEV ? 'http://localhost:5181' : 'https://skarion-identity-login-4hu.pages.dev');
 
 
 let accessToken: string | null = null;
@@ -44,35 +48,65 @@ export class ApiError extends Error {
 /** Shared refresh: hits identity's /auth/refresh and stores the token in
  *  api.ts's module-level variable. All apps should call this (not raw fetch)
  *  so there's a single source of truth for the access token. */
+let refreshPromise: Promise<string | null> | null = null;
+let bootstrapPromise: Promise<User | null> | null = null;
+
+/** Shared refresh: hits identity's /auth/refresh and stores the token in
+ *  api.ts's module-level variable. All apps should call this (not raw fetch)
+ *  so there's a single source of truth for the access token. */
 export async function refreshAccessToken(): Promise<string | null> {
-  const response = await fetch(`${IDENTITY_API_URL}/auth/refresh`, {
-    method: 'POST',
-    credentials: 'include',
-  });
-  if (!response.ok) return null;
-  const data = (await response.json()) as { access_token: string };
-  accessToken = data.access_token;
-  return accessToken;
+  if (refreshPromise) return refreshPromise;
+
+  refreshPromise = (async () => {
+    try {
+      const response = await fetch(`${IDENTITY_API_URL}/auth/refresh`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!response.ok) return null;
+      const data = (await response.json()) as { access_token: string };
+      accessToken = data.access_token;
+      return accessToken;
+    } catch {
+      return null;
+    } finally {
+      refreshPromise = null;
+    }
+  })();
+
+  return refreshPromise;
 }
 
 /** Bootstraps the auth store by refreshing the token once. Returns the
  *  user payload if the refresh succeeds, null otherwise. Safe to call
  *  from any app's mount effect. */
 export async function bootstrapAuth(): Promise<User | null> {
-  const response = await fetch(`${IDENTITY_API_URL}/auth/refresh`, {
-    method: 'POST',
-    credentials: 'include',
-  });
-  if (!response.ok) return null;
-  const data = (await response.json()) as AuthResponse;
-  accessToken = data.access_token;
-  return {
-    id: data.user.id,
-    email: data.user.email,
-    name: data.user.displayName,
-    role: (data.user.apps?.books ?? '') as BooksRole,
-    isSuperadmin: data.user.isSuperadmin,
-  };
+  if (bootstrapPromise) return bootstrapPromise;
+
+  bootstrapPromise = (async () => {
+    try {
+      const response = await fetch(`${IDENTITY_API_URL}/auth/refresh`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!response.ok) return null;
+      const data = (await response.json()) as AuthResponse;
+      accessToken = data.access_token;
+      return {
+        id: data.user.id,
+        email: data.user.email,
+        name: data.user.displayName,
+        role: (data.user.apps?.books ?? '') as BooksRole,
+        isSuperadmin: data.user.isSuperadmin,
+      };
+    } catch {
+      return null;
+    } finally {
+      bootstrapPromise = null;
+    }
+  })();
+
+  return bootstrapPromise;
 }
 
 /** Redirects to the public login app, returning here after a successful login. */
@@ -83,10 +117,18 @@ export function redirectToLogin(): void {
 
 export async function booksFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!accessToken) {
-    const refreshed = await refreshAccessToken();
-    if (!refreshed) {
-      redirectToLogin();
-      throw new ApiError('No session.', 401);
+    if (bootstrapPromise) {
+      const user = await bootstrapPromise;
+      if (!user) {
+        redirectToLogin();
+        throw new ApiError('No session.', 401);
+      }
+    } else {
+      const refreshed = await refreshAccessToken();
+      if (!refreshed) {
+        redirectToLogin();
+        throw new ApiError('No session.', 401);
+      }
     }
   }
 

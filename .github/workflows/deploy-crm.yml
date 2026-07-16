@@ -120,6 +120,12 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Set ALLOWED_ORIGINS variable
+        working-directory: apps/crm
+        run: wrangler vars put ALLOWED_ORIGINS --value "${{ vars.VITE_ALLOWED_ORIGINS || '' }}"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
   # CRM Pages is deployed via Cloudflare's GitHub integration (auto-build on push).
   # Project: skarion-crm | Branch: main | Root: apps/crm/web
@@ -148,9 +154,9 @@ jobs:
         working-directory: apps/crm/web
         run: pnpm build
         env:
-          VITE_API_URL: https://skarion-crm-platform.alsaki1999.workers.dev
-          VITE_IDENTITY_API_URL: https://skarion-identity.alsaki1999.workers.dev
-          VITE_IDENTITY_LOGIN_URL: https://skarion-identity-login.pages.dev
+          VITE_API_URL: ${{ vars.VITE_CRM_API_URL || vars.VITE_API_URL || 'https://skarion-crm-platform.skarion-talentos.workers.dev' }}
+          VITE_IDENTITY_API_URL: ${{ vars.VITE_IDENTITY_API_URL || 'https://skarion-identity.skarion-talentos.workers.dev' }}
+          VITE_IDENTITY_LOGIN_URL: ${{ vars.VITE_IDENTITY_LOGIN_URL || 'https://skarion-identity-login-4hu.pages.dev' }}
       - name: Deploy to Cloudflare Pages
         working-directory: apps/crm/web
         run: wrangler pages deploy dist --project-name=skarion-crm --branch=main

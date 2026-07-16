@@ -14,9 +14,9 @@ interface Env {
 
 import { and, eq } from 'drizzle-orm';
 
-export const DEFAULT_CHAT_MODEL = 'gemini-2.5-flash-lite';
-export const DEFAULT_FALLBACK_MODEL = 'gemini-2.5-flash';
-export const DEFAULT_EMBEDDING_MODEL = 'embedding-001';
+export const DEFAULT_CHAT_MODEL = 'gemini-1.5-flash';
+export const DEFAULT_FALLBACK_MODEL = 'gemini-1.5-pro';
+export const DEFAULT_EMBEDDING_MODEL = 'text-embedding-004';
 export const AI_NOT_CONFIGURED_MSG = 'AI assistant is not configured. Add GOOGLE_API_KEY to enable AI features.';
 
 // ── Embeddings ────────────────────────────────────────────────────────────

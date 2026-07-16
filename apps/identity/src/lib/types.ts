@@ -9,6 +9,8 @@ export interface Env {
   APP_URL: string;
   /** Comma-separated list of email domains allowed for invitations (e.g. "skarion.com,skarionengineering.com"). */
   ALLOWED_INVITE_DOMAINS?: string;
+  /** Comma-separated list of allowed CORS origins. */
+  ALLOWED_ORIGINS?: string;
   /** Git branch name, set by deploy workflow. Optional for debug endpoints. */
   GIT_BRANCH?: string;
   /** Git commit SHA, set by deploy workflow. Optional for debug endpoints. */

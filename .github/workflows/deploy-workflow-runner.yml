@@ -51,3 +51,9 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WORKFLOW_RUNNER_SECRET: ${{ secrets.WORKFLOW_RUNNER_SECRET }}
+      - name: Set CRM_API_URL variable
+        working-directory: apps/workers/workflow-runner
+        run: wrangler vars put CRM_API_URL --value "${{ vars.VITE_CRM_API_URL || 'https://skarion-crm-platform.skarion-talentos.workers.dev' }}"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

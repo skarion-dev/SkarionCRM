@@ -36,6 +36,13 @@
       "when": 1784006128802,
       "tag": "0004_tricky_korath",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1784183052000,
+      "tag": "0005_add_notifications",
+      "breakpoints": true
     }
   ]
 }

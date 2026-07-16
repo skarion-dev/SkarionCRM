@@ -46,7 +46,7 @@ jobs:
 
       - name: Set WORKFLOW_RUNNER_URL variable
         working-directory: apps/workers/cron
-        run: wrangler vars put WORKFLOW_RUNNER_URL --value "https://skarion-workflow-runner.alsaki1999.workers.dev"
+        run: wrangler vars put WORKFLOW_RUNNER_URL --value "${{ vars.WORKFLOW_RUNNER_URL || 'https://skarion-workflow-runner.skarion-talentos.workers.dev' }}"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

@@ -243,15 +243,23 @@ export const loginOtpCodes = identitySchema.table(
 // relations
 // ─────────────────────────────────────────────────────────
 export const usersRelations = relations(users, ({ many }) => ({
-  appMemberships: many(appMemberships),
+  appMemberships: many(appMemberships, { relationName: 'user' }),
   sessions: many(sessions),
   oauthAccounts: many(oauthAccounts),
   loginOtpCodes: many(loginOtpCodes),
 }));
 
 export const appMembershipsRelations = relations(appMemberships, ({ one }) => ({
-  user: one(users, { fields: [appMemberships.userId], references: [users.id] }),
-  grantedByUser: one(users, { fields: [appMemberships.grantedBy], references: [users.id] }),
+  user: one(users, {
+    fields: [appMemberships.userId],
+    references: [users.id],
+    relationName: 'user',
+  }),
+  grantedByUser: one(users, {
+    fields: [appMemberships.grantedBy],
+    references: [users.id],
+    relationName: 'grantedByUser',
+  }),
 }));
 
 export const invitationsRelations = relations(invitations, ({ one }) => ({

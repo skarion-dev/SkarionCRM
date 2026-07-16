@@ -1,11 +1,4 @@
-// packages/ui/emails/index.tsx
-// Renders each transactional email to {subject, preheader, html, text}.
-// Plain-text fallbacks are generated automatically by @react-email/render -
-// no need to hand-write a text version per template. render()'s package
-// exports map auto-selects the Workers-safe "edge" build when bundled by
-// wrangler (workerd export condition), so this is safe to call from the
-// identity Worker directly.
-
+import React from 'react';
 import { render } from '@react-email/render';
 import { InvitationEmail, invitationPreheader, invitationSubject } from './Invitation.js';
 import {

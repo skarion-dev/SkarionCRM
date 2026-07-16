@@ -1,12 +1,14 @@
 const _HR_API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8789';
 export const HR_API_URL =
   _HR_API_URL.includes('identity-login') || _HR_API_URL.includes('skarion-identity-login')
-    ? 'https://skarion-hr-platform.alsaki1999.workers.dev'
+    ? 'https://skarion-hr-platform.skarion-talentos.workers.dev'
     : _HR_API_URL;
 export const IDENTITY_API_URL =
-  import.meta.env.VITE_IDENTITY_API_URL || 'https://skarion-identity.alsaki1999.workers.dev';
+  import.meta.env.VITE_IDENTITY_API_URL ||
+  (import.meta.env.DEV ? 'http://localhost:8787' : 'https://skarion-identity.skarion-talentos.workers.dev');
 export const IDENTITY_LOGIN_URL =
-  import.meta.env.VITE_IDENTITY_LOGIN_URL || 'https://skarion-identity-login.pages.dev';
+  import.meta.env.VITE_IDENTITY_LOGIN_URL ||
+  (import.meta.env.DEV ? 'http://localhost:5181' : 'https://skarion-identity-login-4hu.pages.dev');
 
 let accessToken: string | null = null;
 
@@ -23,15 +25,36 @@ export class ApiError extends Error {
   }
 }
 
+let refreshPromise: Promise<string | null> | null = null;
+let bootstrapPromise: Promise<{
+  id: string;
+  email: string;
+  name?: string;
+  role: string;
+  isSuperadmin: boolean;
+} | null> | null = null;
+
 export async function refreshAccessToken(): Promise<string | null> {
-  const response = await fetch(`${IDENTITY_API_URL}/auth/refresh`, {
-    method: 'POST',
-    credentials: 'include',
-  });
-  if (!response.ok) return null;
-  const data = (await response.json()) as { access_token: string };
-  accessToken = data.access_token;
-  return accessToken;
+  if (refreshPromise) return refreshPromise;
+
+  refreshPromise = (async () => {
+    try {
+      const response = await fetch(`${IDENTITY_API_URL}/auth/refresh`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!response.ok) return null;
+      const data = (await response.json()) as { access_token: string };
+      accessToken = data.access_token;
+      return accessToken;
+    } catch {
+      return null;
+    } finally {
+      refreshPromise = null;
+    }
+  })();
+
+  return refreshPromise;
 }
 
 export async function bootstrapAuth(): Promise<{
@@ -41,29 +64,41 @@ export async function bootstrapAuth(): Promise<{
   role: string;
   isSuperadmin: boolean;
 } | null> {
-  const response = await fetch(`${IDENTITY_API_URL}/auth/refresh`, {
-    method: 'POST',
-    credentials: 'include',
-  });
-  if (!response.ok) return null;
-  const data = (await response.json()) as {
-    access_token: string;
-    user: {
-      id: string;
-      email: string;
-      displayName?: string;
-      isSuperadmin: boolean;
-      apps: Record<string, string>;
-    };
-  };
-  accessToken = data.access_token;
-  return {
-    id: data.user.id,
-    email: data.user.email,
-    name: data.user.displayName,
-    role: data.user.apps?.hr ?? '',
-    isSuperadmin: data.user.isSuperadmin,
-  };
+  if (bootstrapPromise) return bootstrapPromise;
+
+  bootstrapPromise = (async () => {
+    try {
+      const response = await fetch(`${IDENTITY_API_URL}/auth/refresh`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!response.ok) return null;
+      const data = (await response.json()) as {
+        access_token: string;
+        user: {
+          id: string;
+          email: string;
+          displayName?: string;
+          isSuperadmin: boolean;
+          apps: Record<string, string>;
+        };
+      };
+      accessToken = data.access_token;
+      return {
+        id: data.user.id,
+        email: data.user.email,
+        name: data.user.displayName,
+        role: data.user.apps?.hr ?? '',
+        isSuperadmin: data.user.isSuperadmin,
+      };
+    } catch {
+      return null;
+    } finally {
+      bootstrapPromise = null;
+    }
+  })();
+
+  return bootstrapPromise;
 }
 
 export function redirectToLogin(): void {
@@ -73,10 +108,18 @@ export function redirectToLogin(): void {
 
 async function hrFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (!accessToken) {
-    const refreshed = await refreshAccessToken();
-    if (!refreshed) {
-      redirectToLogin();
-      throw new ApiError('No session.', 401);
+    if (bootstrapPromise) {
+      const user = await bootstrapPromise;
+      if (!user) {
+        redirectToLogin();
+        throw new ApiError('No session.', 401);
+      }
+    } else {
+      const refreshed = await refreshAccessToken();
+      if (!refreshed) {
+        redirectToLogin();
+        throw new ApiError('No session.', 401);
+      }
     }
   }
   const headers: Record<string, string> = {

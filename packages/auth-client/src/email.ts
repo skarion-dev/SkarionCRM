@@ -22,6 +22,20 @@ export async function sendEmail(apiKey: string, params: SendEmailParams): Promis
     throw new Error('RESEND_API_KEY is not configured.');
   }
 
+  if (apiKey.includes('dummy') || apiKey.includes('mock') || apiKey === 'test') {
+    console.log('----------------------------------------------------');
+    console.log(`[MOCK EMAIL SENT TO ${params.to}]`);
+    console.log(`Subject: ${params.subject}`);
+    // Log links if present (such as invitation URLs) for easy local clicking/testing
+    const links = params.html.match(/href="([^"]+)"/g)?.map(m => m.slice(6, -1)) || [];
+    if (links.length > 0) {
+      console.log('Links in email:');
+      links.forEach(link => console.log(`  -> ${link}`));
+    }
+    console.log('----------------------------------------------------');
+    return { id: 'mock-email-' + Date.now() };
+  }
+
   const response = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: {

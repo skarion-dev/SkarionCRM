@@ -11,7 +11,7 @@
   },
   "scripts": {
     "build": "wrangler build --dry-run 2>/dev/null || tsc --noEmit",
-    "dev": "wrangler dev --port 8787",
+    "dev": "wrangler dev --port 8788 --inspector-port 9231",
     "test": "echo '(stub) tests coming soon - need vitest + miniflare setup'",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings=0",

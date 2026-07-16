@@ -10,9 +10,9 @@ head_sampling_rate = 1
 [vars]
 APP_URL = "https://skarion-crm-cv9.pages.dev"
 AI_PROVIDER = "google"
-GOOGLE_MODEL = "gemini-2.5-flash-lite"
-GOOGLE_FALLBACK_MODEL = "gemini-2.5-flash"
-GOOGLE_EMBEDDING_MODEL = "embedding-001"
+GOOGLE_MODEL = "gemini-1.5-flash"
+GOOGLE_FALLBACK_MODEL = "gemini-1.5-pro"
+GOOGLE_EMBEDDING_MODEL = "text-embedding-004"
 # Document converter service (optional — falls back to local PDF extractor if not set)
 # DOCUMENT_CONVERTER_URL = "https://your-converter-service.example.com"
 # DOCUMENT_AI_MAX_CHARS = "50000"
@@ -20,9 +20,9 @@ GOOGLE_EMBEDDING_MODEL = "embedding-001"
 [env.staging.vars]
 APP_URL = "https://skarion-crm-staging.pages.dev"
 AI_PROVIDER = "google"
-GOOGLE_MODEL = "gemini-2.5-flash-lite"
-GOOGLE_FALLBACK_MODEL = "gemini-2.5-flash"
-GOOGLE_EMBEDDING_MODEL = "embedding-001"
+GOOGLE_MODEL = "gemini-1.5-flash"
+GOOGLE_FALLBACK_MODEL = "gemini-1.5-pro"
+GOOGLE_EMBEDDING_MODEL = "text-embedding-004"
 
 [[r2_buckets]]
 binding = "ATTACHMENTS_BUCKET"

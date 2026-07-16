@@ -69,9 +69,12 @@ export function InvitationsList() {
 
   async function handleRevoke(id: string) {
     setBusy(true);
+    setMessage('');
     try {
       await revokeInvitation(id);
       await load();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Failed to revoke.');
     } finally {
       setBusy(false);
     }

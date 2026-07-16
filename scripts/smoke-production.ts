@@ -4,8 +4,8 @@
 // Usage: npx tsx scripts/smoke-production.ts
 // Required env vars: CRM_URL, IDENTITY_URL, ADMIN_EMAIL, ADMIN_PASSWORD
 
-const CRM_URL = process.env.CRM_URL || 'https://skarion-crm-platform.alsaki1999.workers.dev';
-const IDENTITY_URL = process.env.IDENTITY_URL || 'https://skarion-identity.alsaki1999.workers.dev';
+const CRM_URL = process.env.CRM_URL || 'https://skarion-crm-platform.skarion-talentos.workers.dev';
+const IDENTITY_URL = process.env.IDENTITY_URL || 'https://skarion-identity.skarion-talentos.workers.dev';
 const PAGES_URL = process.env.PAGES_URL || 'https://skarion-crm.pages.dev';
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@skarion.com';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'changeme-now';
@@ -222,7 +222,7 @@ test('PDF import endpoint exists', async () => {
 // ─── Embeddings ────────────────────────────────────────────────────────────
 
 test('Embeddings builder health', async () => {
-  const res = await fetch('https://skarion-embeddings-builder.alsaki1999.workers.dev/health');
+  const res = await fetch('https://skarion-embeddings-builder.skarion-talentos.workers.dev/health');
   if (!res.ok) return { pass: false, detail: `HTTP ${res.status}` };
   const body = (await res.json()) as { status: string };
   return { pass: body.status === 'ok', detail: JSON.stringify(body) };
@@ -231,7 +231,7 @@ test('Embeddings builder health', async () => {
 // ─── Workflow Runner ──────────────────────────────────────────────────────
 
 test('Workflow runner health', async () => {
-  const res = await fetch('https://skarion-workflow-runner.alsaki1999.workers.dev/health');
+  const res = await fetch('https://skarion-workflow-runner.skarion-talentos.workers.dev/health');
   if (!res.ok) return { pass: false, detail: `HTTP ${res.status}` };
   const body = (await res.json()) as { status: string };
   return { pass: body.status === 'ok', detail: JSON.stringify(body) };

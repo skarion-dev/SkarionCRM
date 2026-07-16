@@ -11,7 +11,7 @@ head_sampling_rate = 1
 crons = ["0 * * * *"]
 
 [vars]
-WORKFLOW_RUNNER_URL = "https://skarion-workflow-runner.alsaki1999.workers.dev"
+WORKFLOW_RUNNER_URL = "https://skarion-workflow-runner.skarion-talentos.workers.dev"
 
 [env.staging.vars]
-WORKFLOW_RUNNER_URL = "https://skarion-workflow-runner-staging.alsaki1999.workers.dev"
+WORKFLOW_RUNNER_URL = "https://skarion-workflow-runner-staging.skarion-talentos.workers.dev"

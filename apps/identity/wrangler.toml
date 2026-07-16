@@ -23,7 +23,7 @@ APP_URL = "https://skarion-identity-login-4hu.pages.dev"
 ALLOWED_INVITE_DOMAINS = ""
 
 [env.staging.vars]
-APP_URL = "https://skarion-identity-staging.alsaki1999.workers.dev"
+APP_URL = "https://skarion-identity-staging.skarion-talentos.workers.dev"
 
 # No Hyperdrive binding: Hyperdrive proxies the Postgres wire protocol
 # (TCP), but this Worker uses @neondatabase/serverless's neon-http driver

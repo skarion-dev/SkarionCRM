@@ -77,7 +77,7 @@ const ALLOWED_PAGES_WORKERS_ORIGINS = new Set([
   'https://skarion-hr-platform.skarion-talentos.workers.dev',
 ]);
 
-function isAllowedOrigin(origin: string, appUrl: string): boolean {
+function isAllowedOrigin(origin: string, appUrl: string, allowedOriginsEnv?: string): boolean {
   try {
     const allowed = new URL(appUrl).origin;
     if (origin === allowed) return true;
@@ -87,6 +87,10 @@ function isAllowedOrigin(origin: string, appUrl: string): boolean {
   if (/^https:\/\/([a-z0-9-]+\.)*skarion\.com$/.test(origin)) return true;
   if (ALLOWED_PAGES_WORKERS_ORIGINS.has(origin)) return true;
   if (origin.startsWith('http://localhost:')) return true;
+  if (allowedOriginsEnv) {
+    const origins = allowedOriginsEnv.split(',').map((o) => o.trim());
+    if (origins.includes(origin)) return true;
+  }
   return false;
 }
 
@@ -97,7 +101,7 @@ app.use(
       // Allow the auth app's own APP_URL and any *.skarion.com subdomain in prod;
       // ticket 1.8 tightens this further once real domains exist.
       if (!origin) return origin;
-      return isAllowedOrigin(origin, c.env.APP_URL) ? origin : null;
+      return isAllowedOrigin(origin, c.env.APP_URL, c.env.ALLOWED_ORIGINS) ? origin : null;
     },
     credentials: true,
   })
@@ -114,7 +118,7 @@ app.use('*', async (c, next) => {
   const unsafeMethod = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method);
   if (unsafeMethod) {
     const origin = c.req.header('Origin');
-    if (origin && !isAllowedOrigin(origin, c.env.APP_URL)) {
+    if (origin && !isAllowedOrigin(origin, c.env.APP_URL, c.env.ALLOWED_ORIGINS)) {
       return c.json({ error: 'Origin not allowed.' }, 403);
     }
   }
@@ -130,6 +134,17 @@ app.use('*', async (c, next) => {
 
 function setRefreshCookie(c: AppContext, token: string, expiresAt: Date) {
   const origin = c.req.header('Origin') ?? '';
+  let isLocalhost = false;
+  try {
+    const requestUrl = new URL(c.req.url);
+    isLocalhost = requestUrl.hostname === 'localhost' || requestUrl.hostname === '127.0.0.1';
+  } catch {
+    // fallback
+  }
+  if (!isLocalhost) {
+    isLocalhost = origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:');
+  }
+
   // SameSite=None is required for cross-site cookie on default Cloudflare
   // domains (pages.dev / workers.dev). For custom domains (*.skarion.com)
   // where auth and app are same-site, Lax is preferred.
@@ -137,7 +152,7 @@ function setRefreshCookie(c: AppContext, token: string, expiresAt: Date) {
     origin.includes('.pages.dev') || origin.includes('.workers.dev');
   setCookie(c, REFRESH_COOKIE, token, {
     httpOnly: true,
-    secure: true,
+    secure: !isLocalhost,
     sameSite: isDefaultCloudflareDomain ? 'None' : 'Lax',
     path: '/',
     expires: expiresAt,

@@ -6,7 +6,7 @@
   "main": "./src/index.ts",
   "scripts": {
     "build": "echo \"(stub) no build yet for @skarion/identity\"",
-    "dev": "echo \"(stub) no dev yet for @skarion/identity\"",
+    "dev": "wrangler dev --port 8787 --inspector-port 9230",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings=0",

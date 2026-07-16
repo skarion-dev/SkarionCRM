@@ -11,7 +11,7 @@
   },
   "scripts": {
     "build": "wrangler build --dry-run 2>/dev/null || tsc --noEmit",
-    "dev": "wrangler dev --port 8787",
+    "dev": "wrangler dev --port 8790 --inspector-port 9233",
     "test": "echo \"(stub) no tests yet for @skarion/accounting\"",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings=0",
