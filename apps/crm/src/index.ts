@@ -215,7 +215,8 @@ const app = new Hono<{ Bindings: Env; Variables: AuthedVariables }>();
 app.use(
   '*',
   cors({
-    origin: (origin, c) => (isAllowedOrigin(origin, c.env.APP_URL, c.env.ALLOWED_ORIGINS) ? origin : ''),
+    origin: (origin, c) =>
+      isAllowedOrigin(origin, c.env.APP_URL, c.env.ALLOWED_ORIGINS) ? origin : '',
     credentials: true,
   })
 );
@@ -877,7 +878,7 @@ app.post('/api/leads', async (c) => {
   return c.json({ lead: result }, 201);
 });
 
-function escapeCsv(val: any): string {
+function escapeCsv(val: unknown): string {
   const s = val === null || val === undefined ? '' : String(val);
   if (s.includes(',') || s.includes('"') || s.includes('\n')) {
     return '"' + s.replace(/"/g, '""') + '"';
@@ -1745,8 +1746,6 @@ app.post('/api/leads/bulk', async (c) => {
     total: ids.length,
   });
 });
-
-
 
 app.post('/api/leads/:id/convert', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
