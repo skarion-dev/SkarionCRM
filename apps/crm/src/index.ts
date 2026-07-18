@@ -752,6 +752,8 @@ app.get('/api/leads', async (c) => {
   const outreachStatusCounts = {
     not_approached: 0,
     approached: 0,
+    connection_request_sent: 0,
+    in_conversation: 0,
     connected: 0,
     replied: 0,
     booked_call: 0,

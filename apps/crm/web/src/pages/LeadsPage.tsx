@@ -41,6 +41,8 @@ const LEAD_STATUSES: LeadStatus[] = ['new', 'contacted', 'qualified', 'disqualif
 const OUTREACH_STATUSES: OutreachStatus[] = [
   'not_approached',
   'approached',
+  'connection_request_sent',
+  'in_conversation',
   'connected',
   'replied',
   'booked_call',
@@ -104,6 +106,8 @@ export default function LeadsPage() {
   const outreachStatusCounts = data?.outreachStatusCounts ?? {
     not_approached: 0,
     approached: 0,
+    connection_request_sent: 0,
+    in_conversation: 0,
     connected: 0,
     replied: 0,
     booked_call: 0,
@@ -769,13 +773,17 @@ export default function LeadsPage() {
                           ? 'bg-slate-100 text-slate-600'
                           : lead.outreachStatus === 'approached'
                             ? 'bg-amber-100 text-amber-700'
-                            : lead.outreachStatus === 'connected'
-                              ? 'bg-blue-100 text-blue-700'
-                              : lead.outreachStatus === 'replied'
-                                ? 'bg-green-100 text-green-700'
-                                : lead.outreachStatus === 'booked_call'
-                                  ? 'bg-purple-100 text-purple-700'
-                                  : 'bg-slate-100 text-slate-600'
+                            : lead.outreachStatus === 'connection_request_sent'
+                              ? 'bg-amber-100 text-amber-700'
+                              : lead.outreachStatus === 'in_conversation'
+                                ? 'bg-teal-100 text-teal-700'
+                                : lead.outreachStatus === 'connected'
+                                  ? 'bg-blue-100 text-blue-700'
+                                  : lead.outreachStatus === 'replied'
+                                    ? 'bg-green-100 text-green-700'
+                                    : lead.outreachStatus === 'booked_call'
+                                      ? 'bg-purple-100 text-purple-700'
+                                      : 'bg-slate-100 text-slate-600'
                       )}
                     >
                       {lead.outreachStatus?.replace(/_/g, ' ') ?? 'not approached'}

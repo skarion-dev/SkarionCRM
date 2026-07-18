@@ -29,6 +29,8 @@ const sources: LeadSource[] = [
 const outreachStatuses: OutreachStatus[] = [
   'not_approached',
   'approached',
+  'connection_request_sent',
+  'in_conversation',
   'connected',
   'replied',
   'booked_call',

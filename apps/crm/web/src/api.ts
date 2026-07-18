@@ -21,7 +21,9 @@ export const CRM_API_URL =
     : _CRM_API_URL;
 export const IDENTITY_API_URL =
   import.meta.env.VITE_IDENTITY_API_URL ||
-  (import.meta.env.DEV ? 'http://localhost:8787' : 'https://skarion-identity.skarion-talentos.workers.dev');
+  (import.meta.env.DEV
+    ? 'http://localhost:8787'
+    : 'https://skarion-identity.skarion-talentos.workers.dev');
 // The login page is a separate Pages site (not the Worker API). Separate env var so
 // the redirect goes to the right place while API calls still hit the worker.
 export const IDENTITY_LOGIN_URL =
@@ -223,6 +225,8 @@ export type LeadSource =
 export type OutreachStatus =
   | 'not_approached'
   | 'approached'
+  | 'connection_request_sent'
+  | 'in_conversation'
   | 'connected'
   | 'replied'
   | 'booked_call'
