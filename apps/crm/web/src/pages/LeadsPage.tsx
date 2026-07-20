@@ -32,6 +32,7 @@ import {
 import { cn } from '../lib/utils.js';
 import LeadForm from '../components/forms/LeadForm.js';
 import ImportModal from '../components/ImportModal.js';
+import PdfImportModal from '../components/PdfImportModal.js';
 import type { Lead, LeadStatus, OutreachStatus } from '../api.js';
 import { CRM_API_URL, getAccessToken } from '../api.js';
 import { showToast } from '../stores/toast.js';
@@ -68,6 +69,7 @@ export default function LeadsPage() {
   const [batchFilter, setBatchFilter] = useState<'all' | string>('all');
   const [modalOpen, setModalOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [pdfImportOpen, setPdfImportOpen] = useState(false);
   const [editLead, setEditLead] = useState<Lead | null>(null);
 
   const role = useAuthStore((s) => s.user?.role ?? '');
@@ -322,6 +324,12 @@ export default function LeadsPage() {
             className="flex items-center gap-2 px-3 py-2 border border-slate-200 rounded-md text-sm hover:bg-slate-50 text-slate-600"
           >
             <Upload size={16} /> CSV Import
+          </button>
+          <button
+            onClick={() => setPdfImportOpen(true)}
+            className="flex items-center gap-2 px-3 py-2 border border-slate-200 rounded-md text-sm hover:bg-slate-50 text-slate-600"
+          >
+            <Upload size={16} /> Document Import
           </button>
           <button
             onClick={openCreate}
@@ -900,6 +908,10 @@ export default function LeadsPage() {
         sampleCsv={`firstName,lastName,email,phone,companyName,companyDomain,linkedinUrl,title,source,status,notes
 John,Doe,john@acme.com,+1-555-1234,Acme Inc,acme.com,https://linkedin.com/in/johndoe,Manager,website,new,Interested in OSP support
 Jane,Smith,jane@globex.org,+1-555-5678,Globex Corp,globex.org,https://linkedin.com/in/janesmith,Director,referral,contacted,Referred by Bob`}
+      />
+      <PdfImportModal
+        open={pdfImportOpen}
+        onClose={() => setPdfImportOpen(false)}
       />
     </div>
   );
