@@ -55,6 +55,7 @@ export function isAllowedReturnTo(returnTo: string): boolean {
     const url = new URL(returnTo, window.location.origin);
     if (ALLOWED_ORIGINS.has(url.origin)) return true;
     if (SKARION_DOMAIN.test(url.origin)) return true;
+    if (url.protocol === 'chrome-extension:' || url.protocol === 'moz-extension:') return true;
     return false;
   } catch {
     return false;
