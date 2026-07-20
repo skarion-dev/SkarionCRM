@@ -20,7 +20,7 @@ export function Login() {
       const result = await login(email, password);
       if (result.access_token) {
         const meResponse = await me(result.access_token);
-        redirectAfterLogin(meResponse.apps);
+        redirectAfterLogin(meResponse.apps, result.access_token, result.refresh_token);
         return;
       }
       if (result.pending_token) {
@@ -44,7 +44,7 @@ export function Login() {
     try {
       const result = await loginVerify(pendingToken, code);
       const meResponse = await me(result.access_token);
-      redirectAfterLogin(meResponse.apps);
+      redirectAfterLogin(meResponse.apps, result.access_token, result.refresh_token);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Verification failed.');
     } finally {

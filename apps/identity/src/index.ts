@@ -240,7 +240,7 @@ app.post('/auth/login', async (c) => {
         c.req.header('User-Agent') ?? null
       );
       setRefreshCookie(c, result.refreshToken, result.refreshTokenExpiresAt);
-      return c.json({ access_token: result.accessToken, user: result.user });
+      return c.json({ access_token: result.accessToken, refresh_token: result.refreshToken, user: result.user });
     }
     const step1 = await authService.loginStep1(db, {
       email: body.email,
@@ -267,7 +267,7 @@ app.post('/auth/login', async (c) => {
           c.req.header('User-Agent') ?? null
         );
         setRefreshCookie(c, result.refreshToken, result.refreshTokenExpiresAt);
-        return c.json({ access_token: result.accessToken, user: result.user });
+        return c.json({ access_token: result.accessToken, refresh_token: result.refreshToken, user: result.user });
       }
     }
 
@@ -304,14 +304,22 @@ app.post('/auth/login/verify', async (c) => {
       jwtSecret: c.env.JWT_SECRET,
     });
     setRefreshCookie(c, result.refreshToken, result.refreshTokenExpiresAt);
-    return c.json({ access_token: result.accessToken, user: result.user });
+    return c.json({ access_token: result.accessToken, refresh_token: result.refreshToken, user: result.user });
   } catch (err) {
     return errorResponse(c, err);
   }
 });
 
 app.post('/auth/refresh', async (c) => {
-  const token = getCookie(c, REFRESH_COOKIE);
+  let token = getCookie(c, REFRESH_COOKIE);
+  if (!token) {
+    try {
+      const body = await c.req.json().catch(() => ({}));
+      token = body.refresh_token || c.req.header('X-Refresh-Token');
+    } catch {
+      // fallback if no body
+    }
+  }
   if (!token) return c.json({ error: 'No refresh token.' }, 401);
   const db = getDb(c.env, schema);
   try {
@@ -320,7 +328,7 @@ app.post('/auth/refresh', async (c) => {
       jwtSecret: c.env.JWT_SECRET,
     });
     setRefreshCookie(c, result.refreshToken, result.refreshTokenExpiresAt);
-    return c.json({ access_token: result.accessToken, user: result.user });
+    return c.json({ access_token: result.accessToken, refresh_token: result.refreshToken, user: result.user });
   } catch (err) {
     return errorResponse(c, err);
   }
@@ -512,8 +520,7 @@ app.post('/invitations/accept', async (c) => {
     } catch (err) {
       console.error('Failed to send welcome email:', err);
     }
-
-    return c.json({ access_token: loginResult.accessToken, user: loginResult.user }, 201);
+    return c.json({ access_token: loginResult.accessToken, refresh_token: loginResult.refreshToken, user: loginResult.user }, 201);
   } catch (err) {
     return errorResponse(c, err);
   }

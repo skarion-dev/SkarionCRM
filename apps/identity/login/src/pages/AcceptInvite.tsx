@@ -24,7 +24,7 @@ export function AcceptInvite() {
     try {
       const result = await acceptInvitation(token, password, displayName);
       const meResponse = await me(result.access_token);
-      redirectAfterLogin(meResponse.apps);
+      redirectAfterLogin(meResponse.apps, result.access_token, result.refresh_token);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to accept invitation.');
     } finally {

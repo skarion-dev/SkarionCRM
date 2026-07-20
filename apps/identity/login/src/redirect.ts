@@ -92,11 +92,45 @@ export function primaryAppUrl(apps: AppMembershipsMap): string {
   return `${window.location.protocol}//${firstApp}.${rootDomain}`;
 }
 
-export function redirectAfterLogin(apps: AppMembershipsMap): void {
+export function redirectAfterLogin(
+  apps: AppMembershipsMap,
+  accessToken?: string,
+  refreshToken?: string
+): void {
   const returnTo = getReturnToParam();
   if (returnTo && isAllowedReturnTo(returnTo)) {
+    try {
+      const url = new URL(returnTo);
+      const hashParams = new URLSearchParams();
+      if (accessToken) hashParams.set('access_token', accessToken);
+      if (refreshToken) hashParams.set('refresh_token', refreshToken);
+      const hashStr = hashParams.toString();
+      if (hashStr) {
+        url.hash = hashStr;
+      }
+      window.location.href = url.toString();
+      return;
+    } catch {
+      // fallback
+    }
     window.location.href = returnTo;
     return;
+  }
+  
+  try {
+    const primaryUrl = primaryAppUrl(apps);
+    const url = new URL(primaryUrl);
+    const hashParams = new URLSearchParams();
+    if (accessToken) hashParams.set('access_token', accessToken);
+    if (refreshToken) hashParams.set('refresh_token', refreshToken);
+    const hashStr = hashParams.toString();
+    if (hashStr) {
+      url.hash = hashStr;
+    }
+    window.location.href = url.toString();
+    return;
+  } catch {
+    // fallback
   }
   window.location.href = primaryAppUrl(apps);
 }

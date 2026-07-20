@@ -37,6 +37,7 @@ export function login(email: string, password: string) {
     pending_token?: string;
     expires_at?: string;
     access_token?: string;
+    refresh_token?: string;
     user?: { id: string; email: string; displayName: string };
   }>('/auth/login', {
     method: 'POST',
@@ -47,6 +48,7 @@ export function login(email: string, password: string) {
 export function loginVerify(pendingToken: string, code: string) {
   return apiFetch<{
     access_token: string;
+    refresh_token: string;
     user: { id: string; email: string; displayName: string };
   }>('/auth/login/verify', {
     method: 'POST',
@@ -77,6 +79,7 @@ export function resetPassword(token: string, newPassword: string) {
 export function acceptInvitation(token: string, password: string, displayName: string) {
   return apiFetch<{
     access_token: string;
+    refresh_token: string;
     user: { id: string; email: string; displayName: string };
   }>('/invitations/accept', {
     method: 'POST',
