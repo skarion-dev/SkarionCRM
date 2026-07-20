@@ -51,6 +51,7 @@ function isAllowedOrigin(origin: string, appUrl: string, allowedOriginsEnv?: str
   ]);
   if (knownCloudflareOrigins.has(origin)) return true;
   if (origin.startsWith('http://localhost:')) return true;
+  if (origin.startsWith('chrome-extension://') || origin.startsWith('moz-extension://')) return true;
   if (allowedOriginsEnv) {
     const origins = allowedOriginsEnv.split(',').map((o) => o.trim());
     if (origins.includes(origin)) return true;

@@ -87,6 +87,7 @@ function isAllowedOrigin(origin: string, appUrl: string, allowedOriginsEnv?: str
   if (/^https:\/\/([a-z0-9-]+\.)*skarion\.com$/.test(origin)) return true;
   if (ALLOWED_PAGES_WORKERS_ORIGINS.has(origin)) return true;
   if (origin.startsWith('http://localhost:')) return true;
+  if (origin.startsWith('chrome-extension://') || origin.startsWith('moz-extension://')) return true;
   if (allowedOriginsEnv) {
     const origins = allowedOriginsEnv.split(',').map((o) => o.trim());
     if (origins.includes(origin)) return true;
@@ -146,14 +147,17 @@ function setRefreshCookie(c: AppContext, token: string, expiresAt: Date) {
   }
 
   // SameSite=None is required for cross-site cookie on default Cloudflare
-  // domains (pages.dev / workers.dev). For custom domains (*.skarion.com)
-  // where auth and app are same-site, Lax is preferred.
-  const isDefaultCloudflareDomain =
-    origin.includes('.pages.dev') || origin.includes('.workers.dev');
+  // domains (pages.dev / workers.dev) and browser extensions. For custom
+  // domains (*.skarion.com) where auth and app are same-site, Lax is preferred.
+  const isCrossSite =
+    origin.includes('.pages.dev') ||
+    origin.includes('.workers.dev') ||
+    origin.startsWith('chrome-extension://') ||
+    origin.startsWith('moz-extension://');
   setCookie(c, REFRESH_COOKIE, token, {
     httpOnly: true,
     secure: !isLocalhost,
-    sameSite: isDefaultCloudflareDomain ? 'None' : 'Lax',
+    sameSite: isCrossSite ? 'None' : 'Lax',
     path: '/',
     expires: expiresAt,
   });
