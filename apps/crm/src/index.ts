@@ -3400,7 +3400,11 @@ app.post('/api/leads/import/document', async (c) => {
   // ── Step 3: AI extraction ─────────────────────────────────────────────
   let aiResult: ai.ExtractedLeadDraft | null = null;
   if (c.env.GOOGLE_API_KEY) {
-    aiResult = await ai.extractLeadFromPdfText(cleanedText, leadType, c.env);
+    if (usedFallback && isPdf) {
+      aiResult = await ai.extractLeadFromPdfFile(bytes, file.type, leadType, c.env);
+    } else {
+      aiResult = await ai.extractLeadFromPdfText(cleanedText, leadType, c.env);
+    }
   }
 
   // Merge regex + AI results

@@ -293,6 +293,110 @@ Return ONLY the JSON object, no markdown, no explanation.`;
   return extractStructured<ExtractedLeadDraft>(prompt, env);
 }
 
+function uint8ArrayToBase64(arr: Uint8Array): string {
+  const chunks: string[] = [];
+  const chunkSize = 8192;
+  for (let i = 0; i < arr.length; i += chunkSize) {
+    const chunk = arr.slice(i, i + chunkSize);
+    chunks.push(String.fromCharCode(...chunk));
+  }
+  return btoa(chunks.join(''));
+}
+
+export async function extractLeadFromPdfFile(
+  fileBytes: Uint8Array,
+  mimeType: string,
+  suggestedType: string,
+  env: Env
+): Promise<ExtractedLeadDraft | null> {
+  if (!env.GOOGLE_API_KEY) return null;
+
+  const base64Data = uint8ArrayToBase64(fileBytes);
+
+  const typePrompt = suggestedType === 'candidate' ? 'This is a resume/CV.' :
+    suggestedType === 'client' ? 'This is a client/vendor document or company profile.' :
+    suggestedType === 'job_rfp' ? 'This is a job posting or RFP document.' :
+    'This is a business document.';
+
+  const prompt = `${typePrompt}
+
+Extract the following information from this document and return ONLY valid JSON matching this schema:
+
+{
+  "leadType": "candidate | client | vendor | job_rfp | other",
+  "firstName": "",
+  "lastName": "",
+  "fullName": "",
+  "email": "",
+  "phone": "",
+  "linkedinUrl": "",
+  "companyName": "",
+  "title": "",
+  "location": "",
+  "website": "",
+  "source": "pdf_upload",
+  "status": "new",
+  "tags": [],
+  "notes": "",
+  "summary": "",
+  "confidence": 0.0,
+  "missingFields": []
+}
+
+Use empty strings for missing fields. Use 0 for confidence if nothing useful was found. confidence should be 0.0-1.0 based on how much information was successfully extracted. missingFields should list which fields were empty or uncertain.
+
+Return ONLY the JSON object, no markdown, no explanation.`;
+
+  const preferredModel = env.GOOGLE_MODEL || DEFAULT_CHAT_MODEL;
+  const fallbackModel = env.GOOGLE_FALLBACK_MODEL || DEFAULT_FALLBACK_MODEL;
+
+  async function tryModel(model: string): Promise<string | null> {
+    try {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GOOGLE_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                { text: prompt },
+                {
+                  inlineData: {
+                    mimeType,
+                    data: base64Data,
+                  },
+                },
+              ],
+            },
+          ],
+          generationConfig: { temperature: 0.1 },
+        }),
+      });
+      if (!res.ok) {
+        console.error(`Google extract error (${model}):`, await res.text());
+        return null;
+      }
+      const data = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
+      return data.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
+    } catch (err) {
+      console.error(`File extraction failed (${model}):`, err);
+      return null;
+    }
+  }
+
+  const text = await tryModel(preferredModel) || await tryModel(fallbackModel);
+  if (!text) return null;
+
+  try {
+    const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
+    const clean = jsonMatch ? jsonMatch[1]!.trim() : text.trim();
+    return JSON.parse(clean) as ExtractedLeadDraft;
+  } catch {
+    console.error('Failed to parse JSON from file extraction:', text);
+    return null;
+  }
+}
+
 // ── Lead summary ────────────────────────────────────────────────────────────
 
 export async function summarizeLead(
