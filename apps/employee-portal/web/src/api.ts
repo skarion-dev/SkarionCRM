@@ -25,6 +25,31 @@ export class ApiError extends Error {
   }
 }
 
+function safeStorageSet(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch (e) {
+    console.warn('localStorage is disabled or blocked:', e);
+  }
+}
+
+function safeStorageGet(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch (e) {
+    console.warn('localStorage is disabled or blocked:', e);
+    return null;
+  }
+}
+
+function safeStorageRemove(key: string): void {
+  try {
+    localStorage.removeItem(key);
+  } catch (e) {
+    console.warn('localStorage is disabled or blocked:', e);
+  }
+}
+
 function extractHashTokens(): { accessToken: string; refreshToken: string } | null {
   try {
     const hash = window.location.hash;
@@ -56,7 +81,7 @@ export async function refreshAccessToken(): Promise<string | null> {
 
   refreshPromise = (async () => {
     try {
-      const localRefreshToken = localStorage.getItem('refresh_token');
+      const localRefreshToken = safeStorageGet('refresh_token');
       const response = await fetch(`${IDENTITY_API_URL}/auth/refresh`, {
         method: 'POST',
         headers: {
@@ -67,13 +92,13 @@ export async function refreshAccessToken(): Promise<string | null> {
       });
       if (!response.ok) {
         accessToken = null;
-        localStorage.removeItem('refresh_token');
+        safeStorageRemove('refresh_token');
         return null;
       }
       const data = (await response.json()) as { access_token: string; refresh_token?: string };
       accessToken = data.access_token;
       if (data.refresh_token) {
-        localStorage.setItem('refresh_token', data.refresh_token);
+        safeStorageSet('refresh_token', data.refresh_token);
       }
       return accessToken;
     } catch {
@@ -94,34 +119,34 @@ export async function bootstrapAuth(): Promise<{
   role: string;
   isSuperadmin: boolean;
 } | null> {
-  const hashTokens = extractHashTokens();
-  if (hashTokens) {
-    accessToken = hashTokens.accessToken;
-    localStorage.setItem('refresh_token', hashTokens.refreshToken);
-    try {
-      const response = await fetch(`${IDENTITY_API_URL}/me`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (response.ok) {
-        const data = await response.json();
-        return {
-          id: data.id,
-          email: data.email,
-          name: data.displayName,
-          role: data.apps?.hr ?? '',
-          isSuperadmin: data.isSuperadmin,
-        };
-      }
-    } catch {
-      // fallback
-    }
-  }
-
   if (bootstrapPromise) return bootstrapPromise;
 
   bootstrapPromise = (async () => {
     try {
-      const localRefreshToken = localStorage.getItem('refresh_token');
+      const hashTokens = extractHashTokens();
+      if (hashTokens) {
+        accessToken = hashTokens.accessToken;
+        safeStorageSet('refresh_token', hashTokens.refreshToken);
+        try {
+          const response = await fetch(`${IDENTITY_API_URL}/me`, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          });
+          if (response.ok) {
+            const data = await response.json();
+            return {
+              id: data.id,
+              email: data.email,
+              name: data.displayName,
+              role: data.apps?.hr ?? '',
+              isSuperadmin: data.isSuperadmin,
+            };
+          }
+        } catch {
+          // fallback
+        }
+      }
+
+      const localRefreshToken = safeStorageGet('refresh_token');
       const response = await fetch(`${IDENTITY_API_URL}/auth/refresh`, {
         method: 'POST',
         headers: {
@@ -131,7 +156,7 @@ export async function bootstrapAuth(): Promise<{
         credentials: 'include',
       });
       if (!response.ok) {
-        localStorage.removeItem('refresh_token');
+        safeStorageRemove('refresh_token');
         return null;
       }
       const data = (await response.json()) as {
@@ -147,7 +172,7 @@ export async function bootstrapAuth(): Promise<{
       };
       accessToken = data.access_token;
       if (data.refresh_token) {
-        localStorage.setItem('refresh_token', data.refresh_token);
+        safeStorageSet('refresh_token', data.refresh_token);
       }
       return {
         id: data.user.id,
