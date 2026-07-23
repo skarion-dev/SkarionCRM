@@ -232,22 +232,16 @@ async function hrFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   console.log(`[API] hrFetch: request to ${path}`);
   if (!accessToken) {
     console.log('[API] hrFetch: no access token in memory');
-    if (bootstrapPromise) {
-      console.log('[API] hrFetch: awaiting active bootstrapPromise...');
-      const user = await bootstrapPromise;
-      if (!user) {
-        console.warn('[API] hrFetch: bootstrap resolved to null, redirecting...');
-        redirectToLogin();
-        throw new ApiError('No session.', 401);
-      }
-    } else {
-      console.log('[API] hrFetch: no bootstrapPromise, triggering refresh...');
-      const refreshed = await refreshAccessToken();
-      if (!refreshed) {
-        console.warn('[API] hrFetch: refresh returned null, redirecting...');
-        redirectToLogin();
-        throw new ApiError('No session.', 401);
-      }
+    if (!bootstrapPromise) {
+      console.log('[API] hrFetch: bootstrapPromise is null, triggering bootstrapAuth...');
+      bootstrapAuth();
+    }
+    console.log('[API] hrFetch: awaiting bootstrapPromise...');
+    const user = await bootstrapPromise;
+    if (!user) {
+      console.warn('[API] hrFetch: bootstrap resolved to null, redirecting...');
+      redirectToLogin();
+      throw new ApiError('No session.', 401);
     }
   }
   const headers: Record<string, string> = {

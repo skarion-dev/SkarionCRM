@@ -252,22 +252,16 @@ export async function crmFetch<T>(path: string, init: RequestInit = {}): Promise
   console.log(`[API] crmFetch: request to ${path}`);
   if (!accessToken) {
     console.log('[API] crmFetch: no access token in memory');
-    if (bootstrapPromise) {
-      console.log('[API] crmFetch: awaiting active bootstrapPromise...');
-      const user = await bootstrapPromise;
-      if (!user) {
-        console.warn('[API] crmFetch: bootstrap resolved to null, redirecting...');
-        redirectToLogin();
-        throw new ApiError('No session.', 401);
-      }
-    } else {
-      console.log('[API] crmFetch: no bootstrapPromise, triggering refresh...');
-      const refreshed = await refreshAccessToken();
-      if (!refreshed) {
-        console.warn('[API] crmFetch: refresh returned null, redirecting...');
-        redirectToLogin();
-        throw new ApiError('No session.', 401);
-      }
+    if (!bootstrapPromise) {
+      console.log('[API] crmFetch: bootstrapPromise is null, triggering bootstrapAuth...');
+      bootstrapAuth();
+    }
+    console.log('[API] crmFetch: awaiting bootstrapPromise...');
+    const user = await bootstrapPromise;
+    if (!user) {
+      console.warn('[API] crmFetch: bootstrap resolved to null, redirecting...');
+      redirectToLogin();
+      throw new ApiError('No session.', 401);
     }
   }
 

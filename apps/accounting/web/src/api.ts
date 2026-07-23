@@ -230,22 +230,16 @@ export async function booksFetch<T>(path: string, init: RequestInit = {}): Promi
   console.log(`[API] booksFetch: request to ${path}`);
   if (!accessToken) {
     console.log('[API] booksFetch: no access token in memory');
-    if (bootstrapPromise) {
-      console.log('[API] booksFetch: awaiting active bootstrapPromise...');
-      const user = await bootstrapPromise;
-      if (!user) {
-        console.warn('[API] booksFetch: bootstrap resolved to null, redirecting...');
-        redirectToLogin();
-        throw new ApiError('No session.', 401);
-      }
-    } else {
-      console.log('[API] booksFetch: no bootstrapPromise, triggering refresh...');
-      const refreshed = await refreshAccessToken();
-      if (!refreshed) {
-        console.warn('[API] booksFetch: refresh returned null, redirecting...');
-        redirectToLogin();
-        throw new ApiError('No session.', 401);
-      }
+    if (!bootstrapPromise) {
+      console.log('[API] booksFetch: bootstrapPromise is null, triggering bootstrapAuth...');
+      bootstrapAuth();
+    }
+    console.log('[API] booksFetch: awaiting bootstrapPromise...');
+    const user = await bootstrapPromise;
+    if (!user) {
+      console.warn('[API] booksFetch: bootstrap resolved to null, redirecting...');
+      redirectToLogin();
+      throw new ApiError('No session.', 401);
     }
   }
 
