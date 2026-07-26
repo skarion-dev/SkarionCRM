@@ -217,6 +217,32 @@ export const auditLog = identitySchema.table(
 );
 
 // ─────────────────────────────────────────────────────────
+// api_keys (long-lived keys for non-interactive clients, e.g. the
+// LinkedIn profile-capture browser extension)
+// ─────────────────────────────────────────────────────────
+export const apiKeys = identitySchema.table(
+  'api_keys',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    // Snapshot of the user's email at key-creation time, so the key's owner
+    // is visible without joining back to `users` (and survives email changes).
+    email: text('email').notNull(),
+    label: text('label').notNull(),
+    keyHash: text('key_hash').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex('idx_api_keys_key_hash').on(table.keyHash),
+    index('idx_api_keys_user').on(table.userId),
+  ]
+);
+
+// ─────────────────────────────────────────────────────────
 // login_otp_codes
 // ─────────────────────────────────────────────────────────
 export const loginOtpCodes = identitySchema.table(
@@ -247,6 +273,11 @@ export const usersRelations = relations(users, ({ many }) => ({
   sessions: many(sessions),
   oauthAccounts: many(oauthAccounts),
   loginOtpCodes: many(loginOtpCodes),
+  apiKeys: many(apiKeys),
+}));
+
+export const apiKeysRelations = relations(apiKeys, ({ one }) => ({
+  user: one(users, { fields: [apiKeys.userId], references: [users.id] }),
 }));
 
 export const appMembershipsRelations = relations(appMemberships, ({ one }) => ({
