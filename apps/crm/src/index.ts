@@ -118,12 +118,6 @@ interface Env {
   ALLOWED_ORIGINS?: string;
   /** R2 bucket for lead attachments (resumes, screenshots, etc.). */
   ATTACHMENTS_BUCKET?: R2Bucket;
-  /**
-   * Owner assigned to extension-captured leads when the request carries no
-   * (or an unknown) API key. See the /extension/leads route for why this
-   * fallback exists.
-   */
-  EXTENSION_FALLBACK_OWNER_ID?: string;
 }
 
 /** Send email via Resend API (if configured, otherwise log to console). */
@@ -258,17 +252,12 @@ app.get('/api/debug/version', (c) => {
 //
 // Deliberately mounted outside /api/* so the `requireAuth` JWT middleware
 // below does not apply: the extension has no session, it authenticates with
-// a long-lived key from identity.api_keys.
+// a long-lived key from identity.api_keys (issued via the identity admin
+// UI's API Keys page, apps/identity/admin/src/pages/ApiKeysList.tsx).
 //
-// NOTE ON AUTH: key checking is currently permissive by design — a missing or
-// unrecognised key does NOT reject the request, it falls back to
-// EXTENSION_FALLBACK_OWNER_ID so the team can capture leads before keys are
-// issued. That means anyone who knows this URL can insert leads. Flip
-// `requireKey` below to true (and drop the fallback) once keys are handed out.
+// Key checking is enforced (requireKey = true below) - a missing or
+// unrecognised key is rejected outright, no anonymous-write fallback.
 // ─────────────────────────────────────────────────────────
-
-/** Default owner for extension leads when no key resolves and no env override is set. */
-const DEFAULT_EXTENSION_OWNER_ID = 'a77b7dc2-efab-478e-960b-3080e9d9b167'; // saki@crm.skarion.com
 
 async function sha256Hex(input: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
@@ -319,19 +308,36 @@ app.post('/extension/leads', async (c) => {
   const key = readExtensionKey(c);
   const resolved = await resolveExtensionKeyOwner(db, key);
 
-  const requireKey = false; // flip to true once every teammate has a key
-  if (requireKey && !resolved) {
+  if (!resolved) {
     return c.json({ error: 'Invalid or missing API key.' }, 401);
   }
-
-  // owner_id is NOT NULL with no DB default, so this must always resolve to
-  // something — never let an unattributed capture reach the insert.
-  const ownerId =
-    resolved?.userId ?? c.env.EXTENSION_FALLBACK_OWNER_ID ?? DEFAULT_EXTENSION_OWNER_ID;
+  const ownerId = resolved.userId;
 
   const body = await c.req.json();
   if (!body.firstName || !body.lastName || !body.email) {
     return c.json({ error: 'firstName, lastName and email are required.' }, 400);
+  }
+
+  // Every other ingestion path in this app (CSV import, single-create)
+  // dedups by LinkedIn URL - this one didn't, which meant re-capturing (or
+  // re-sending) the same profile silently created a second lead record
+  // every time. Match the existing convention: return the existing lead
+  // instead of inserting a duplicate.
+  if (body.linkedinUrl) {
+    const normalizedLi = String(body.linkedinUrl).toLowerCase().replace(/\/+$/, '');
+    const [existing] = await db
+      .select()
+      .from(schema.leads)
+      .where(
+        and(
+          eq(sql`lower(${schema.leads.linkedinUrl})`, normalizedLi),
+          isNull(schema.leads.deletedAt)
+        )
+      )
+      .limit(1);
+    if (existing) {
+      return c.json({ lead: existing, ownerId: existing.ownerId, duplicate: true }, 200);
+    }
   }
 
   const data = {

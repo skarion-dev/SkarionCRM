@@ -190,6 +190,32 @@ export function resendInvitation(id: string) {
   return apiFetch<{ ok: true }>(`/invitations/${id}/resend`, { method: 'POST' });
 }
 
+// ── admin: api keys ──
+export interface ApiKeyRow {
+  id: string;
+  email: string;
+  label: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+}
+
+export function listApiKeys() {
+  return apiFetch<{ keys: ApiKeyRow[] }>('/admin/api-keys');
+}
+
+/** Returns the plaintext key — the ONLY time it's ever visible. Show it once, never fetchable again. */
+export function createApiKey(email: string, label: string) {
+  return apiFetch<{ key: string; id: string }>('/admin/api-keys', {
+    method: 'POST',
+    body: JSON.stringify({ email, label }),
+  });
+}
+
+export function revokeApiKey(id: string) {
+  return apiFetch<{ ok: true }>(`/admin/api-keys/${id}/revoke`, { method: 'POST' });
+}
+
 /** Fetch the list of email domains allowed for invitations (no auth needed — public-safe). */
 export async function fetchAllowedDomains(): Promise<string[]> {
   const res = await fetch(`${API_URL}/invitations/allowed-domains`);

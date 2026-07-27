@@ -20,6 +20,7 @@ import * as schema from './db/schema.js';
 import * as authService from './services/auth.js';
 import * as invitationService from './services/invitations.js';
 import * as adminService from './services/admin.js';
+import * as apiKeyService from './services/api-keys.js';
 import { configureTokenPepper } from './lib/tokens.js';
 import type { AppName, Env } from './lib/types.js';
 
@@ -87,7 +88,8 @@ function isAllowedOrigin(origin: string, appUrl: string, allowedOriginsEnv?: str
   if (/^https:\/\/([a-z0-9-]+\.)*skarion\.com$/.test(origin)) return true;
   if (ALLOWED_PAGES_WORKERS_ORIGINS.has(origin)) return true;
   if (origin.startsWith('http://localhost:')) return true;
-  if (origin.startsWith('chrome-extension://') || origin.startsWith('moz-extension://')) return true;
+  if (origin.startsWith('chrome-extension://') || origin.startsWith('moz-extension://'))
+    return true;
   if (allowedOriginsEnv) {
     const origins = allowedOriginsEnv.split(',').map((o) => o.trim());
     if (origins.includes(origin)) return true;
@@ -240,7 +242,11 @@ app.post('/auth/login', async (c) => {
         c.req.header('User-Agent') ?? null
       );
       setRefreshCookie(c, result.refreshToken, result.refreshTokenExpiresAt);
-      return c.json({ access_token: result.accessToken, refresh_token: result.refreshToken, user: result.user });
+      return c.json({
+        access_token: result.accessToken,
+        refresh_token: result.refreshToken,
+        user: result.user,
+      });
     }
     const step1 = await authService.loginStep1(db, {
       email: body.email,
@@ -249,10 +255,11 @@ app.post('/auth/login', async (c) => {
       userAgent: c.req.header('User-Agent') ?? null,
     });
 
-    const isDummyEmail = !c.env.RESEND_API_KEY || 
-                         c.env.RESEND_API_KEY.includes('dummy') || 
-                         c.env.RESEND_API_KEY.includes('mock') ||
-                         c.env.RESEND_API_KEY === 'test';
+    const isDummyEmail =
+      !c.env.RESEND_API_KEY ||
+      c.env.RESEND_API_KEY.includes('dummy') ||
+      c.env.RESEND_API_KEY.includes('mock') ||
+      c.env.RESEND_API_KEY === 'test';
 
     if (isDummyEmail) {
       const user = await db.query.users.findFirst({
@@ -267,7 +274,11 @@ app.post('/auth/login', async (c) => {
           c.req.header('User-Agent') ?? null
         );
         setRefreshCookie(c, result.refreshToken, result.refreshTokenExpiresAt);
-        return c.json({ access_token: result.accessToken, refresh_token: result.refreshToken, user: result.user });
+        return c.json({
+          access_token: result.accessToken,
+          refresh_token: result.refreshToken,
+          user: result.user,
+        });
       }
     }
 
@@ -304,7 +315,11 @@ app.post('/auth/login/verify', async (c) => {
       jwtSecret: c.env.JWT_SECRET,
     });
     setRefreshCookie(c, result.refreshToken, result.refreshTokenExpiresAt);
-    return c.json({ access_token: result.accessToken, refresh_token: result.refreshToken, user: result.user });
+    return c.json({
+      access_token: result.accessToken,
+      refresh_token: result.refreshToken,
+      user: result.user,
+    });
   } catch (err) {
     return errorResponse(c, err);
   }
@@ -328,7 +343,11 @@ app.post('/auth/refresh', async (c) => {
       jwtSecret: c.env.JWT_SECRET,
     });
     setRefreshCookie(c, result.refreshToken, result.refreshTokenExpiresAt);
-    return c.json({ access_token: result.accessToken, refresh_token: result.refreshToken, user: result.user });
+    return c.json({
+      access_token: result.accessToken,
+      refresh_token: result.refreshToken,
+      user: result.user,
+    });
   } catch (err) {
     return errorResponse(c, err);
   }
@@ -520,7 +539,14 @@ app.post('/invitations/accept', async (c) => {
     } catch (err) {
       console.error('Failed to send welcome email:', err);
     }
-    return c.json({ access_token: loginResult.accessToken, refresh_token: loginResult.refreshToken, user: loginResult.user }, 201);
+    return c.json(
+      {
+        access_token: loginResult.accessToken,
+        refresh_token: loginResult.refreshToken,
+        user: loginResult.user,
+      },
+      201
+    );
   } catch (err) {
     return errorResponse(c, err);
   }
@@ -649,6 +675,51 @@ app.get('/admin/audit-log', requireAuth, async (c) => {
   const offset = Number(c.req.query('offset')) || undefined;
   const entries = await adminService.listAuditLog(db, { limit, offset });
   return c.json({ entries });
+});
+
+// ─────────────────────────────────────────────────────────
+// /admin/api-keys — long-lived keys for non-interactive clients (extension)
+// ─────────────────────────────────────────────────────────
+
+app.get('/admin/api-keys', requireAuth, async (c) => {
+  if (!isPlatformAdmin(c)) return c.json({ error: 'Forbidden.' }, 403);
+  const db = getDb(c.env, schema);
+  const keys = await apiKeyService.listApiKeys(db);
+  return c.json({ keys });
+});
+
+app.post('/admin/api-keys', requireAuth, async (c) => {
+  if (!isPlatformAdmin(c)) return c.json({ error: 'Forbidden.' }, 403);
+  const body = await c.req.json<{ email: string; label: string }>();
+  if (!body.email || !body.label) {
+    return c.json({ error: 'email and label are required.' }, 400);
+  }
+  const db = getDb(c.env, schema);
+  try {
+    const result = await apiKeyService.createApiKey(db, {
+      email: body.email,
+      label: body.label,
+      actorUserId: c.get('userId'),
+    });
+    // Only response that will ever contain the plaintext key.
+    return c.json({ key: result.key, id: result.id }, 201);
+  } catch (err) {
+    return errorResponse(c, err);
+  }
+});
+
+app.post('/admin/api-keys/:id/revoke', requireAuth, async (c) => {
+  if (!isPlatformAdmin(c)) return c.json({ error: 'Forbidden.' }, 403);
+  const db = getDb(c.env, schema);
+  try {
+    await apiKeyService.revokeApiKey(db, {
+      id: requireParam(c, 'id'),
+      actorUserId: c.get('userId'),
+    });
+    return c.json({ ok: true });
+  } catch (err) {
+    return errorResponse(c, err);
+  }
 });
 
 // No /register route - invite-only, per spec.

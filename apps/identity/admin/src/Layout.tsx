@@ -27,6 +27,7 @@ export function Layout({ children }: { children: ReactNode }) {
           <strong>Skarion Identity Admin</strong>
           <Link to="/users">Users</Link>
           <Link to="/invitations">Invitations</Link>
+          <Link to="/api-keys">API Keys</Link>
           <Link to="/audit-log">Audit Log</Link>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 14 }}>
