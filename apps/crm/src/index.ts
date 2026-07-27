@@ -118,6 +118,12 @@ interface Env {
   ALLOWED_ORIGINS?: string;
   /** R2 bucket for lead attachments (resumes, screenshots, etc.). */
   ATTACHMENTS_BUCKET?: R2Bucket;
+  /**
+   * Owner assigned to extension-captured leads when the request carries no
+   * (or an unknown) API key. See the /extension/leads route for why this
+   * fallback exists.
+   */
+  EXTENSION_FALLBACK_OWNER_ID?: string;
 }
 
 /** Send email via Resend API (if configured, otherwise log to console). */
@@ -203,7 +209,8 @@ function isAllowedOrigin(origin: string, appUrl: string, allowedOriginsEnv?: str
   ]);
   if (knownCloudflareOrigins.has(origin)) return true;
   if (origin.startsWith('http://localhost:')) return true;
-  if (origin.startsWith('chrome-extension://') || origin.startsWith('moz-extension://')) return true;
+  if (origin.startsWith('chrome-extension://') || origin.startsWith('moz-extension://'))
+    return true;
   if (allowedOriginsEnv) {
     const origins = allowedOriginsEnv.split(',').map((o) => o.trim());
     if (origins.includes(origin)) return true;
@@ -244,6 +251,127 @@ app.get('/api/debug/version', (c) => {
     deployedAt: new Date().toISOString(),
     environment: 'production',
   });
+});
+
+// ─────────────────────────────────────────────────────────
+// EXTENSION INGEST — LinkedIn profile-capture browser extension
+//
+// Deliberately mounted outside /api/* so the `requireAuth` JWT middleware
+// below does not apply: the extension has no session, it authenticates with
+// a long-lived key from identity.api_keys.
+//
+// NOTE ON AUTH: key checking is currently permissive by design — a missing or
+// unrecognised key does NOT reject the request, it falls back to
+// EXTENSION_FALLBACK_OWNER_ID so the team can capture leads before keys are
+// issued. That means anyone who knows this URL can insert leads. Flip
+// `requireKey` below to true (and drop the fallback) once keys are handed out.
+// ─────────────────────────────────────────────────────────
+
+/** Default owner for extension leads when no key resolves and no env override is set. */
+const DEFAULT_EXTENSION_OWNER_ID = 'a77b7dc2-efab-478e-960b-3080e9d9b167'; // saki@crm.skarion.com
+
+async function sha256Hex(input: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/** Reads the extension's key from either `Authorization: Bearer …` or `X-Api-Key`. */
+function readExtensionKey(c: { req: { header: (name: string) => string | undefined } }): string {
+  const header = c.req.header('Authorization');
+  if (header?.startsWith('Bearer ')) return header.slice('Bearer '.length).trim();
+  return (c.req.header('X-Api-Key') ?? '').trim();
+}
+
+/**
+ * Maps an extension API key to the identity user it was issued to, bumping
+ * last_used_at on a hit. Returns null when the key is absent, unknown, or
+ * revoked — the caller decides whether to fall back or reject.
+ *
+ * Uses raw SQL because identity.api_keys lives in the identity schema, which
+ * this Worker's Drizzle client isn't bound to.
+ */
+async function resolveExtensionKeyOwner(
+  db: CrmDb,
+  key: string
+): Promise<{ userId: string; email: string } | null> {
+  if (!key) return null;
+  const keyHash = await sha256Hex(key);
+  const res = await db.execute(sql`
+    SELECT id, user_id, email
+    FROM identity.api_keys
+    WHERE key_hash = ${keyHash} AND revoked_at IS NULL
+    LIMIT 1
+  `);
+  const rows = (res as unknown as { rows?: Record<string, unknown>[] }).rows ?? [];
+  const row = rows[0];
+  if (!row) return null;
+  await db.execute(sql`
+    UPDATE identity.api_keys SET last_used_at = now() WHERE id = ${row.id as string}
+  `);
+  return { userId: row.user_id as string, email: row.email as string };
+}
+
+app.post('/extension/leads', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+
+  const key = readExtensionKey(c);
+  const resolved = await resolveExtensionKeyOwner(db, key);
+
+  const requireKey = false; // flip to true once every teammate has a key
+  if (requireKey && !resolved) {
+    return c.json({ error: 'Invalid or missing API key.' }, 401);
+  }
+
+  // owner_id is NOT NULL with no DB default, so this must always resolve to
+  // something — never let an unattributed capture reach the insert.
+  const ownerId =
+    resolved?.userId ?? c.env.EXTENSION_FALLBACK_OWNER_ID ?? DEFAULT_EXTENSION_OWNER_ID;
+
+  const body = await c.req.json();
+  if (!body.firstName || !body.lastName || !body.email) {
+    return c.json({ error: 'firstName, lastName and email are required.' }, 400);
+  }
+
+  const data = {
+    firstName: String(body.firstName),
+    lastName: String(body.lastName),
+    email: String(body.email).toLowerCase(),
+    phone: body.phone ?? null,
+    companyName: body.companyName ?? null,
+    companyDomain: body.companyDomain ?? null,
+    linkedinUrl: body.linkedinUrl ?? null,
+    outreachStatus: body.outreachStatus ?? 'not_approached',
+    tags: body.tags ?? null,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    source: (body.source ?? 'linkedin') as any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    status: (body.status ?? 'new') as any,
+    notes: body.notes ?? null,
+    ownerId,
+  };
+
+  const [result] = await db.insert(schema.leads).values(data).returning();
+  if (!result) return c.json({ error: 'Internal error' }, 500);
+
+  await withAudit(db, schema.auditLog, {
+    actorUserId: ownerId,
+    action: 'create',
+    resourceType: 'lead',
+    resourceId: result.id,
+    after: { ...data, capturedVia: 'linkedin-extension', keyAttributed: !!resolved },
+    app: 'crm',
+  });
+
+  // Keep lead_channels in step with the lead — the Leads UI derives its
+  // outreach tabs from these rows.
+  c.executionCtx.waitUntil(autoCreateLeadChannels(db, result).catch(() => {}));
+
+  return c.json(
+    { lead: result, ownerId, keyAttributed: !!resolved, ownerEmail: resolved?.email ?? null },
+    201
+  );
 });
 
 app.use('/api/*', requireAuth);
