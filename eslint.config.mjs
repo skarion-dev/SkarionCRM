@@ -10,6 +10,11 @@ export default tseslint.config(
       "**/node_modules/**",
       "**/.turbo/**",
       "**/coverage/**",
+      // Not a workspace package - plain browser-extension JS (chrome/window
+      // globals, no build step) and a vendored xlsx library, not TS/Node.
+      "extension/**",
+      // Ad-hoc scratch scripts, not part of any workspace package.
+      "scratch/**",
     ],
   },
   js.configs.recommended,
