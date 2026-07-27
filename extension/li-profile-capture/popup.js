@@ -1,3 +1,10 @@
+// Quick lead-quality tiers — the whole point of this extension per the
+// original brief: whenever you think a profile is a good lead, one click
+// tags it and pushes it to the CRM, instead of manually typing a tag every
+// time. Edit this list to change the tier set; nothing else needs updating,
+// tiers are stored as plain CRM tags, not a separate field.
+const QUALITY_TIERS = ['Excellent Fit', 'Good Fit', 'Future Fit', 'Indian', 'Worth Trying'];
+
 let allProfiles = {};
 let selectedId = null;
 // Pre-filled so a fresh install works against production without the user
@@ -158,9 +165,16 @@ function showDetail(id) {
       </div>
     `).join('')}
     <a class="open-link" href="${esc(p.profileUrl)}" target="_blank">↗ Open profile</a>
-    <button class="send-crm-btn" id="btnOpenLeadForm">Send to CRM</button>
+
+    <div class="tier-row">
+      ${QUALITY_TIERS.map(t => `<button class="tier-btn" data-tier="${esc(t)}">${esc(t)}</button>`).join('')}
+    </div>
+    <button class="send-crm-btn" id="btnOpenLeadForm">Send to CRM (no tier)</button>
   `;
 
+  detail.querySelectorAll('.tier-btn').forEach(btn => {
+    btn.addEventListener('click', () => openLeadForm(p, btn.dataset.tier));
+  });
   document.getElementById('btnOpenLeadForm').addEventListener('click', () => openLeadForm(p));
 }
 
@@ -216,7 +230,7 @@ function placeholderEmail(firstName, lastName) {
   return `${slug}-${Date.now().toString(36)}@placeholder.skarion`;
 }
 
-function openLeadForm(p) {
+function openLeadForm(p, presetTier) {
   const { firstName, lastName } = splitName(p.name);
   lfFirstName.value = firstName;
   lfLastName.value = lastName;
@@ -227,10 +241,10 @@ function openLeadForm(p) {
   lfLinkedinUrl.value = p.profileUrl || '';
   lfStatus.value = 'new';
   lfOutreachStatus.value = 'not_approached';
-  leadTags = [];
+  leadTags = presetTier ? [presetTier] : [];
   renderTags();
   lfNotes.value = composeNotes(p);
-  lfStatusLine.textContent = '';
+  lfStatusLine.textContent = presetTier ? `Tier: ${presetTier} — review and send.` : '';
   lfStatusLine.className = 'status-line';
   leadForm.dataset.profileId = p.profileId;
   leadForm.classList.add('open');

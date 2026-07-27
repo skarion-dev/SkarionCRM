@@ -105,10 +105,21 @@
     .detail .open-link { font-size: 11px; color: #0a66c2; text-decoration: none; display: inline-block; margin-top: 6px; }
     .detail .open-link:hover { text-decoration: underline; }
     .detail .send-crm-btn {
-      margin-top: 10px; width: 100%; padding: 8px; border: none; border-radius: 18px;
-      background: #0a66c2; color: white; font-size: 12px; font-weight: 600; cursor: pointer;
+      margin-top: 8px; width: 100%; padding: 7px; border: none; border-radius: 18px;
+      background: white; color: #888; border: 1px solid #ccc; font-size: 11px; font-weight: 600; cursor: pointer;
     }
-    .detail .send-crm-btn:hover { background: #004182; }
+    .detail .send-crm-btn:hover { background: #fafafa; }
+
+    /* One-click lead-quality tiers — tag + send in a single click */
+    .tier-row {
+      display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px;
+    }
+    .tier-btn {
+      padding: 6px 10px; border-radius: 14px; border: 1px solid #0a66c2;
+      background: #eef3fa; color: #0a66c2; font-size: 11px; font-weight: 600;
+      cursor: pointer; transition: all 0.15s;
+    }
+    .tier-btn:hover { background: #0a66c2; color: white; }
 
     /* Lead form (send-to-CRM) */
     .lead-form { display: none; flex-direction: column; gap: 8px; }

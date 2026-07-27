@@ -23,8 +23,15 @@ CRM as a lead.
   settles (it scrolls through the page first so lazy-loaded sections like
   Experience actually render before scraping).
 - Click the extension icon to see everything captured so far, search it,
-  export the whole batch to `.xlsx`, or open a captured profile and hit
-  **Send to CRM** to create a lead from it.
+  export the whole batch to `.xlsx`, or open a captured profile and send it
+  to the CRM.
+- **Lead quality tiers**: on a captured profile's detail view, one click on
+  a tier button (Excellent Fit / Good Fit / Future Fit / Indian / Worth
+  Trying) pre-fills the lead form with that tier as a tag and opens it for
+  a final review — this is the actual point of the extension: tag a
+  profile's fit the moment you look at it, don't come back to it later. Edit
+  `QUALITY_TIERS` in `popup.js` to change the tier set; tiers are plain CRM
+  tags, not a separate field, so nothing else needs updating.
 - Email is left as an auto-generated placeholder (`name-xxxx@placeholder.skarion`)
   since LinkedIn doesn't expose it on the profile page — replace it with a
   real address if you have one before sending, otherwise it's fine to leave
