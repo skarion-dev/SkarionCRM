@@ -156,6 +156,9 @@ importers:
       '@neondatabase/serverless':
         specifier: 1.1.0
         version: 1.1.0
+      '@skarion/ai-toolkit':
+        specifier: workspace:*
+        version: link:../../packages/ai-toolkit
       '@skarion/auth-client':
         specifier: workspace:^
         version: link:../../packages/auth-client
@@ -516,6 +519,9 @@ importers:
       '@neondatabase/serverless':
         specifier: 1.1.0
         version: 1.1.0
+      '@skarion/ai-toolkit':
+        specifier: workspace:*
+        version: link:../../../packages/ai-toolkit
       '@skarion/crm':
         specifier: workspace:*
         version: link:../../crm

@@ -9,7 +9,12 @@ head_sampling_rate = 1
 
 [vars]
 APP_URL = "https://skarion-crm-cv9.pages.dev"
-AI_PROVIDER = "google"
+AI_PROVIDER = "vertex_proxy"
+AI_MODEL_DEFAULT = "coding-fast"
+AI_MODEL_REASONING = "coding-best"
+AI_MODEL_CHEAP = "coding-cheap"
+AI_MODEL_FALLBACK = "coding-cheap"
+AI_EMBEDDING_MODEL = "embedding"
 GOOGLE_MODEL = "gemini-1.5-flash"
 GOOGLE_FALLBACK_MODEL = "gemini-1.5-pro"
 GOOGLE_EMBEDDING_MODEL = "text-embedding-004"
@@ -19,7 +24,12 @@ GOOGLE_EMBEDDING_MODEL = "text-embedding-004"
 
 [env.staging.vars]
 APP_URL = "https://skarion-crm-staging.pages.dev"
-AI_PROVIDER = "google"
+AI_PROVIDER = "vertex_proxy"
+AI_MODEL_DEFAULT = "coding-fast"
+AI_MODEL_REASONING = "coding-best"
+AI_MODEL_CHEAP = "coding-cheap"
+AI_MODEL_FALLBACK = "coding-cheap"
+AI_EMBEDDING_MODEL = "embedding"
 GOOGLE_MODEL = "gemini-1.5-flash"
 GOOGLE_FALLBACK_MODEL = "gemini-1.5-pro"
 GOOGLE_EMBEDDING_MODEL = "text-embedding-004"

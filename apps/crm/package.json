@@ -26,6 +26,7 @@
   },
   "dependencies": {
     "@neondatabase/serverless": "1.1.0",
+    "@skarion/ai-toolkit": "workspace:*",
     "@skarion/auth-client": "workspace:^",
     "@skarion/db-kit": "workspace:*",
     "@skarion/importers": "workspace:^",

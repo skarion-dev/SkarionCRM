@@ -2,9 +2,10 @@ import { Hono } from 'hono';
 import { getDb } from '@skarion/db-kit';
 import * as schema from '@skarion/crm/db/schema';
 import type { CrmDb } from '@skarion/crm/db/types';
+import { gatewayEmbedding, hasAiGateway, type AiGatewayEnv } from '@skarion/ai-toolkit';
 import { eq, and, isNull } from 'drizzle-orm';
 
-interface Env {
+interface Env extends AiGatewayEnv {
   DATABASE_URL: string;
   GOOGLE_API_KEY?: string;
   GOOGLE_EMBEDDING_MODEL?: string;
@@ -35,18 +36,28 @@ function recordToText(type: string, record: Record<string, unknown>): string {
 }
 
 async function fetchEmbedding(text: string, env: Env): Promise<number[] | null> {
+  if (hasAiGateway(env)) {
+    const embedding = await gatewayEmbedding(text, env);
+    if (embedding) return embedding;
+  }
   if (!env.GOOGLE_API_KEY) return null;
   const model = env.GOOGLE_EMBEDDING_MODEL || 'text-embedding-004';
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent?key=${env.GOOGLE_API_KEY}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: `models/${model}`,
-        content: { parts: [{ text }] },
-      }),
-    });
-    if (!res.ok) { console.error('Google embedding error:', await res.text()); return null; }
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent?key=${env.GOOGLE_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: `models/${model}`,
+          content: { parts: [{ text }] },
+        }),
+      }
+    );
+    if (!res.ok) {
+      console.error('Google embedding error:', await res.text());
+      return null;
+    }
     const data = (await res.json()) as { embedding?: { values?: number[] } };
     return data.embedding?.values ?? null;
   } catch (err) {
@@ -63,16 +74,26 @@ async function upsertEmbedding(
   embedding: number[],
   ownerId: string
 ) {
-  const existing = await db.select().from(schema.embeddings)
-    .where(and(eq(schema.embeddings.resourceType, resourceType), eq(schema.embeddings.resourceId, resourceId)))
+  const existing = await db
+    .select()
+    .from(schema.embeddings)
+    .where(
+      and(
+        eq(schema.embeddings.resourceType, resourceType),
+        eq(schema.embeddings.resourceId, resourceId)
+      )
+    )
     .limit(1);
   if (existing.length > 0) {
     const id = existing[0]!.id;
-    await db.update(schema.embeddings)
+    await db
+      .update(schema.embeddings)
       .set({ content, embedding, ownerId, updatedAt: new Date() })
       .where(eq(schema.embeddings.id, id));
   } else {
-    await db.insert(schema.embeddings).values({ resourceType, resourceId, content, embedding, ownerId });
+    await db
+      .insert(schema.embeddings)
+      .values({ resourceType, resourceId, content, embedding, ownerId });
   }
 }
 
@@ -86,16 +107,21 @@ async function processTable(
   ownerField: string
 ) {
   // Select records that either have no embedding or have been updated since their last embedding
-  const rows = await db.select().from(table)
-    .where(isNull(table.deletedAt))
-    .limit(50); // batch size per run
+  const rows = await db.select().from(table).where(isNull(table.deletedAt)).limit(50); // batch size per run
 
   let processed = 0;
   for (const row of rows) {
     const text = recordToText(type, row as Record<string, unknown>);
     const embedding = await fetchEmbedding(text, env);
     if (!embedding) continue;
-    await upsertEmbedding(db, type, row[idField] as string, text, embedding, row[ownerField] as string);
+    await upsertEmbedding(
+      db,
+      type,
+      row[idField] as string,
+      text,
+      embedding,
+      row[ownerField] as string
+    );
     processed++;
   }
   return processed;
@@ -108,35 +134,47 @@ async function buildAllEmbeddings(env: Env): Promise<{ processed: number; errors
 
   try {
     total += await processTable(db, env, schema.companies, 'company', 'id', 'ownerId');
-  } catch (err) { errors.push(`companies: ${(err as Error).message}`); }
+  } catch (err) {
+    errors.push(`companies: ${(err as Error).message}`);
+  }
 
   try {
     total += await processTable(db, env, schema.contacts, 'contact', 'id', 'ownerId');
-  } catch (err) { errors.push(`contacts: ${(err as Error).message}`); }
+  } catch (err) {
+    errors.push(`contacts: ${(err as Error).message}`);
+  }
 
   try {
     total += await processTable(db, env, schema.leads, 'lead', 'id', 'ownerId');
-  } catch (err) { errors.push(`leads: ${(err as Error).message}`); }
+  } catch (err) {
+    errors.push(`leads: ${(err as Error).message}`);
+  }
 
   try {
     total += await processTable(db, env, schema.opportunities, 'opportunity', 'id', 'ownerId');
-  } catch (err) { errors.push(`opportunities: ${(err as Error).message}`); }
+  } catch (err) {
+    errors.push(`opportunities: ${(err as Error).message}`);
+  }
 
   try {
     total += await processTable(db, env, schema.tasks, 'task', 'id', 'assigneeId');
-  } catch (err) { errors.push(`tasks: ${(err as Error).message}`); }
+  } catch (err) {
+    errors.push(`tasks: ${(err as Error).message}`);
+  }
 
   try {
     total += await processTable(db, env, schema.activities, 'activity', 'id', 'actorId');
-  } catch (err) { errors.push(`activities: ${(err as Error).message}`); }
+  } catch (err) {
+    errors.push(`activities: ${(err as Error).message}`);
+  }
 
   return { processed: total, errors };
 }
 
 // Manual trigger endpoint (for testing or on-demand rebuilds)
 app.post('/build', async (c) => {
-  if (!c.env.GOOGLE_API_KEY) {
-    return c.json({ error: 'GOOGLE_API_KEY not configured.' }, 503);
+  if (!hasAiGateway(c.env) && !c.env.GOOGLE_API_KEY) {
+    return c.json({ error: 'AI gateway or GOOGLE_API_KEY not configured.' }, 503);
   }
   const result = await buildAllEmbeddings(c.env);
   return c.json(result);
@@ -145,9 +183,13 @@ app.post('/build', async (c) => {
 export default {
   fetch: app.fetch,
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(buildAllEmbeddings(env).then((result) => {
-      console.log(`[embeddings-builder] processed=${result.processed} errors=${result.errors.length}`);
-      if (result.errors.length) console.error('[embeddings-builder] errors:', result.errors);
-    }));
+    ctx.waitUntil(
+      buildAllEmbeddings(env).then((result) => {
+        console.log(
+          `[embeddings-builder] processed=${result.processed} errors=${result.errors.length}`
+        );
+        if (result.errors.length) console.error('[embeddings-builder] errors:', result.errors);
+      })
+    );
   },
 };

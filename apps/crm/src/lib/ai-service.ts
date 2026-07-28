@@ -3,7 +3,18 @@
 // permission-aware context building, error handling, and fallback messages.
 // Used by: chat endpoint, PDF lead extraction, outreach drafting, embeddings.
 
-interface Env {
+import {
+  gatewayChatCompletion,
+  gatewayEmbedding,
+  hasAiGateway,
+  selectAiModel,
+  type AiGatewayEnv,
+  type AiGatewayMessage,
+  type AiModelTier,
+} from '@skarion/ai-toolkit';
+import { and, eq } from 'drizzle-orm';
+
+interface Env extends AiGatewayEnv {
   AI_PROVIDER?: string;
   GOOGLE_API_KEY?: string;
   GOOGLE_MODEL?: string;
@@ -12,17 +23,23 @@ interface Env {
   GOOGLE_EMBEDDING_MODEL?: string;
 }
 
-import { and, eq } from 'drizzle-orm';
-
 export const DEFAULT_CHAT_MODEL = 'gemini-1.5-flash';
 export const DEFAULT_FALLBACK_MODEL = 'gemini-1.5-pro';
 export const DEFAULT_EMBEDDING_MODEL = 'text-embedding-004';
 export const AI_NOT_CONFIGURED_MSG =
-  'AI assistant is not configured. Add GOOGLE_API_KEY to enable AI features.';
+  'AI assistant is not configured. Add AI gateway credentials or GOOGLE_API_KEY to enable AI features.';
+
+export function isAiConfigured(env: Env): boolean {
+  return hasAiGateway(env) || Boolean(env.GOOGLE_API_KEY);
+}
 
 // ── Embeddings ────────────────────────────────────────────────────────────
 
 export async function getEmbedding(text: string, env: Env): Promise<number[] | null> {
+  if (hasAiGateway(env)) {
+    const embedding = await gatewayEmbedding(text, env);
+    if (embedding) return embedding;
+  }
   if (!env.GOOGLE_API_KEY) return null;
   const model = env.GOOGLE_EMBEDDING_MODEL || DEFAULT_EMBEDDING_MODEL;
   try {
@@ -77,7 +94,7 @@ export async function autoEmbed(
   ownerId: string,
   env: Env
 ): Promise<void> {
-  if (!env.GOOGLE_API_KEY) return;
+  if (!isAiConfigured(env)) return;
   const embedding = await getEmbedding(content, env);
   if (!embedding) return;
   await db
@@ -108,11 +125,46 @@ export interface ChatMessage {
 export async function chatCompletion(
   messages: ChatMessage[],
   env: Env,
-  opts?: { temperature?: number; systemInstruction?: string; model?: string }
+  opts?: {
+    temperature?: number;
+    systemInstruction?: string;
+    model?: string;
+    tier?: AiModelTier;
+  }
 ): Promise<string | null> {
+  if (!isAiConfigured(env)) return null;
+
+  if (hasAiGateway(env)) {
+    const gatewayMessages: AiGatewayMessage[] = messages.map((message) => ({
+      role: message.role === 'model' ? 'assistant' : 'user',
+      content: message.text,
+    }));
+    if (opts?.systemInstruction) {
+      gatewayMessages.unshift({ role: 'system', content: opts.systemInstruction });
+    }
+
+    const preferredModel = opts?.model || selectAiModel(env, opts?.tier || 'fast');
+    const fallbackModel = env.AI_MODEL_FALLBACK || selectAiModel(env, 'cheap');
+    const result = await gatewayChatCompletion(gatewayMessages, env, {
+      model: preferredModel,
+      temperature: opts?.temperature,
+    });
+    if (result) return result;
+
+    if (fallbackModel !== preferredModel) {
+      console.log(
+        `[AI] Gateway model ${preferredModel} failed, trying fallback ${fallbackModel}...`
+      );
+      const fallback = await gatewayChatCompletion(gatewayMessages, env, {
+        model: fallbackModel,
+        temperature: opts?.temperature,
+      });
+      if (fallback) return fallback;
+    }
+  }
+
   if (!env.GOOGLE_API_KEY) return null;
-  const preferredModel =
-    opts?.model || env.GOOGLE_MODEL || env.GOOGLE_CHAT_MODEL || DEFAULT_CHAT_MODEL;
+  const preferredModel = env.GOOGLE_MODEL || env.GOOGLE_CHAT_MODEL || DEFAULT_CHAT_MODEL;
   const fallbackModel = env.GOOGLE_FALLBACK_MODEL || DEFAULT_FALLBACK_MODEL;
 
   const contents = messages.map((m) => ({
@@ -173,7 +225,12 @@ export async function chatCompletion(
 export async function chatCompletionSingle(
   prompt: string,
   env: Env,
-  opts?: { temperature?: number; systemInstruction?: string }
+  opts?: {
+    temperature?: number;
+    systemInstruction?: string;
+    model?: string;
+    tier?: AiModelTier;
+  }
 ): Promise<string | null> {
   return chatCompletion([{ role: 'user', text: prompt }], env, opts);
 }
@@ -188,6 +245,7 @@ export async function extractStructured<T>(
   const text = await chatCompletionSingle(prompt, env, {
     ...opts,
     temperature: opts?.temperature ?? 0.1,
+    tier: 'reasoning',
   });
   if (!text) return null;
   try {
@@ -220,7 +278,7 @@ export async function draftOutreach(
   request: OutreachDraftRequest,
   env: Env
 ): Promise<string | null> {
-  if (!env.GOOGLE_API_KEY) return null;
+  if (!isAiConfigured(env)) return null;
 
   const toneMap: Record<string, string> = {
     short: 'Short and direct, get to the point in 2-3 sentences',
@@ -297,7 +355,7 @@ export async function extractLeadFromPdfText(
   suggestedType: string,
   env: Env
 ): Promise<ExtractedLeadDraft | null> {
-  if (!env.GOOGLE_API_KEY) return null;
+  if (!isAiConfigured(env)) return null;
 
   const typePrompt =
     suggestedType === 'candidate'
@@ -361,7 +419,7 @@ export async function extractLeadFromPdfFile(
   suggestedType: string,
   env: Env
 ): Promise<ExtractedLeadDraft | null> {
-  if (!env.GOOGLE_API_KEY) return null;
+  if (!isAiConfigured(env)) return null;
 
   const base64Data = uint8ArrayToBase64(fileBytes);
 
@@ -402,6 +460,36 @@ Extract the following information from this document and return ONLY valid JSON 
 Use empty strings for missing fields. Use 0 for confidence if nothing useful was found. confidence should be 0.0-1.0 based on how much information was successfully extracted. missingFields should list which fields were empty or uncertain.
 
 Return ONLY the JSON object, no markdown, no explanation.`;
+
+  let text: string | null = null;
+  if (hasAiGateway(env)) {
+    const messages: AiGatewayMessage[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: prompt },
+          {
+            type: 'image_url',
+            image_url: { url: `data:${mimeType};base64,${base64Data}` },
+          },
+        ],
+      },
+    ];
+    const preferredModel = selectAiModel(env, 'reasoning');
+    text = await gatewayChatCompletion(messages, env, {
+      model: preferredModel,
+      temperature: 0.1,
+    });
+    if (!text) {
+      text = await gatewayChatCompletion(messages, env, {
+        model: env.AI_MODEL_FALLBACK || selectAiModel(env, 'cheap'),
+        temperature: 0.1,
+      });
+    }
+  }
+
+  if (text) return parseExtractedLead(text);
+  if (!env.GOOGLE_API_KEY) return null;
 
   const preferredModel = env.GOOGLE_MODEL || DEFAULT_CHAT_MODEL;
   const fallbackModel = env.GOOGLE_FALLBACK_MODEL || DEFAULT_FALLBACK_MODEL;
@@ -445,15 +533,81 @@ Return ONLY the JSON object, no markdown, no explanation.`;
     }
   }
 
-  const text = (await tryModel(preferredModel)) || (await tryModel(fallbackModel));
+  text = (await tryModel(preferredModel)) || (await tryModel(fallbackModel));
   if (!text) return null;
 
+  return parseExtractedLead(text);
+}
+
+function parseExtractedLead(text: string): ExtractedLeadDraft | null {
   try {
     const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
     const clean = jsonMatch ? jsonMatch[1]!.trim() : text.trim();
     return JSON.parse(clean) as ExtractedLeadDraft;
   } catch {
     console.error('Failed to parse JSON from file extraction:', text);
+    return null;
+  }
+}
+
+export async function extractDocumentText(
+  fileBytes: Uint8Array,
+  mimeType: string,
+  env: Env
+): Promise<string | null> {
+  if (!isAiConfigured(env)) return null;
+
+  const prompt =
+    'Extract all text from this image or PDF. Return only the raw text, no formatting or commentary.';
+  const base64Data = uint8ArrayToBase64(fileBytes);
+
+  if (hasAiGateway(env)) {
+    const result = await gatewayChatCompletion(
+      [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            {
+              type: 'image_url',
+              image_url: { url: `data:${mimeType};base64,${base64Data}` },
+            },
+          ],
+        },
+      ],
+      env,
+      { tier: 'reasoning', temperature: 0.1 }
+    );
+    if (result) return result;
+  }
+
+  if (!env.GOOGLE_API_KEY) return null;
+  const model = env.GOOGLE_MODEL || DEFAULT_FALLBACK_MODEL;
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GOOGLE_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [{ text: prompt }, { inlineData: { mimeType, data: base64Data } }],
+            },
+          ],
+        }),
+      }
+    );
+    if (!response.ok) {
+      console.error(`Google OCR error (${model}, ${response.status}):`, await response.text());
+      return null;
+    }
+    const data = (await response.json()) as {
+      candidates?: { content?: { parts?: { text?: string }[] } }[];
+    };
+    return data.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
+  } catch (error) {
+    console.error(`Google OCR request failed (${model}):`, error);
     return null;
   }
 }
@@ -473,7 +627,7 @@ export async function summarizeLead(
   },
   env: Env
 ): Promise<string | null> {
-  if (!env.GOOGLE_API_KEY) return null;
+  if (!isAiConfigured(env)) return null;
 
   const prompt = `Summarize this lead in 2-3 bullet points for a CRM user:
 
@@ -496,7 +650,7 @@ export async function summarizeCompany(
   company: { name: string; domain: string | null; industry: string | null; size: string | null },
   env: Env
 ): Promise<string | null> {
-  if (!env.GOOGLE_API_KEY) return null;
+  if (!isAiConfigured(env)) return null;
 
   const prompt = `Summarize this company in 2-3 sentences for a CRM user:
 
@@ -522,7 +676,7 @@ export async function summarizeContact(
   },
   env: Env
 ): Promise<string | null> {
-  if (!env.GOOGLE_API_KEY) return null;
+  if (!isAiConfigured(env)) return null;
 
   const prompt = `Summarize this contact in 2-3 sentences for a CRM user:
 
@@ -542,7 +696,7 @@ export async function suggestNextAction(
   lead: { firstName: string; lastName: string; status: string; notes: string | null },
   env: Env
 ): Promise<string | null> {
-  if (!env.GOOGLE_API_KEY) return null;
+  if (!isAiConfigured(env)) return null;
 
   const prompt = `Based on this lead, suggest the single best next action:
 
@@ -570,7 +724,7 @@ export async function scoreLead(
   },
   env: Env
 ): Promise<{ score: number; reasoning: string } | null> {
-  if (!env.GOOGLE_API_KEY) return null;
+  if (!isAiConfigured(env)) return null;
 
   const prompt = `Score this lead from 0-100 for a CRM user and explain why:
 

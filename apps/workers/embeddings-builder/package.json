@@ -12,6 +12,7 @@
     "lint": "eslint . --max-warnings=0"
   },
   "dependencies": {
+    "@skarion/ai-toolkit": "workspace:*",
     "@skarion/db-kit": "workspace:*",
     "@skarion/crm": "workspace:*",
     "@neondatabase/serverless": "1.1.0",

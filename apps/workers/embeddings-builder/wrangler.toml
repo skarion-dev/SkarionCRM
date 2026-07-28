@@ -12,4 +12,5 @@ head_sampling_rate = 1
 crons = ["*/15 * * * *"]
 
 [vars]
+AI_EMBEDDING_MODEL = "embedding"
 GOOGLE_EMBEDDING_MODEL = "text-embedding-004"

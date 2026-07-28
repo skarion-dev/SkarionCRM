@@ -77,6 +77,16 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      - name: Set AI gateway secrets
+        working-directory: apps/crm
+        run: |
+          printf '%s' "$AI_GATEWAY_BASE_URL" | wrangler secret put AI_GATEWAY_BASE_URL
+          printf '%s' "$AI_GATEWAY_API_KEY" | wrangler secret put AI_GATEWAY_API_KEY
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          AI_GATEWAY_BASE_URL: ${{ secrets.AI_GATEWAY_BASE_URL }}
+          AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
       - name: Set GOOGLE_CHAT_MODEL secret
         working-directory: apps/crm
         run: printf '%s' "$GOOGLE_CHAT_MODEL" | wrangler secret put GOOGLE_CHAT_MODEL

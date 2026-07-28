@@ -105,6 +105,13 @@ interface Env {
   RESEND_API_KEY?: string;
   WORKFLOW_RUNNER_URL?: string;
   AI_PROVIDER?: string;
+  AI_GATEWAY_BASE_URL?: string;
+  AI_GATEWAY_API_KEY?: string;
+  AI_MODEL_DEFAULT?: string;
+  AI_MODEL_REASONING?: string;
+  AI_MODEL_CHEAP?: string;
+  AI_MODEL_FALLBACK?: string;
+  AI_EMBEDDING_MODEL?: string;
   GOOGLE_API_KEY?: string;
   GOOGLE_MODEL?: string;
   GOOGLE_FALLBACK_MODEL?: string;
@@ -3645,7 +3652,7 @@ app.post('/api/leads/import/document', async (c) => {
 
   // ── Step 3: AI extraction ─────────────────────────────────────────────
   let aiResult: ai.ExtractedLeadDraft | null = null;
-  if (c.env.GOOGLE_API_KEY) {
+  if (ai.isAiConfigured(c.env)) {
     if (usedFallback && isPdf) {
       aiResult = await ai.extractLeadFromPdfFile(bytes, file.type, leadType, c.env);
     } else {
@@ -4122,8 +4129,12 @@ app.post('/api/notifications/:id/read', async (c) => {
 
 app.get('/api/integrations/status', async (c) => {
   const env = c.env as Env;
+  const aiConfigured = ai.isAiConfigured(env);
   return c.json({
-    googleAi: !!env.GOOGLE_API_KEY,
+    googleApiKey: aiConfigured,
+    resendConfigured: Boolean(env.RESEND_API_KEY),
+    aiGateway: Boolean(env.AI_GATEWAY_BASE_URL && env.AI_GATEWAY_API_KEY),
+    googleAiFallback: Boolean(env.GOOGLE_API_KEY),
     documentConverter: !!env.DOCUMENT_CONVERTER_URL,
     resendEmail: !!env.RESEND_API_KEY,
   });
@@ -4136,38 +4147,16 @@ app.post('/api/ocr', async (c) => {
   const body = await c.req.parseBody();
   const file = body['file'] as File;
   if (!file) return c.json({ error: 'No file uploaded' }, 400);
-  if (!env.GOOGLE_API_KEY) return c.json({ error: 'AI not configured' }, 503);
-
-  const bytes = await file.arrayBuffer();
-  const base64 = btoa(String.fromCharCode(...new Uint8Array(bytes)));
+  if (!ai.isAiConfigured(env)) return c.json({ error: 'AI not configured' }, 503);
 
   try {
-    const ocrModel = env.GOOGLE_MODEL || 'gemini-1.5-pro';
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${ocrModel}:generateContent?key=${env.GOOGLE_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                {
-                  text: 'Extract all text from this image or PDF. Return only the raw text, no formatting or commentary.',
-                },
-                { inlineData: { mimeType: file.type, data: base64 } },
-              ],
-            },
-          ],
-        }),
-      }
+    const text = await ai.extractDocumentText(
+      new Uint8Array(await file.arrayBuffer()),
+      file.type,
+      env
     );
-    if (!res.ok) return c.json({ error: 'OCR failed', details: await res.text() }, 500);
-    const data = (await res.json()) as {
-      candidates?: [{ content?: { parts?: [{ text?: string }] } }];
-    };
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-    return c.json({ text, source: 'google_document_ai' });
+    if (!text) return c.json({ error: 'OCR failed' }, 500);
+    return c.json({ text, source: env.AI_GATEWAY_API_KEY ? 'ai_gateway' : 'google_ai' });
   } catch (err) {
     console.error('OCR error:', err);
     return c.json({ error: 'OCR processing failed' }, 500);
