@@ -97,6 +97,7 @@ export type AiAgentId =
   | 'crm-copilot'
   | 'lead-intake'
   | 'document-ocr'
+  | 'linkedin-connection-writer'
   | 'outreach-writer'
   | 'lead-scorer'
   | 'next-best-action'
@@ -129,6 +130,13 @@ export const AI_AGENTS: ReadonlyArray<{
     name: 'Document OCR Agent',
     description: 'Reads scanned PDFs and images.',
     tier: 'reasoning',
+  },
+  {
+    id: 'linkedin-connection-writer',
+    name: 'LinkedIn Connection Writer',
+    description:
+      'Creates a verified, personalized connection note that is ready to paste and never exceeds 300 characters.',
+    tier: 'fast',
   },
   {
     id: 'outreach-writer',

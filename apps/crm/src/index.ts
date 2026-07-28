@@ -406,7 +406,20 @@ app.post('/extension/leads', async (c) => {
       .where(eq(schema.leads.idempotencyKey, idempotencyKey))
       .limit(1);
     if (prior) {
-      return c.json({ lead: prior, ownerId: prior.ownerId, duplicate: true, replayed: true }, 200);
+      const [aiAssessment] = await db
+        .select()
+        .from(schema.leadAiAssessments)
+        .where(eq(schema.leadAiAssessments.leadId, prior.id));
+      return c.json(
+        {
+          lead: prior,
+          aiAssessment: aiAssessment ?? null,
+          ownerId: prior.ownerId,
+          duplicate: true,
+          replayed: true,
+        },
+        200
+      );
     }
   }
 
@@ -426,7 +439,19 @@ app.post('/extension/leads', async (c) => {
         200
       );
     }
-    return c.json({ lead: exact.record, ownerId: exact.record.ownerId, duplicate: true }, 200);
+    const [aiAssessment] = await db
+      .select()
+      .from(schema.leadAiAssessments)
+      .where(eq(schema.leadAiAssessments.leadId, exact.record.id));
+    return c.json(
+      {
+        lead: exact.record,
+        aiAssessment: aiAssessment ?? null,
+        ownerId: exact.record.ownerId,
+        duplicate: true,
+      },
+      200
+    );
   }
 
   const data = {
@@ -463,7 +488,19 @@ app.post('/extension/leads', async (c) => {
     if (code === '23505') {
       const raced = await findExactMatch(db, { linkedinUrl, email, phone });
       if (raced && raced.entityType === 'lead') {
-        return c.json({ lead: raced.record, ownerId: raced.record.ownerId, duplicate: true }, 200);
+        const [aiAssessment] = await db
+          .select()
+          .from(schema.leadAiAssessments)
+          .where(eq(schema.leadAiAssessments.leadId, raced.record.id));
+        return c.json(
+          {
+            lead: raced.record,
+            aiAssessment: aiAssessment ?? null,
+            ownerId: raced.record.ownerId,
+            duplicate: true,
+          },
+          200
+        );
       }
     }
     throw err;
@@ -483,8 +520,21 @@ app.post('/extension/leads', async (c) => {
   // outreach tabs from these rows.
   c.executionCtx.waitUntil(autoCreateLeadChannels(db, result).catch(() => {}));
 
+  let aiAssessment = null;
+  try {
+    aiAssessment = await generateAndSaveLeadAiAssessment(db, result, c.env);
+  } catch (error) {
+    console.error('LinkedIn lead AI assessment failed:', error);
+  }
+
   return c.json(
-    { lead: result, ownerId, keyAttributed: !!resolved, ownerEmail: resolved?.email ?? null },
+    {
+      lead: result,
+      aiAssessment,
+      ownerId,
+      keyAttributed: !!resolved,
+      ownerEmail: resolved?.email ?? null,
+    },
     201
   );
 });
@@ -556,6 +606,60 @@ async function getConfiguredAiEnv(db: CrmDb, env: Env): Promise<Env> {
     AI_EMBEDDING_MODEL: settings.tierModels.embedding,
     AI_AGENT_MODELS: JSON.stringify(settings.agentModels),
   };
+}
+
+async function generateAndSaveLeadAiAssessment(
+  db: CrmDb,
+  lead: typeof schema.leads.$inferSelect,
+  env: Env
+) {
+  const aiEnv = await getConfiguredAiEnv(db, env);
+  if (!ai.isAiConfigured(aiEnv)) return null;
+
+  const input: ai.LeadQualificationInput = {
+    firstName: lead.firstName,
+    lastName: lead.lastName,
+    email: lead.email,
+    companyName: lead.companyName,
+    status: lead.status,
+    source: lead.source,
+    notes: lead.notes,
+  };
+  const [assessment, connectionNote] = await Promise.all([
+    ai.qualifyLead(input, aiEnv),
+    ai.draftLinkedinConnectionNote(input, aiEnv),
+  ]);
+  if (!assessment || !connectionNote) return null;
+
+  const values = {
+    leadId: lead.id,
+    overallScore: assessment.overallScore,
+    rawScore: assessment.rawScore,
+    classification: assessment.classification,
+    confidenceLevel: assessment.confidenceLevel,
+    scoreBreakdown: assessment.scoreBreakdown,
+    verifiedPositiveSignals: assessment.verifiedPositiveSignals,
+    risksOrMissingInformation: assessment.risksOrMissingInformation,
+    hardDisqualifier: assessment.hardDisqualifier,
+    hardDisqualifierReason: assessment.hardDisqualifierReason,
+    campaignMatches: assessment.campaignMatches,
+    recommendedAction: assessment.recommendedAction,
+    bestOutreachAngle: assessment.bestOutreachAngle,
+    qualificationQuestions: assessment.qualificationQuestions,
+    reasoningSummary: assessment.reasoningSummary,
+    connectionNote,
+    connectionNoteCharacterCount: [...connectionNote].length,
+    updatedAt: new Date(),
+  };
+  const [saved] = await db
+    .insert(schema.leadAiAssessments)
+    .values(values)
+    .onConflictDoUpdate({
+      target: schema.leadAiAssessments.leadId,
+      set: values,
+    })
+    .returning();
+  return saved ?? null;
 }
 
 // --- COMPANIES ---
@@ -3653,6 +3757,46 @@ app.post('/api/leads/:id/score', async (c) => {
   const result = await ai.scoreLead(row, await getConfiguredAiEnv(db, c.env));
   if (!result) return c.json({ error: ai.AI_NOT_CONFIGURED_MSG }, 503);
   return c.json(result);
+});
+
+app.get('/api/leads/:id/ai-assessment', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const id = c.req.param('id');
+  const role = getRole(c);
+  const isSuperadmin = c.get('isSuperadmin');
+  const caller = { userId: c.get('userId'), isSuperadmin };
+  const [lead] = await db
+    .select()
+    .from(schema.leads)
+    .where(and(eq(schema.leads.id, id), isNull(schema.leads.deletedAt)));
+  if (!lead) return c.json({ error: 'Not found.' }, 404);
+  if (!can(isSuperadmin, role, 'view', { ownerId: lead.ownerId }, caller)) {
+    return c.json({ error: 'Forbidden.' }, 403);
+  }
+  const [assessment] = await db
+    .select()
+    .from(schema.leadAiAssessments)
+    .where(eq(schema.leadAiAssessments.leadId, id));
+  return c.json({ assessment: assessment ?? null });
+});
+
+app.post('/api/leads/:id/ai-assessment', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const id = c.req.param('id');
+  const role = getRole(c);
+  const isSuperadmin = c.get('isSuperadmin');
+  const caller = { userId: c.get('userId'), isSuperadmin };
+  const [lead] = await db
+    .select()
+    .from(schema.leads)
+    .where(and(eq(schema.leads.id, id), isNull(schema.leads.deletedAt)));
+  if (!lead) return c.json({ error: 'Not found.' }, 404);
+  if (!can(isSuperadmin, role, 'view', { ownerId: lead.ownerId }, caller)) {
+    return c.json({ error: 'Forbidden.' }, 403);
+  }
+  const assessment = await generateAndSaveLeadAiAssessment(db, lead, c.env);
+  if (!assessment) return c.json({ error: ai.AI_NOT_CONFIGURED_MSG }, 503);
+  return c.json({ assessment });
 });
 
 app.post('/api/leads/:id/suggest-next-action', async (c) => {

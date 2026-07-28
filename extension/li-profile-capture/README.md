@@ -32,13 +32,15 @@ CRM as a lead.
   profile's fit the moment you look at it, don't come back to it later. Edit
   `QUALITY_TIERS` in `popup.js` to change the tier set; tiers are plain CRM
   tags, not a separate field, so nothing else needs updating.
-- Email is left as an auto-generated placeholder (`name-xxxx@placeholder.skarion`)
-  since LinkedIn doesn't expose it on the profile page — replace it with a
-  real address if you have one before sending, otherwise it's fine to leave
-  as-is (matches the same placeholder convention the CRM's own CSV importer
-  uses for leads with no known email).
+- Email is optional because LinkedIn does not expose it on profile pages. The
+  extension and CRM do not manufacture placeholder addresses.
 - Sending the same LinkedIn URL twice does not create a duplicate lead — the
   CRM returns the existing one instead.
+- After a new LinkedIn lead is saved, the Vertex-backed qualification workflow
+  scores it, stores the detailed assessment, and generates a personalized
+  connection-request note capped at 300 characters. The extension keeps the
+  lead form open and shows **Copy note** so the message can be pasted directly
+  into LinkedIn.
 
 ## Notes for whoever maintains this next
 

@@ -230,6 +230,36 @@ export const leads = crmSchema.table(
   ]
 );
 
+export const leadAiAssessments = crmSchema.table(
+  'lead_ai_assessments',
+  {
+    leadId: uuid('lead_id')
+      .primaryKey()
+      .references(() => leads.id, { onDelete: 'cascade' }),
+    overallScore: integer('overall_score').notNull(),
+    rawScore: integer('raw_score').notNull(),
+    classification: text('classification').notNull(),
+    confidenceLevel: text('confidence_level').notNull(),
+    scoreBreakdown: jsonb('score_breakdown').notNull(),
+    verifiedPositiveSignals: jsonb('verified_positive_signals').notNull(),
+    risksOrMissingInformation: jsonb('risks_or_missing_information').notNull(),
+    hardDisqualifier: boolean('hard_disqualifier').default(false).notNull(),
+    hardDisqualifierReason: text('hard_disqualifier_reason'),
+    campaignMatches: jsonb('campaign_matches').notNull(),
+    recommendedAction: text('recommended_action').notNull(),
+    bestOutreachAngle: text('best_outreach_angle').notNull(),
+    qualificationQuestions: jsonb('qualification_questions').notNull(),
+    reasoningSummary: text('reasoning_summary').notNull(),
+    connectionNote: text('connection_note').notNull(),
+    connectionNoteCharacterCount: integer('connection_note_character_count').notNull(),
+    ...timestamps(),
+  },
+  (table) => [
+    index('idx_lead_ai_assessments_score').on(table.overallScore),
+    index('idx_lead_ai_assessments_classification').on(table.classification),
+  ]
+);
+
 export const leadChannels = crmSchema.table(
   'lead_channels',
   {
@@ -452,6 +482,17 @@ export const leadsRelations = relations(leads, ({ one, many }) => ({
   batch: one(importBatches, { fields: [leads.batchId], references: [importBatches.id] }),
   channels: many(leadChannels),
   attachments: many(leadAttachments),
+  aiAssessment: one(leadAiAssessments, {
+    fields: [leads.id],
+    references: [leadAiAssessments.leadId],
+  }),
+}));
+
+export const leadAiAssessmentsRelations = relations(leadAiAssessments, ({ one }) => ({
+  lead: one(leads, {
+    fields: [leadAiAssessments.leadId],
+    references: [leads.id],
+  }),
 }));
 
 export const importBatchesRelations = relations(importBatches, ({ many }) => ({

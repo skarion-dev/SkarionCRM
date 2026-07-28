@@ -741,36 +741,290 @@ Return ONE clear, actionable next step (e.g., "Send a follow-up email about X", 
   });
 }
 
-// ── Score lead ──────────────────────────────────────────────────────────────
+// ── Lead qualification and LinkedIn connection notes ───────────────────────
 
-export async function scoreLead(
-  lead: {
-    firstName: string;
-    lastName: string;
-    email: string | null;
-    companyName: string | null;
-    title?: string | null;
-    status: string;
-    source: string;
-    notes: string | null;
-  },
+export interface LeadQualificationInput {
+  firstName: string;
+  lastName: string;
+  email: string | null;
+  companyName: string | null;
+  title?: string | null;
+  status: string;
+  source: string;
+  notes: string | null;
+}
+
+export interface LeadQualificationAssessment {
+  overallScore: number;
+  rawScore: number;
+  classification:
+    | 'PRIORITY A1'
+    | 'PRIORITY A2'
+    | 'QUALIFIED B'
+    | 'BORDERLINE'
+    | 'NURTURE'
+    | 'REJECT OR LOW PRIORITY';
+  confidenceLevel: 'high' | 'medium' | 'low';
+  scoreBreakdown: {
+    careerStage: number;
+    jobSearchNeed: number;
+    pathwayFit: number;
+    usPositioningGap: number;
+    relocation: number;
+    internationalGraduateContext: number;
+    coachability: number;
+    bangladeshAffinity: number;
+    marketRealism: number;
+  };
+  verifiedPositiveSignals: string[];
+  risksOrMissingInformation: string[];
+  hardDisqualifier: boolean;
+  hardDisqualifierReason: string | null;
+  campaignMatches: string[];
+  recommendedAction: string;
+  bestOutreachAngle: string;
+  qualificationQuestions: string[];
+  reasoningSummary: string;
+}
+
+export async function qualifyLead(
+  lead: LeadQualificationInput,
   env: Env
-): Promise<{ score: number; reasoning: string } | null> {
+): Promise<LeadQualificationAssessment | null> {
   if (!isAiConfigured(env)) return null;
 
-  const prompt = `Score this lead from 0-100 for a CRM user and explain why:
+  const prompt = `You are Skarion's Lead Qualification Agent. Evaluate whether
+Skarion can realistically help this person and whether the person is likely to
+engage with a success-based career-support program. Do not evaluate personal
+worth or general engineering talent.
 
+SKARION CONTEXT
+Skarion helps early-career engineering and technology professionals enter
+specialized, less-saturated U.S. pathways. Support can include career-path
+analysis, practical training, portfolio work, resume/LinkedIn positioning,
+targeted applications, recruiter outreach, interview preparation, and
+onboarding. Skarion is not a staffing agency, does not guarantee employment,
+and never creates or sells offer letters. Offers must come from legitimate
+employers through normal hiring.
+
+EVIDENCE AND ETHICS
+- Use only profile/conversation facts supplied below.
+- Never infer nationality, ethnicity, religion, immigration status, visa status,
+  sponsorship needs, or language from a name, photo, appearance, or clothing.
+- Only score an international transition or Bangladesh affinity when explicit,
+  objective evidence exists. If evidence is absent, score it zero.
+- Distinguish verified facts from reasonable interpretation and missing facts.
+- Prestige, publications, AI projects, and a polished profile do not by
+  themselves show that the person needs Skarion.
+
+STRONGEST PATHWAYS
+1. Civil/construction/infrastructure: civil, transportation, project/field
+   engineering, inspection, materials, structural, geotechnical, water,
+   utilities, permitting, estimating, CAD, Civil 3D, MicroStation, OpenRoads,
+   AutoCAD, Bluebeam, and ArcGIS.
+2. Electrical/utility/industrial: power, distribution, substations, controls,
+   PLC, automation, validation, embedded/firmware, electronics, commissioning,
+   instrumentation, and network infrastructure.
+3. Telecom/OSP/GIS: fiber design/planning, outside plant, utility design, GIS,
+   permitting, make-ready, fielding, splicing documentation, QA/QC, Vetro,
+   Katapult, and AutoCAD Map 3D.
+4. Technology applied to real industries: analytics, QA/testing, NOC,
+   cybersecurity, IT/cloud infrastructure, technical/application support,
+   systems, automation, and Python applied to engineering, utilities, telecom,
+   GIS, construction, or industrial operations. Generic software/AI/data
+   science is only a strong fit when open to these applications.
+5. Secondary business/accounting: MIS, accounting, finance, operations,
+   project coordination, and business analysis only when a clear Skarion
+   pathway exists.
+
+SCORING RUBRIC
+The category caps total 105. Calculate rawScore out of 105, then set
+overallScore = round(rawScore * 100 / 105).
+- careerStage 0-15: 15 for 2025/2026 graduate, within six months, or immediately
+  available; 11-14 for 2024/final semester/6-12 months; 6-10 for 2027; 0-5 for
+  2028+, early undergraduate, or not entering the market.
+- jobSearchNeed 0-20: 17-20 for explicit struggle, months searching, few
+  interviews, urgent timeline, work outside field, ended temporary role, or
+  certifications without relevant work; 12-16 for active search, limited
+  responses, interview-conversion difficulty, referrals, or guidance; 6-11
+  casual exploration; 0-5 no need or satisfied employment.
+- pathwayFit 0-20: 17-20 direct pathways; 12-16 realistic adjacent transition;
+  6-11 generic software/AI/research needing repositioning; 0-5 unsupported.
+- usPositioningGap 0-10: 9-10 strong foreign/academic experience with little
+  relevant U.S. experience; 6-8 some U.S. internship/research/campus work; 3-5
+  relevant U.S. experience but a transition need; 0-2 established career.
+- relocation 0-10: 9-10 nationwide/multi-state and industry flexibility; 6-8
+  several locations or work modes; 3-5 one metro but several roles; 0-2 remote
+  only or extremely narrow. Missing evidence must not receive high points.
+- internationalGraduateContext 0-10: only explicit F-1/OPT/CPT/sponsorship or
+  documented foreign-to-U.S. transition may score; otherwise zero.
+- coachability 0-10: 9-10 thoughtful, clear, realistic, open to feedback and
+  adjacent paths; 6-8 responsive but underqualified; 3-5 vague/passive; 0-2
+  demands guarantees, fabrication, or is dishonest. With no conversation
+  evidence, keep this low and ask a question.
+- bangladeshAffinity 0-5: only explicit Bangladesh location, education,
+  employment, organization, or statement. Never infer from a name.
+- marketRealism 0-5: 5 for multiple related titles/industries and legitimate
+  process; 3-4 initially narrow but open; 1-2 saturated-only/unrealistic; 0 for
+  guarantees, fake offers, or misrepresentation.
+
+CLASSIFICATION
+90-100 PRIORITY A1; 80-89 PRIORITY A2; 70-79 QUALIFIED B; 55-69 BORDERLINE;
+40-54 NURTURE; 0-39 REJECT OR LOW PRIORITY.
+
+HARD DISQUALIFIERS
+Flag fake/purchased offer letters, fabricated experience, high school, 2028+
+with no future relevance, established senior/executive/founder/professor with
+no transition need, academic-only PhD focus, no realistic pathway, strong
+relevant full-time role with no transition, outside the U.S. with no stated
+U.S. intent, insufficient profile information, fraud, disrespect, or refusal
+to use legitimate hiring. Employment alone is not disqualifying when someone
+is underemployed, temporary, outside their field, or transitioning.
+
+LEAD EVIDENCE
 Name: ${lead.firstName} ${lead.lastName}
 ${lead.email ? `Email: ${lead.email}` : ''}
 ${lead.companyName ? `Company: ${lead.companyName}` : ''}
 ${lead.title ? `Title: ${lead.title}` : ''}
 Status: ${lead.status}
 Source: ${lead.source}
-${lead.notes ? `Notes: ${lead.notes}` : ''}
+${lead.notes ? `Profile and conversation evidence:\n${lead.notes.substring(0, 18000)}` : 'No profile or conversation evidence supplied.'}
 
-Return ONLY JSON: {"score": 75, "reasoning": "brief explanation"}`;
+Return ONLY valid JSON:
+{
+  "overallScore": 0,
+  "rawScore": 0,
+  "classification": "PRIORITY A1 | PRIORITY A2 | QUALIFIED B | BORDERLINE | NURTURE | REJECT OR LOW PRIORITY",
+  "confidenceLevel": "high | medium | low",
+  "scoreBreakdown": {
+    "careerStage": 0,
+    "jobSearchNeed": 0,
+    "pathwayFit": 0,
+    "usPositioningGap": 0,
+    "relocation": 0,
+    "internationalGraduateContext": 0,
+    "coachability": 0,
+    "bangladeshAffinity": 0,
+    "marketRealism": 0
+  },
+  "verifiedPositiveSignals": [],
+  "risksOrMissingInformation": [],
+  "hardDisqualifier": false,
+  "hardDisqualifierReason": null,
+  "campaignMatches": [],
+  "recommendedAction": "",
+  "bestOutreachAngle": "",
+  "qualificationQuestions": ["", ""],
+  "reasoningSummary": ""
+}
 
-  return extractStructured<{ score: number; reasoning: string }>(prompt, env, {
+Do not invent facts. Keep reasoningSummary to 2-4 sentences and ask at most two
+questions that resolve the highest-impact missing information.`;
+
+  const assessment = await extractStructured<LeadQualificationAssessment>(prompt, env, {
     agent: 'lead-scorer',
   });
+  if (!assessment) return null;
+
+  const caps: Record<keyof LeadQualificationAssessment['scoreBreakdown'], number> = {
+    careerStage: 15,
+    jobSearchNeed: 20,
+    pathwayFit: 20,
+    usPositioningGap: 10,
+    relocation: 10,
+    internationalGraduateContext: 10,
+    coachability: 10,
+    bangladeshAffinity: 5,
+    marketRealism: 5,
+  };
+  for (const key of Object.keys(caps) as Array<keyof typeof caps>) {
+    const value = Number(assessment.scoreBreakdown?.[key] ?? 0);
+    assessment.scoreBreakdown[key] = Math.max(0, Math.min(caps[key], Math.round(value)));
+  }
+  assessment.rawScore = Object.values(assessment.scoreBreakdown).reduce(
+    (total, value) => total + value,
+    0
+  );
+  assessment.overallScore = Math.round((assessment.rawScore * 100) / 105);
+  assessment.classification = assessment.hardDisqualifier
+    ? 'REJECT OR LOW PRIORITY'
+    : assessment.overallScore >= 90
+      ? 'PRIORITY A1'
+      : assessment.overallScore >= 80
+        ? 'PRIORITY A2'
+        : assessment.overallScore >= 70
+          ? 'QUALIFIED B'
+          : assessment.overallScore >= 55
+            ? 'BORDERLINE'
+            : assessment.overallScore >= 40
+              ? 'NURTURE'
+              : 'REJECT OR LOW PRIORITY';
+  return assessment;
+}
+
+export async function scoreLead(
+  lead: LeadQualificationInput,
+  env: Env
+): Promise<{ score: number; reasoning: string } | null> {
+  const assessment = await qualifyLead(lead, env);
+  if (!assessment) return null;
+  return { score: assessment.overallScore, reasoning: assessment.reasoningSummary };
+}
+
+export function normalizeLinkedinConnectionNote(text: string): string {
+  let note = text
+    .replace(/```(?:text)?/gi, '')
+    .replace(/```/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^["“]|["”]$/g, '');
+  if ([...note].length <= 300) return note;
+  const characters = [...note].slice(0, 297).join('');
+  const lastSpace = characters.lastIndexOf(' ');
+  note = `${characters.slice(0, lastSpace > 240 ? lastSpace : 297).trimEnd()}...`;
+  return [...note].slice(0, 300).join('');
+}
+
+export async function draftLinkedinConnectionNote(
+  lead: LeadQualificationInput,
+  env: Env
+): Promise<string | null> {
+  if (!isAiConfigured(env)) return null;
+
+  const prompt = `You are Skarion's LinkedIn Connection Writer. Create one
+connection-request note that the user can paste directly into LinkedIn.
+
+HARD REQUIREMENTS
+- Maximum 300 Unicode characters including spaces. Target 180-260.
+- Output only the note: no label, quotation marks, markdown, score, or analysis.
+- One paragraph. Begin "Hi ${lead.firstName},".
+- Mention one or two specific, verified profile facts, ideally a concrete tool,
+  discipline, project, transition, or graduation/search fact.
+- Ask one low-friction, relevant question about goals or how the search is going.
+- Be warm, peer-like, specific, and concise. Do not sound like a mass campaign.
+- Do not infer nationality, ethnicity, visa status, sponsorship, graduation,
+  unemployment, relocation, or job-search difficulty.
+- Do not promise a job, interview, placement, sponsorship, or offer letter.
+- Do not mention Skarion's payment model in a connection note.
+- Avoid empty praise, emojis, hashtags, links, phone numbers, and multiple
+  questions.
+
+Useful pattern:
+"Hi [First name], your [specific work/tool] stood out, especially [second
+verified detail]. I work with [accurate peer group] navigating U.S. career
+paths—how has your search for [relevant roles] been going?"
+
+LEAD EVIDENCE
+Name: ${lead.firstName} ${lead.lastName}
+${lead.companyName ? `Company: ${lead.companyName}` : ''}
+${lead.title ? `Title: ${lead.title}` : ''}
+Source: ${lead.source}
+${lead.notes ? lead.notes.substring(0, 12000) : 'No additional profile evidence supplied.'}`;
+
+  const note = await chatCompletionSingle(prompt, env, {
+    temperature: 0.35,
+    tier: 'fast',
+    agent: 'linkedin-connection-writer',
+  });
+  return note ? normalizeLinkedinConnectionNote(note) : null;
 }

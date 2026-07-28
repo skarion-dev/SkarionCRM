@@ -16,45 +16,52 @@ const DEFAULT_CRM_WEB_URL = 'https://skarion-crm-cv9.pages.dev';
 let crmSettings = { crmUrl: DEFAULT_CRM_URL, apiKey: '' };
 let leadTags = [];
 
-const statCount   = document.getElementById('statCount');
-const statToday   = document.getElementById('statToday');
+const statCount = document.getElementById('statCount');
+const statToday = document.getElementById('statToday');
 const searchInput = document.getElementById('searchInput');
 const profileList = document.getElementById('profileList');
-const detail      = document.getElementById('detail');
-const btnExport   = document.getElementById('btnExport');
-const btnClear    = document.getElementById('btnClear');
-const btnCapture  = document.getElementById('btnCaptureNow');
+const detail = document.getElementById('detail');
+const btnExport = document.getElementById('btnExport');
+const btnClear = document.getElementById('btnClear');
+const btnCapture = document.getElementById('btnCaptureNow');
 
 // --- Settings (CRM URL + API key), saved per-device ---
-const btnSettings      = document.getElementById('btnSettings');
-const settingsPanel    = document.getElementById('settingsPanel');
-const setCrmUrl        = document.getElementById('setCrmUrl');
-const setApiKey        = document.getElementById('setApiKey');
-const btnSaveSettings  = document.getElementById('btnSaveSettings');
+const btnSettings = document.getElementById('btnSettings');
+const settingsPanel = document.getElementById('settingsPanel');
+const setCrmUrl = document.getElementById('setCrmUrl');
+const setApiKey = document.getElementById('setApiKey');
+const btnSaveSettings = document.getElementById('btnSaveSettings');
 const btnCloseSettings = document.getElementById('btnCloseSettings');
-const settingsStatus   = document.getElementById('settingsStatus');
+const settingsStatus = document.getElementById('settingsStatus');
 
 // --- Lead form (send captured profile to CRM) ---
-const leadForm         = document.getElementById('leadForm');
-const lfFirstName      = document.getElementById('lfFirstName');
-const lfLastName       = document.getElementById('lfLastName');
-const lfEmail          = document.getElementById('lfEmail');
-const lfPhone          = document.getElementById('lfPhone');
-const lfCompanyName    = document.getElementById('lfCompanyName');
-const lfCompanyDomain  = document.getElementById('lfCompanyDomain');
-const lfLinkedinUrl    = document.getElementById('lfLinkedinUrl');
-const lfStatus         = document.getElementById('lfStatus');
+const leadForm = document.getElementById('leadForm');
+const lfFirstName = document.getElementById('lfFirstName');
+const lfLastName = document.getElementById('lfLastName');
+const lfEmail = document.getElementById('lfEmail');
+const lfPhone = document.getElementById('lfPhone');
+const lfCompanyName = document.getElementById('lfCompanyName');
+const lfCompanyDomain = document.getElementById('lfCompanyDomain');
+const lfLinkedinUrl = document.getElementById('lfLinkedinUrl');
+const lfStatus = document.getElementById('lfStatus');
 const lfOutreachStatus = document.getElementById('lfOutreachStatus');
-const lfTagList        = document.getElementById('lfTagList');
-const lfTagInput       = document.getElementById('lfTagInput');
-const lfNotes          = document.getElementById('lfNotes');
-const lfStatusLine     = document.getElementById('lfStatusLine');
-const lfDupeBanner     = document.getElementById('lfDupeBanner');
-const btnSendLead      = document.getElementById('btnSendLead');
-const btnCancelLead    = document.getElementById('btnCancelLead');
+const lfTagList = document.getElementById('lfTagList');
+const lfTagInput = document.getElementById('lfTagInput');
+const lfNotes = document.getElementById('lfNotes');
+const lfStatusLine = document.getElementById('lfStatusLine');
+const lfDupeBanner = document.getElementById('lfDupeBanner');
+const btnSendLead = document.getElementById('btnSendLead');
+const btnCancelLead = document.getElementById('btnCancelLead');
 const btnPasteSettings = document.getElementById('btnPasteSettings');
+const lfAiResult = document.getElementById('lfAiResult');
+const lfAiScore = document.getElementById('lfAiScore');
+const lfAiClassification = document.getElementById('lfAiClassification');
+const lfAiReasoning = document.getElementById('lfAiReasoning');
+const lfAiNote = document.getElementById('lfAiNote');
+const lfAiNoteCount = document.getElementById('lfAiNoteCount');
+const btnCopyAiNote = document.getElementById('btnCopyAiNote');
 
-chrome.storage.local.get(['crmSettings'], data => {
+chrome.storage.local.get(['crmSettings'], (data) => {
   if (data.crmSettings && data.crmSettings.crmUrl) {
     crmSettings = data.crmSettings;
   }
@@ -87,7 +94,9 @@ btnSaveSettings.addEventListener('click', () => {
   chrome.storage.local.set({ crmSettings }, () => {
     settingsStatus.textContent = crmUrl ? `Saved: ${crmUrl}` : 'Saved.';
     settingsStatus.className = 'status-line';
-    setTimeout(() => { settingsStatus.textContent = ''; }, 3000);
+    setTimeout(() => {
+      settingsStatus.textContent = '';
+    }, 3000);
   });
 });
 
@@ -99,18 +108,22 @@ btnPasteSettings.addEventListener('click', async () => {
     const text = await navigator.clipboard.readText();
     const parsed = JSON.parse(text);
     if (!parsed || typeof parsed.apiKey !== 'string') throw new Error('not a key blob');
-    if (typeof parsed.crmUrl === 'string' && parsed.crmUrl) setCrmUrl.value = normalizeCrmUrl(parsed.crmUrl);
+    if (typeof parsed.crmUrl === 'string' && parsed.crmUrl)
+      setCrmUrl.value = normalizeCrmUrl(parsed.crmUrl);
     setApiKey.value = parsed.apiKey;
     btnSaveSettings.click();
     settingsStatus.textContent = 'Pasted from clipboard — saved.';
     settingsStatus.className = 'status-line';
   } catch {
-    settingsStatus.textContent = 'Clipboard doesn’t contain a key from the admin panel’s "Copy for extension" button.';
+    settingsStatus.textContent =
+      'Clipboard doesn’t contain a key from the admin panel’s "Copy for extension" button.';
     settingsStatus.className = 'status-line err';
   }
 });
 
-function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function esc(s) {
+  return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
 function timeAgo(iso) {
   if (!iso) return '';
@@ -120,19 +133,24 @@ function timeAgo(iso) {
   if (m < 60) return `${m}m ago`;
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h/24)}d ago`;
+  return `${Math.floor(h / 24)}d ago`;
 }
 
 function todayCount(profiles) {
   const today = new Date().toDateString();
-  return Object.values(profiles).filter(p => new Date(p.capturedAt).toDateString() === today).length;
+  return Object.values(profiles).filter((p) => new Date(p.capturedAt).toDateString() === today)
+    .length;
 }
 
 function render(filter = '') {
   const q = filter.toLowerCase();
   const sorted = Object.values(allProfiles)
     .sort((a, b) => new Date(b.capturedAt) - new Date(a.capturedAt))
-    .filter(p => !q || [p.name, p.headline, p.location, p.currentCompanies].join(' ').toLowerCase().includes(q));
+    .filter(
+      (p) =>
+        !q ||
+        [p.name, p.headline, p.location, p.currentCompanies].join(' ').toLowerCase().includes(q)
+    );
 
   statCount.textContent = Object.keys(allProfiles).length;
   statToday.textContent = todayCount(allProfiles);
@@ -144,7 +162,9 @@ function render(filter = '') {
   }
 
   profileList.style.display = 'block';
-  profileList.innerHTML = sorted.map(p => `
+  profileList.innerHTML = sorted
+    .map(
+      (p) => `
     <div class="profile-item${selectedId === p.profileId ? ' selected' : ''}" data-id="${esc(p.profileId)}">
       <div class="profile-dot"></div>
       <div class="profile-info">
@@ -153,9 +173,11 @@ function render(filter = '') {
         <div class="profile-time">${esc(p.location || '')} · ${timeAgo(p.capturedAt)}</div>
       </div>
     </div>
-  `).join('');
+  `
+    )
+    .join('');
 
-  profileList.querySelectorAll('.profile-item').forEach(el => {
+  profileList.querySelectorAll('.profile-item').forEach((el) => {
     el.addEventListener('click', () => showDetail(el.dataset.id));
   });
 }
@@ -168,10 +190,10 @@ function showDetail(id) {
   render(searchInput.value);
 
   const sections = [
-    p.about       && { title: 'About',           body: p.about },
-    p.experience  && { title: 'Experience',       body: p.experience },
-    p.education   && { title: 'Education',        body: p.education },
-    p.skills      && { title: 'Skills',           body: p.skills },
+    p.about && { title: 'About', body: p.about },
+    p.experience && { title: 'Experience', body: p.experience },
+    p.education && { title: 'Education', body: p.education },
+    p.skills && { title: 'Skills', body: p.skills },
     p.certifications && { title: 'Certifications', body: p.certifications },
   ].filter(Boolean);
 
@@ -181,21 +203,25 @@ function showDetail(id) {
     <div class="dheadline">${esc(p.headline || '')}</div>
     ${p.location ? `<div class="dheadline" style="color:#888">📍 ${esc(p.location)}</div>` : ''}
     ${p.connections ? `<div class="dheadline" style="color:#888">🔗 ${esc(p.connections)} connections</div>` : ''}
-    ${sections.map(s => `
+    ${sections
+      .map(
+        (s) => `
       <div class="section">
         <div class="section-title">${esc(s.title)}</div>
         <div class="section-body">${esc(s.body.slice(0, 500))}${s.body.length > 500 ? '…' : ''}</div>
       </div>
-    `).join('')}
+    `
+      )
+      .join('')}
     <a class="open-link" href="${esc(p.profileUrl)}" target="_blank">↗ Open profile</a>
 
     <div class="tier-row">
-      ${QUALITY_TIERS.map(t => `<button class="tier-btn" data-tier="${esc(t)}">${esc(t)}</button>`).join('')}
+      ${QUALITY_TIERS.map((t) => `<button class="tier-btn" data-tier="${esc(t)}">${esc(t)}</button>`).join('')}
     </div>
     <button class="send-crm-btn" id="btnOpenLeadForm">Send to CRM (no tier)</button>
   `;
 
-  detail.querySelectorAll('.tier-btn').forEach(btn => {
+  detail.querySelectorAll('.tier-btn').forEach((btn) => {
     btn.addEventListener('click', () => openLeadForm(p, btn.dataset.tier));
   });
   document.getElementById('btnOpenLeadForm').addEventListener('click', () => openLeadForm(p));
@@ -224,10 +250,14 @@ function composeNotes(p) {
 }
 
 function renderTags() {
-  lfTagList.innerHTML = leadTags.map((t, i) => `
+  lfTagList.innerHTML = leadTags
+    .map(
+      (t, i) => `
     <span class="tag">${esc(t)}<button data-i="${i}">✕</button></span>
-  `).join('');
-  lfTagList.querySelectorAll('button').forEach(btn => {
+  `
+    )
+    .join('');
+  lfTagList.querySelectorAll('button').forEach((btn) => {
     btn.addEventListener('click', () => {
       leadTags.splice(Number(btn.dataset.i), 1);
       renderTags();
@@ -262,6 +292,8 @@ function openLeadForm(p, presetTier) {
   lfStatusLine.className = 'status-line';
   lfDupeBanner.style.display = 'none';
   lfDupeBanner.innerHTML = '';
+  lfAiResult.classList.remove('open');
+  lfAiNote.value = '';
   leadForm.dataset.profileId = p.profileId;
   // Stable per-profile key so a retried send (or a deliberate re-send later)
   // always carries the same idempotency key — persisted alongside the
@@ -276,6 +308,27 @@ function openLeadForm(p, presetTier) {
   leadForm.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   scheduleDuplicateCheck();
 }
+
+function showAiAssessment(assessment) {
+  if (!assessment?.connectionNote) return;
+  lfAiScore.textContent = `${assessment.overallScore}/100`;
+  lfAiClassification.textContent = assessment.classification;
+  lfAiReasoning.textContent = assessment.reasoningSummary || '';
+  lfAiNote.value = assessment.connectionNote;
+  lfAiNoteCount.textContent = `${[...assessment.connectionNote].length}/300 characters`;
+  btnCopyAiNote.textContent = 'Copy note';
+  lfAiResult.classList.add('open');
+  lfAiResult.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+btnCopyAiNote.addEventListener('click', async () => {
+  if (!lfAiNote.value) return;
+  await navigator.clipboard.writeText(lfAiNote.value);
+  btnCopyAiNote.textContent = 'Copied ✓';
+  setTimeout(() => {
+    btnCopyAiNote.textContent = 'Copy note';
+  }, 2000);
+});
 
 function recordLink(entityType, id) {
   return `${DEFAULT_CRM_WEB_URL}/${entityType === 'contact' ? 'contacts' : 'leads'}/${id}`;
@@ -303,7 +356,10 @@ function currentLeadFormPayload() {
 async function checkDuplicate() {
   if (!crmSettings.crmUrl || !crmSettings.apiKey) return;
   try {
-    const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${crmSettings.apiKey}` };
+    const headers = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${crmSettings.apiKey}`,
+    };
     const res = await fetch(`${crmSettings.crmUrl}/extension/leads/check`, {
       method: 'POST',
       headers,
@@ -316,12 +372,14 @@ async function checkDuplicate() {
       const label = result.entityType === 'contact' ? 'an existing contact' : 'an existing lead';
       showDupeBanner(
         `⚠ Already in the CRM as ${label} (matched by ${result.matchType.replace('_', ' ')}). ` +
-        `Sending will just return that record, not create a new one. ` +
-        `<a href="${recordLink(result.entityType, record.id)}" target="_blank">Open existing ${result.entityType}</a>`
+          `Sending will just return that record, not create a new one. ` +
+          `<a href="${recordLink(result.entityType, record.id)}" target="_blank">Open existing ${result.entityType}</a>`
       );
     } else if (result.status === 'possible_duplicate') {
       const names = result.matches.map((m) => `${m.firstName} ${m.lastName}`.trim()).join(', ');
-      showDupeBanner(`⚠ Possible duplicate — same name + company already in leads: ${names}. Review before sending.`);
+      showDupeBanner(
+        `⚠ Possible duplicate — same name + company already in leads: ${names}. Review before sending.`
+      );
     } else {
       lfDupeBanner.style.display = 'none';
       lfDupeBanner.innerHTML = '';
@@ -353,7 +411,8 @@ btnSendLead.addEventListener('click', async () => {
   // The CRM now rejects any /extension/leads request with no valid key —
   // fail fast here with a clear message instead of a confusing 401 later.
   if (!crmSettings.apiKey) {
-    lfStatusLine.textContent = 'Add your personal API key in ⚙ Settings first (ask an admin to generate one).';
+    lfStatusLine.textContent =
+      'Add your personal API key in ⚙ Settings first (ask an admin to generate one).';
     lfStatusLine.className = 'status-line err';
     return;
   }
@@ -407,12 +466,17 @@ btnSendLead.addEventListener('click', async () => {
       const record = result.contact || result.lead;
       showDupeBanner(
         `Already existed as ${entityType === 'contact' ? 'a contact' : 'a lead'} — nothing new was created. ` +
-        `<a href="${recordLink(entityType, record.id)}" target="_blank">Open existing ${entityType}</a>`
+          `<a href="${recordLink(entityType, record.id)}" target="_blank">Open existing ${entityType}</a>`
       );
-      lfStatusLine.textContent = result.replayed ? 'Same send as before — no duplicate created.' : 'Already exists in CRM.';
+      lfStatusLine.textContent = result.replayed
+        ? 'Same send as before — no duplicate created.'
+        : 'Already exists in CRM.';
+      showAiAssessment(result.aiAssessment);
     } else {
-      lfStatusLine.textContent = 'Sent to CRM ✓';
-      setTimeout(() => leadForm.classList.remove('open'), 1200);
+      lfStatusLine.textContent = result.aiAssessment
+        ? 'Sent to CRM and qualified ✓'
+        : 'Sent to CRM ✓ — AI assessment was unavailable';
+      showAiAssessment(result.aiAssessment);
     }
     lfStatusLine.className = 'status-line';
   } catch (err) {
@@ -425,7 +489,7 @@ btnSendLead.addEventListener('click', async () => {
 });
 
 // Load
-chrome.storage.local.get(['profiles'], data => {
+chrome.storage.local.get(['profiles'], (data) => {
   allProfiles = data.profiles || {};
   render();
 });
@@ -442,7 +506,9 @@ btnCapture.addEventListener('click', async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab || !tab.url?.includes('linkedin.com/in/')) {
     btnCapture.textContent = '⚠ Not a LinkedIn profile page';
-    setTimeout(() => { btnCapture.textContent = '📸 Capture Current Profile Now'; }, 2000);
+    setTimeout(() => {
+      btnCapture.textContent = '📸 Capture Current Profile Now';
+    }, 2000);
     return;
   }
   btnCapture.textContent = '⏳ Scrolling & capturing…';
@@ -452,19 +518,21 @@ btnCapture.addEventListener('click', async () => {
 
   // Snapshot the existing capturedAt for this profile (if any) so we can
   // detect a genuinely NEW capture rather than matching stale stored data
-  const before = await new Promise(resolve => {
-    chrome.storage.local.get(['profiles'], data => resolve((data.profiles || {})[profileId]?.capturedAt));
+  const before = await new Promise((resolve) => {
+    chrome.storage.local.get(['profiles'], (data) =>
+      resolve((data.profiles || {})[profileId]?.capturedAt)
+    );
   });
 
   try {
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
-  } catch(e) {}
+  } catch (e) {}
 
   // Thorough scrolling can take 15–30s on long profiles, so poll for up to 45s
   let attempts = 0;
   const maxAttempts = 90; // 90 * 500ms = 45s
   const poll = setInterval(() => {
-    chrome.storage.local.get(['profiles'], data => {
+    chrome.storage.local.get(['profiles'], (data) => {
       const profiles = data.profiles || {};
       const current = profiles[profileId];
       const isNew = current && current.capturedAt !== before;
@@ -476,7 +544,9 @@ btnCapture.addEventListener('click', async () => {
         if (isNew) showDetail(profileId);
         btnCapture.textContent = isNew ? '✓ Captured!' : '⚠ Try again';
         btnCapture.disabled = false;
-        setTimeout(() => { btnCapture.textContent = '📸 Capture Current Profile Now'; }, 2000);
+        setTimeout(() => {
+          btnCapture.textContent = '📸 Capture Current Profile Now';
+        }, 2000);
       }
     });
   }, 500);
@@ -504,35 +574,73 @@ function sanitizeCell(v) {
 
 // Export
 btnExport.addEventListener('click', () => {
-  const profiles = Object.values(allProfiles).sort((a,b) => new Date(b.capturedAt)-new Date(a.capturedAt));
+  const profiles = Object.values(allProfiles).sort(
+    (a, b) => new Date(b.capturedAt) - new Date(a.capturedAt)
+  );
   if (!profiles.length) return;
 
-  const headers = ['#','Name','Headline','Location','Connections','Current Company','About','Experience','Education','Skills','Certifications','Profile URL','Captured At'];
-  const rows = profiles.map((p,i) => [
-    i+1, sanitizeCell(p.name), sanitizeCell(p.headline), sanitizeCell(p.location), p.connections, sanitizeCell(p.currentCompanies),
-    sanitizeCell(p.about), sanitizeCell(p.experience), sanitizeCell(p.education), sanitizeCell(p.skills), sanitizeCell(p.certifications),
-    sanitizeCell(p.profileUrl), p.capturedAt
+  const headers = [
+    '#',
+    'Name',
+    'Headline',
+    'Location',
+    'Connections',
+    'Current Company',
+    'About',
+    'Experience',
+    'Education',
+    'Skills',
+    'Certifications',
+    'Profile URL',
+    'Captured At',
+  ];
+  const rows = profiles.map((p, i) => [
+    i + 1,
+    sanitizeCell(p.name),
+    sanitizeCell(p.headline),
+    sanitizeCell(p.location),
+    p.connections,
+    sanitizeCell(p.currentCompanies),
+    sanitizeCell(p.about),
+    sanitizeCell(p.experience),
+    sanitizeCell(p.education),
+    sanitizeCell(p.skills),
+    sanitizeCell(p.certifications),
+    sanitizeCell(p.profileUrl),
+    p.capturedAt,
   ]);
 
   const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
   ws['!cols'] = [
-    {wch:4},{wch:26},{wch:40},{wch:22},{wch:12},{wch:24},
-    {wch:50},{wch:60},{wch:40},{wch:40},{wch:40},{wch:55},{wch:22}
+    { wch: 4 },
+    { wch: 26 },
+    { wch: 40 },
+    { wch: 22 },
+    { wch: 12 },
+    { wch: 24 },
+    { wch: 50 },
+    { wch: 60 },
+    { wch: 40 },
+    { wch: 40 },
+    { wch: 40 },
+    { wch: 55 },
+    { wch: 22 },
   ];
 
   // Style header row
   const range = XLSX.utils.decode_range(ws['!ref']);
   for (let C = range.s.c; C <= range.e.c; C++) {
     const cell = ws[XLSX.utils.encode_cell({ r: 0, c: C })];
-    if (cell) cell.s = {
-      font: { bold: true, color: { rgb: 'FFFFFF' } },
-      fill: { fgColor: { rgb: '0A66C2' } },
-      alignment: { horizontal: 'center' }
-    };
+    if (cell)
+      cell.s = {
+        font: { bold: true, color: { rgb: 'FFFFFF' } },
+        fill: { fgColor: { rgb: '0A66C2' } },
+        alignment: { horizontal: 'center' },
+      };
   }
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Profiles');
-  const date = new Date().toISOString().slice(0,10);
+  const date = new Date().toISOString().slice(0, 10);
   XLSX.writeFile(wb, `linkedin-profiles-${date}-${profiles.length}.xlsx`);
 });
