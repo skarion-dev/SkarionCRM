@@ -1,10 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
-  useLeads,
+  useInfiniteLeads,
   useDeleteEntity,
   useBulkLeads,
   useImportBatches,
   useIdentityUsers,
+  useSavedSearches,
+  useCreateSavedSearch,
+  useDeleteSavedSearch,
 } from '../hooks/use-api.js';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../stores/auth.js';
@@ -17,8 +20,6 @@ import {
   Pencil,
   Upload,
   Linkedin,
-  ChevronLeft,
-  ChevronRight,
   Download,
   ArrowUpDown,
   ArrowUp,
@@ -28,6 +29,9 @@ import {
   X,
   Tag as TagIcon,
   UserCircle,
+  SlidersHorizontal,
+  Bookmark,
+  Loader2,
 } from 'lucide-react';
 import { cn } from '../lib/utils.js';
 import LeadForm from '../components/forms/LeadForm.js';
@@ -36,8 +40,8 @@ import PdfImportModal from '../components/PdfImportModal.js';
 import type { Lead, LeadStatus, OutreachStatus } from '../api.js';
 import { CRM_API_URL, getAccessToken } from '../api.js';
 import { showToast } from '../stores/toast.js';
+import { buildLeadsQueryString, type LeadFilters } from '../lib/leadFilters.js';
 
-const PAGE_SIZES = [25, 50, 100, 250];
 const LEAD_STATUSES: LeadStatus[] = ['new', 'contacted', 'qualified', 'disqualified', 'converted'];
 const OUTREACH_STATUSES: OutreachStatus[] = [
   'not_approached',
@@ -52,8 +56,6 @@ const OUTREACH_STATUSES: OutreachStatus[] = [
 ];
 
 export default function LeadsPage() {
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | LeadStatus>('all');
@@ -72,40 +74,78 @@ export default function LeadsPage() {
   const [pdfImportOpen, setPdfImportOpen] = useState(false);
   const [editLead, setEditLead] = useState<Lead | null>(null);
 
+  // Additive "More filters" — date range, tag, and (superadmin/manager-only)
+  // owner multi-select. Kept separate from the single-select status/outreach
+  // pill rows above so those stay the fast, unchanged common path.
+  const [moreFiltersOpen, setMoreFiltersOpen] = useState(false);
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [tagFilters, setTagFilters] = useState<string[]>([]);
+  const [tagFilterInput, setTagFilterInput] = useState('');
+  const [ownerFilters, setOwnerFilters] = useState<string[]>([]);
+
+  // Saved searches
+  const [savedSearchesOpen, setSavedSearchesOpen] = useState(false);
+  const [saveSearchName, setSaveSearchName] = useState('');
+
   const role = useAuthStore((s) => s.user?.role ?? '');
   const isSuperadmin = useAuthStore((s) => s.user?.isSuperadmin ?? false);
   const canManage = isSuperadmin || role === 'manager';
 
-  const { data, isLoading } = useLeads(
-    page,
-    pageSize,
-    statusFilter === 'all' ? undefined : statusFilter,
-    debouncedSearch || undefined,
-    outreachFilter === 'all' ? undefined : outreachFilter,
-    sortBy,
-    sortOrder,
-    batchFilter === 'all' ? undefined : batchFilter
+  const filters: LeadFilters = useMemo(
+    () => ({
+      search: debouncedSearch || undefined,
+      statuses: statusFilter === 'all' ? undefined : [statusFilter],
+      outreachStatuses: outreachFilter === 'all' ? undefined : [outreachFilter],
+      owners: ownerFilters.length > 0 ? ownerFilters : undefined,
+      tags: tagFilters.length > 0 ? tagFilters : undefined,
+      batchId: batchFilter === 'all' ? undefined : batchFilter,
+      createdFrom: dateFrom || undefined,
+      createdTo: dateTo || undefined,
+      sortBy,
+      sortOrder,
+    }),
+    [
+      debouncedSearch,
+      statusFilter,
+      outreachFilter,
+      ownerFilters,
+      tagFilters,
+      batchFilter,
+      dateFrom,
+      dateTo,
+      sortBy,
+      sortOrder,
+    ]
   );
+
+  const { data, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } =
+    useInfiniteLeads(filters);
   const deleteMutation = useDeleteEntity();
   const bulkMutation = useBulkLeads();
   const { data: batches } = useImportBatches();
   const { data: identityUsers } = useIdentityUsers(canManage);
+  const { data: savedSearchesData } = useSavedSearches();
+  const createSavedSearch = useCreateSavedSearch();
+  const deleteSavedSearch = useDeleteSavedSearch();
   const navigate = useNavigate();
   const crmUsers = (identityUsers ?? []).filter((u) =>
     u.appMemberships?.some((m) => m.app === 'crm')
   );
+  const savedSearches = savedSearchesData?.savedSearches ?? [];
 
-  const leads = data?.leads ?? [];
-  const total = data?.total ?? 0;
-  const totalPages = data?.totalPages ?? 1;
-  const statusCounts = data?.statusCounts ?? {
+  const leads = useMemo(() => data?.pages.flatMap((p) => p.leads) ?? [], [data]);
+  const firstPage = data?.pages[0];
+  const total = firstPage?.total ?? 0;
+  const loadedCount = leads.length;
+  const statusCounts = firstPage?.statusCounts ?? {
     new: 0,
     contacted: 0,
     qualified: 0,
     disqualified: 0,
     converted: 0,
   };
-  const outreachStatusCounts = data?.outreachStatusCounts ?? {
+  const outreachStatusCounts = firstPage?.outreachStatusCounts ?? {
     not_approached: 0,
     approached: 0,
     connection_request_sent: 0,
@@ -117,19 +157,11 @@ export default function LeadsPage() {
     bad_fit: 0,
   };
 
-  // Reset selection when page/filter changes
+  // Reset selection whenever the filtered/sorted set changes — the old
+  // accumulated selection wouldn't make sense against a different result set.
   useEffect(() => {
     setSelectedIds(new Set());
-  }, [
-    page,
-    statusFilter,
-    outreachFilter,
-    debouncedSearch,
-    pageSize,
-    sortBy,
-    sortOrder,
-    batchFilter,
-  ]);
+  }, [filters]);
 
   // Debounce search
   useEffect(() => {
@@ -137,10 +169,59 @@ export default function LeadsPage() {
     return () => clearTimeout(timer);
   }, [search]);
 
-  // Reset to page 1 when filter, search, or sort changes
+  // Auto-load more when the sentinel below the table scrolls into view.
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const fetchNextPageRef = useRef(fetchNextPage);
+  fetchNextPageRef.current = fetchNextPage;
   useEffect(() => {
-    setPage(1);
-  }, [statusFilter, outreachFilter, debouncedSearch, pageSize, sortBy, sortOrder, batchFilter]);
+    const el = sentinelRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) fetchNextPageRef.current();
+      },
+      { rootMargin: '200px' }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasNextPage]);
+
+  const applySavedSearch = useCallback((saved: LeadFilters) => {
+    setSearch(saved.search ?? '');
+    setDebouncedSearch(saved.search ?? '');
+    setStatusFilter((saved.statuses?.[0] as LeadStatus | undefined) ?? 'all');
+    setOutreachFilter((saved.outreachStatuses?.[0] as OutreachStatus | undefined) ?? 'all');
+    setOwnerFilters(saved.owners ?? []);
+    setTagFilters(saved.tags ?? []);
+    setBatchFilter(saved.batchId ?? 'all');
+    setDateFrom(saved.createdFrom ?? '');
+    setDateTo(saved.createdTo ?? '');
+    setSortBy(saved.sortBy ?? 'createdAt');
+    setSortOrder((saved.sortOrder as 'asc' | 'desc' | undefined) ?? 'desc');
+    setSavedSearchesOpen(false);
+  }, []);
+
+  const handleSaveSearch = () => {
+    if (!saveSearchName.trim()) {
+      showToast('Name the search before saving', 'warning');
+      return;
+    }
+    createSavedSearch.mutate(
+      {
+        name: saveSearchName.trim(),
+        filters,
+        sortBy: filters.sortBy,
+        sortOrder: filters.sortOrder,
+      },
+      {
+        onSuccess: () => {
+          showToast('Search saved', 'success');
+          setSaveSearchName('');
+        },
+        onError: (err) => showToast(err instanceof Error ? err.message : 'Failed to save', 'error'),
+      }
+    );
+  };
 
   const toggleSort = (column: string) => {
     if (sortBy === column) {
@@ -165,11 +246,8 @@ export default function LeadsPage() {
   };
 
   const handleExport = async () => {
-    const qs = new URLSearchParams();
-    if (statusFilter !== 'all') qs.append('status', statusFilter);
-    if (outreachFilter !== 'all') qs.append('outreachStatus', outreachFilter);
-    if (debouncedSearch) qs.append('search', debouncedSearch);
-    const url = `${CRM_API_URL}/api/leads/export.csv?${qs.toString()}`;
+    const qs = buildLeadsQueryString(filters);
+    const url = `${CRM_API_URL}/api/leads/export.csv?${qs}`;
     const token = getAccessToken();
     const res = await fetch(url, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -398,7 +476,7 @@ export default function LeadsPage() {
         ))}
       </div>
 
-      {/* Search, batch filter and page size */}
+      {/* Search, batch filter, more-filters toggle, saved searches */}
       <div className="flex items-center gap-2">
         <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-md px-3 py-2 flex-1">
           <Search size={16} className="text-slate-400" />
@@ -423,18 +501,167 @@ export default function LeadsPage() {
             </option>
           ))}
         </select>
-        <select
-          value={pageSize}
-          onChange={(e) => setPageSize(Number(e.target.value))}
-          className="px-3 py-2 border border-slate-200 rounded-md text-sm bg-white"
+        <button
+          onClick={() => setMoreFiltersOpen((o) => !o)}
+          className={cn(
+            'flex items-center gap-2 px-3 py-2 border rounded-md text-sm',
+            moreFiltersOpen ||
+              dateFrom ||
+              dateTo ||
+              tagFilters.length > 0 ||
+              ownerFilters.length > 0
+              ? 'border-blue-300 bg-blue-50 text-blue-700'
+              : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-600'
+          )}
         >
-          {PAGE_SIZES.map((size) => (
-            <option key={size} value={size}>
-              {size} / page
-            </option>
-          ))}
-        </select>
+          <SlidersHorizontal size={16} /> More Filters
+        </button>
+        <div className="relative">
+          <button
+            onClick={() => setSavedSearchesOpen((o) => !o)}
+            className="flex items-center gap-2 px-3 py-2 border border-slate-200 rounded-md text-sm bg-white hover:bg-slate-50 text-slate-600"
+          >
+            <Bookmark size={16} /> Saved Searches
+          </button>
+          {savedSearchesOpen && (
+            <div className="absolute right-0 mt-1 w-80 bg-white border border-slate-200 rounded-md shadow-lg z-10 p-3">
+              {savedSearches.length === 0 && (
+                <p className="text-xs text-slate-400 mb-2">No saved searches yet.</p>
+              )}
+              <div className="space-y-1 max-h-56 overflow-y-auto">
+                {savedSearches.map((s) => (
+                  <div
+                    key={s.id}
+                    className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-slate-50"
+                  >
+                    <button
+                      onClick={() => applySavedSearch(s.filters)}
+                      className="flex-1 text-left text-sm text-slate-700"
+                    >
+                      {s.name}
+                    </button>
+                    <button
+                      onClick={() =>
+                        deleteSavedSearch.mutate(s.id, {
+                          onSuccess: () => showToast('Saved search deleted', 'success'),
+                        })
+                      }
+                      className="p-1 rounded hover:bg-red-50 text-slate-400 hover:text-red-500"
+                      title="Delete"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <div className="flex gap-2 mt-2 pt-2 border-t border-slate-100">
+                <input
+                  type="text"
+                  placeholder="Name this search..."
+                  value={saveSearchName}
+                  onChange={(e) => setSaveSearchName(e.target.value)}
+                  className="flex-1 px-2 py-1.5 text-sm border border-slate-200 rounded-md outline-none"
+                />
+                <button
+                  onClick={handleSaveSearch}
+                  disabled={createSavedSearch.isPending}
+                  className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
+
+      {/* More filters panel — date range, tags, (manager+) owner */}
+      {moreFiltersOpen && (
+        <div className="bg-white border border-slate-200 rounded-lg p-4 flex flex-wrap gap-4">
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1">Created from</label>
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="px-3 py-1.5 border border-slate-200 rounded-md text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-500 mb-1">Created to</label>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="px-3 py-1.5 border border-slate-200 rounded-md text-sm"
+            />
+          </div>
+          <div className="min-w-[220px]">
+            <label className="block text-xs font-medium text-slate-500 mb-1">Tags</label>
+            <div className="flex flex-wrap gap-1 mb-1">
+              {tagFilters.map((t) => (
+                <span
+                  key={t}
+                  className="flex items-center gap-1 bg-emerald-50 text-emerald-700 rounded-full px-2 py-0.5 text-xs"
+                >
+                  {t}
+                  <button onClick={() => setTagFilters((prev) => prev.filter((x) => x !== t))}>
+                    <X size={12} />
+                  </button>
+                </span>
+              ))}
+            </div>
+            <input
+              type="text"
+              placeholder="Type a tag, press Enter"
+              value={tagFilterInput}
+              onChange={(e) => setTagFilterInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter') return;
+                e.preventDefault();
+                const tag = tagFilterInput.trim();
+                if (tag && !tagFilters.includes(tag)) setTagFilters((prev) => [...prev, tag]);
+                setTagFilterInput('');
+              }}
+              className="w-full px-3 py-1.5 border border-slate-200 rounded-md text-sm outline-none"
+            />
+          </div>
+          {canManage && (
+            <div className="min-w-[220px]">
+              <label className="block text-xs font-medium text-slate-500 mb-1">Owners</label>
+              <div className="flex flex-col gap-1 max-h-28 overflow-y-auto border border-slate-200 rounded-md p-2">
+                {crmUsers.map((u) => (
+                  <label key={u.id} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={ownerFilters.includes(u.id)}
+                      onChange={(e) =>
+                        setOwnerFilters((prev) =>
+                          e.target.checked ? [...prev, u.id] : prev.filter((id) => id !== u.id)
+                        )
+                      }
+                    />
+                    {u.displayName || u.email}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+          {(dateFrom || dateTo || tagFilters.length > 0 || ownerFilters.length > 0) && (
+            <button
+              onClick={() => {
+                setDateFrom('');
+                setDateTo('');
+                setTagFilters([]);
+                setOwnerFilters([]);
+              }}
+              className="self-end px-3 py-1.5 text-sm text-slate-500 hover:text-slate-700"
+            >
+              Clear these filters
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Bulk action bar */}
       {selectionCount > 0 && (
@@ -735,7 +962,7 @@ export default function LeadsPage() {
                   </td>
                   <td className="px-4 py-3 text-slate-600">{lead.companyName ?? '—'}</td>
                   <td className="px-4 py-3 text-slate-600">
-                    {lead.email.includes('@placeholder.skarion') ? '—' : lead.email}
+                    {!lead.email || lead.email.includes('@placeholder.skarion') ? '—' : lead.email}
                   </td>
                   <td className="px-4 py-3">
                     {lead.linkedinUrl ? (
@@ -874,30 +1101,29 @@ export default function LeadsPage() {
         </div>
       </div>
 
-      {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-between px-2">
-          <div className="text-sm text-slate-500">
-            Page {page} of {totalPages} ({total} total)
-          </div>
-          <div className="flex gap-1">
-            <button
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              disabled={page <= 1}
-              className="px-3 py-1.5 border border-slate-200 rounded-md text-sm hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <ChevronLeft size={16} />
-            </button>
-            <button
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              disabled={page >= totalPages}
-              className="px-3 py-1.5 border border-slate-200 rounded-md text-sm hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <ChevronRight size={16} />
-            </button>
-          </div>
+      {/* Incremental loading — accumulates rows instead of paging through them */}
+      <div className="flex flex-col items-center gap-2 py-2">
+        <div className="text-sm text-slate-500">
+          Showing {loadedCount} of {total}
         </div>
-      )}
+        {hasNextPage && (
+          <button
+            onClick={() => fetchNextPage()}
+            disabled={isFetchingNextPage}
+            className="flex items-center gap-2 px-4 py-2 border border-slate-200 rounded-md text-sm hover:bg-slate-50 disabled:opacity-50"
+          >
+            {isFetchingNextPage ? (
+              <>
+                <Loader2 size={16} className="animate-spin" /> Loading...
+              </>
+            ) : (
+              'Load more'
+            )}
+          </button>
+        )}
+        {/* Scrolling this into view auto-triggers the same fetch as the button above */}
+        <div ref={sentinelRef} className="h-1 w-full" />
+      </div>
 
       <LeadForm open={modalOpen} onClose={closeModal} lead={editLead} />
       <ImportModal
@@ -909,10 +1135,7 @@ export default function LeadsPage() {
 John,Doe,john@acme.com,+1-555-1234,Acme Inc,acme.com,https://linkedin.com/in/johndoe,Manager,website,new,Interested in OSP support
 Jane,Smith,jane@globex.org,+1-555-5678,Globex Corp,globex.org,https://linkedin.com/in/janesmith,Director,referral,contacted,Referred by Bob`}
       />
-      <PdfImportModal
-        open={pdfImportOpen}
-        onClose={() => setPdfImportOpen(false)}
-      />
+      <PdfImportModal open={pdfImportOpen} onClose={() => setPdfImportOpen(false)} />
     </div>
   );
 }

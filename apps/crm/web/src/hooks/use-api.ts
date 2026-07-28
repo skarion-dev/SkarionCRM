@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
 import {
   crmFetch,
   redirectToLogin,
@@ -23,6 +23,7 @@ import {
   updateWorkflowRule,
   deleteWorkflowRule,
 } from '../api.js';
+import { buildLeadsQueryString, type LeadFilters } from '../lib/leadFilters.js';
 
 function useCrmQuery<T>(key: string[], fetcher: () => Promise<T>, enabled = true) {
   return useQuery({
@@ -130,6 +131,94 @@ export function useLeads(
   );
 }
 
+export interface LeadsResponse {
+  leads: Lead[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  statusCounts: Record<string, number>;
+  outreachStatusCounts: Record<string, number>;
+}
+
+const LEADS_BATCH_SIZE = 100;
+
+/** Incremental/"load more" loading for the leads table — replaces the old
+ * Prev/Next page-at-a-time model. Each additional page is appended to the
+ * previous ones rather than replacing them; changing `filters` changes the
+ * query key, which starts a fresh accumulation instead of mixing results
+ * from two different filter sets. */
+export function useInfiniteLeads(filters: LeadFilters) {
+  const qs = buildLeadsQueryString(filters);
+  return useInfiniteQuery({
+    queryKey: ['leads-infinite', qs],
+    queryFn: async ({ pageParam }) => {
+      try {
+        return await crmFetch<LeadsResponse>(
+          `/api/leads?${qs}&page=${pageParam}&pageSize=${LEADS_BATCH_SIZE}`
+        );
+      } catch (err) {
+        if (err instanceof Error && 'status' in err && err.status === 401) {
+          redirectToLogin();
+        }
+        throw err;
+      }
+    },
+    initialPageParam: 1,
+    getNextPageParam: (last) => (last.page < last.totalPages ? last.page + 1 : undefined),
+  });
+}
+
+export interface LeadSavedSearch {
+  id: string;
+  ownerId: string;
+  name: string;
+  filters: LeadFilters;
+  sortBy: string | null;
+  sortOrder: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export function useSavedSearches() {
+  return useCrmQuery(['lead-saved-searches'], () =>
+    crmFetch<{ savedSearches: LeadSavedSearch[] }>('/api/leads/saved-searches')
+  );
+}
+
+export function useCreateSavedSearch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (payload: {
+      name: string;
+      filters: LeadFilters;
+      sortBy?: string;
+      sortOrder?: string;
+    }) => {
+      return crmFetch<{ savedSearch: LeadSavedSearch }>('/api/leads/saved-searches', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['lead-saved-searches'] });
+    },
+  });
+}
+
+export function useDeleteSavedSearch() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      await crmFetch(`/api/leads/saved-searches/${id}`, { method: 'DELETE' });
+      return { id };
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['lead-saved-searches'] });
+    },
+  });
+}
+
 export function useOpportunities() {
   return useCrmQuery(['opportunities'], () =>
     crmFetch<{ opportunities: Opportunity[] }>('/api/opportunities')
@@ -138,6 +227,21 @@ export function useOpportunities() {
 
 export function useTasks() {
   return useCrmQuery(['tasks'], () => crmFetch<{ tasks: Task[] }>('/api/tasks'));
+}
+
+/** Self-claim an unassigned task off the open-claim board. 409s if someone
+ * else claimed it first — the mutation surfaces that as a normal error for
+ * the caller to show a toast and refresh the board. */
+export function useClaimTask() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      return crmFetch<{ task: Task }>(`/api/tasks/${id}/claim`, { method: 'PUT' });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['tasks'] });
+    },
+  });
 }
 
 export function useLead(id: string, enabled = true) {

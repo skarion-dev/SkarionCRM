@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useTasks, useDeleteEntity } from '../hooks/use-api.js';
+import { useTasks, useDeleteEntity, useClaimTask } from '../hooks/use-api.js';
+import { useAuthStore } from '../stores/auth.js';
 import {
   CheckSquare,
   Plus,
@@ -10,15 +11,154 @@ import {
   Circle,
   Pencil,
   BellRing,
+  Hand,
 } from 'lucide-react';
 import { cn } from '../lib/utils.js';
 import { crmFetch } from '../api.js';
 import TaskForm from '../components/forms/TaskForm.js';
 import type { Task } from '../api.js';
+import { showToast } from '../stores/toast.js';
+
+function TaskCard({
+  task,
+  claimable,
+  claiming,
+  onToggleComplete,
+  onClaim,
+  onEdit,
+  onDelete,
+}: {
+  task: Task;
+  claimable: boolean;
+  claiming: boolean;
+  onToggleComplete: (task: Task) => void;
+  onClaim: (task: Task) => void;
+  onEdit: (task: Task) => void;
+  onDelete: (task: Task) => void;
+}) {
+  return (
+    <div
+      className={cn(
+        'bg-white border border-slate-200 rounded-lg p-4 flex items-center gap-3 hover:shadow-sm transition-shadow',
+        task.completedAt && 'opacity-60'
+      )}
+    >
+      <button onClick={() => onToggleComplete(task)} className="shrink-0">
+        {task.completedAt ? (
+          <CheckCircle2 size={20} className="text-green-500" />
+        ) : (
+          <Circle size={20} className="text-slate-300 hover:text-slate-500" />
+        )}
+      </button>
+      <div className="flex-1 min-w-0">
+        <div
+          className={cn('text-sm font-medium', task.completedAt && 'line-through text-slate-400')}
+        >
+          {task.leadId ? (
+            <Link to={`/leads/${task.leadId}`} className="text-blue-600 hover:underline">
+              {task.title}
+            </Link>
+          ) : (
+            task.title
+          )}
+        </div>
+        <div className="text-xs text-slate-500 mt-0.5">
+          {task.description ?? 'No description'}
+          {task.dueDate && ` · Due ${new Date(task.dueDate).toLocaleDateString()}`}
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <span
+          className={cn(
+            'px-2 py-0.5 rounded text-xs font-medium',
+            task.priority === 'high'
+              ? 'bg-red-100 text-red-700'
+              : task.priority === 'medium'
+                ? 'bg-amber-100 text-amber-700'
+                : 'bg-blue-100 text-blue-700'
+          )}
+        >
+          {task.priority}
+        </span>
+        {claimable && (
+          <button
+            onClick={() => onClaim(task)}
+            disabled={claiming}
+            className="flex items-center gap-1 px-2 py-1 text-xs font-medium rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+          >
+            <Hand size={12} /> Claim
+          </button>
+        )}
+        <button
+          onClick={() => onEdit(task)}
+          className="p-1.5 rounded hover:bg-slate-200 text-slate-500"
+        >
+          <Pencil size={14} />
+        </button>
+        <button
+          onClick={() => onDelete(task)}
+          className="p-1.5 rounded hover:bg-red-100 text-red-500"
+        >
+          <Trash2 size={14} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function TaskColumn({
+  title,
+  tasksInColumn,
+  claimable,
+  claiming,
+  onToggleComplete,
+  onClaim,
+  onEdit,
+  onDelete,
+}: {
+  title: string;
+  tasksInColumn: Task[];
+  claimable: boolean;
+  claiming: boolean;
+  onToggleComplete: (task: Task) => void;
+  onClaim: (task: Task) => void;
+  onEdit: (task: Task) => void;
+  onDelete: (task: Task) => void;
+}) {
+  return (
+    <div className="flex-1 min-w-[280px] space-y-2">
+      <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-400 px-1">
+        {title} ({tasksInColumn.length})
+      </h2>
+      <div className="space-y-2">
+        {tasksInColumn.map((task) => (
+          <TaskCard
+            key={task.id}
+            task={task}
+            claimable={claimable}
+            claiming={claiming}
+            onToggleComplete={onToggleComplete}
+            onClaim={onClaim}
+            onEdit={onEdit}
+            onDelete={onDelete}
+          />
+        ))}
+        {tasksInColumn.length === 0 && (
+          <div className="text-center text-slate-300 text-sm py-8 border border-dashed border-slate-200 rounded-lg">
+            Nothing here
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default function TasksPage() {
   const { data, isLoading, refetch } = useTasks();
   const deleteMutation = useDeleteEntity();
+  const claimMutation = useClaimTask();
+  const currentUserId = useAuthStore((s) => s.user?.id ?? '');
+  const isSuperadmin = useAuthStore((s) => s.user?.isSuperadmin ?? false);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'all' | 'open' | 'completed'>('all');
   const [followupsOnly, setFollowupsOnly] = useState(false);
@@ -43,9 +183,17 @@ export default function TasksPage() {
     const matchesSearch = !search || t.title.toLowerCase().includes(search.toLowerCase());
     const matchesFilter =
       filter === 'all' || (filter === 'open' ? !t.completedAt : !!t.completedAt);
-    const matchesFollowup = !followupsOnly || t.type === 'outreach_followup';
+    const matchesFollowup = !followupsOnly || (t.type ?? '').startsWith('outreach_followup');
     return matchesSearch && matchesFilter && matchesFollowup;
   });
+
+  // Open-claim board: Unclaimed (anyone can pick it up), Mine, and — since
+  // the backend only sends non-superadmins their own + unassigned tasks in
+  // the first place — Team's is only ever populated for a superadmin, who
+  // sees everyone's.
+  const unclaimed = filtered.filter((t) => !t.assigneeId);
+  const mine = filtered.filter((t) => t.assigneeId === currentUserId);
+  const teams = filtered.filter((t) => t.assigneeId && t.assigneeId !== currentUserId);
 
   const toggleComplete = async (task: Task) => {
     if (task.completedAt) {
@@ -55,6 +203,16 @@ export default function TasksPage() {
     }
     refetch();
   };
+
+  const handleClaim = (task: Task) => {
+    claimMutation.mutate(task.id, {
+      onSuccess: () => showToast('Task claimed', 'success'),
+      onError: (err) =>
+        showToast(err instanceof Error ? err.message : 'Already claimed by someone else', 'error'),
+    });
+  };
+
+  const handleDelete = (task: Task) => deleteMutation.mutate({ type: 'tasks', id: task.id });
 
   if (isLoading) return <div className="text-slate-500">Loading tasks...</div>;
 
@@ -117,72 +275,38 @@ export default function TasksPage() {
         />
       </div>
 
-      <div className="space-y-2">
-        {filtered.map((task) => (
-          <div
-            key={task.id}
-            className={cn(
-              'bg-white border border-slate-200 rounded-lg p-4 flex items-center gap-3 hover:shadow-sm transition-shadow',
-              task.completedAt && 'opacity-60'
-            )}
-          >
-            <button onClick={() => toggleComplete(task)} className="shrink-0">
-              {task.completedAt ? (
-                <CheckCircle2 size={20} className="text-green-500" />
-              ) : (
-                <Circle size={20} className="text-slate-300 hover:text-slate-500" />
-              )}
-            </button>
-            <div className="flex-1 min-w-0">
-              <div
-                className={cn(
-                  'text-sm font-medium',
-                  task.completedAt && 'line-through text-slate-400'
-                )}
-              >
-                {task.leadId ? (
-                  <Link to={`/leads/${task.leadId}`} className="text-blue-600 hover:underline">
-                    {task.title}
-                  </Link>
-                ) : (
-                  task.title
-                )}
-              </div>
-              <div className="text-xs text-slate-500 mt-0.5">
-                {task.description ?? 'No description'}
-                {task.dueDate && ` · Due ${new Date(task.dueDate).toLocaleDateString()}`}
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <span
-                className={cn(
-                  'px-2 py-0.5 rounded text-xs font-medium',
-                  task.priority === 'high'
-                    ? 'bg-red-100 text-red-700'
-                    : task.priority === 'medium'
-                      ? 'bg-amber-100 text-amber-700'
-                      : 'bg-blue-100 text-blue-700'
-                )}
-              >
-                {task.priority}
-              </span>
-              <button
-                onClick={() => openEdit(task)}
-                className="p-1.5 rounded hover:bg-slate-200 text-slate-500"
-              >
-                <Pencil size={14} />
-              </button>
-              <button
-                onClick={() => deleteMutation.mutate({ type: 'tasks', id: task.id })}
-                className="p-1.5 rounded hover:bg-red-100 text-red-500"
-              >
-                <Trash2 size={14} />
-              </button>
-            </div>
-          </div>
-        ))}
-        {filtered.length === 0 && (
-          <div className="text-center text-slate-400 py-12">No tasks found</div>
+      <div className="flex flex-col md:flex-row gap-4">
+        <TaskColumn
+          title="Unclaimed"
+          tasksInColumn={unclaimed}
+          claimable
+          claiming={claimMutation.isPending}
+          onToggleComplete={toggleComplete}
+          onClaim={handleClaim}
+          onEdit={openEdit}
+          onDelete={handleDelete}
+        />
+        <TaskColumn
+          title="Mine"
+          tasksInColumn={mine}
+          claimable={false}
+          claiming={claimMutation.isPending}
+          onToggleComplete={toggleComplete}
+          onClaim={handleClaim}
+          onEdit={openEdit}
+          onDelete={handleDelete}
+        />
+        {isSuperadmin && (
+          <TaskColumn
+            title="Team's"
+            tasksInColumn={teams}
+            claimable={false}
+            claiming={claimMutation.isPending}
+            onToggleComplete={toggleComplete}
+            onClaim={handleClaim}
+            onEdit={openEdit}
+            onDelete={handleDelete}
+          />
         )}
       </div>
 

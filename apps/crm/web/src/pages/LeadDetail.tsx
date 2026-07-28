@@ -194,7 +194,7 @@ export default function LeadDetail() {
 
   const lead = data.lead;
   const nextStatus = getNextStatus(lead.status);
-  const isPlaceholderEmail = lead.email.includes('@placeholder.skarion');
+  const isPlaceholderEmail = (lead.email ?? '').includes('@placeholder.skarion');
   const batch = lead.batchId ? batches?.find((b) => b.id === lead.batchId) : undefined;
 
   const handleStatusChange = (newStatus: string) => {

@@ -71,7 +71,10 @@ function safeStorageRemove(key: string): void {
 }
 
 function extractHashTokens(): { accessToken: string; refreshToken: string } | null {
-  console.log('[Auth] extractHashTokens: checking hash', window.location.hash ? '(present)' : '(empty)');
+  console.log(
+    '[Auth] extractHashTokens: checking hash',
+    window.location.hash ? '(present)' : '(empty)'
+  );
   try {
     const hash = window.location.hash;
     if (!hash || !hash.includes('access_token=')) {
@@ -81,7 +84,12 @@ function extractHashTokens(): { accessToken: string; refreshToken: string } | nu
     const params = new URLSearchParams(hash.slice(1));
     const access = params.get('access_token');
     const refresh = params.get('refresh_token');
-    console.log('[Auth] extractHashTokens: extracted access_token:', !!access, 'refresh_token:', !!refresh);
+    console.log(
+      '[Auth] extractHashTokens: extracted access_token:',
+      !!access,
+      'refresh_token:',
+      !!refresh
+    );
     if (access && refresh) {
       window.history.replaceState(null, '', window.location.pathname + window.location.search);
       return { accessToken: access, refreshToken: refresh };
@@ -120,7 +128,12 @@ export async function refreshAccessToken(): Promise<string | null> {
         body: JSON.stringify({ refresh_token: localRefreshToken }),
         credentials: 'include',
       });
-      console.log('[Auth] refreshAccessToken: /auth/refresh response status:', response.status, 'ok:', response.ok);
+      console.log(
+        '[Auth] refreshAccessToken: /auth/refresh response status:',
+        response.status,
+        'ok:',
+        response.ok
+      );
       if (!response.ok) {
         accessToken = null;
         safeStorageRemove('refresh_token');
@@ -171,7 +184,12 @@ export async function bootstrapAuth(): Promise<{
           const response = await fetch(`${IDENTITY_API_URL}/me`, {
             headers: { Authorization: `Bearer ${accessToken}` },
           });
-          console.log('[Auth] bootstrapAuth: /me response status:', response.status, 'ok:', response.ok);
+          console.log(
+            '[Auth] bootstrapAuth: /me response status:',
+            response.status,
+            'ok:',
+            response.ok
+          );
           if (response.ok) {
             const data = await response.json();
             console.log('[Auth] bootstrapAuth: /me validation successful, user:', data.email);
@@ -201,7 +219,12 @@ export async function bootstrapAuth(): Promise<{
         body: JSON.stringify({ refresh_token: localRefreshToken }),
         credentials: 'include',
       });
-      console.log('[Auth] bootstrapAuth: fallback /auth/refresh response status:', response.status, 'ok:', response.ok);
+      console.log(
+        '[Auth] bootstrapAuth: fallback /auth/refresh response status:',
+        response.status,
+        'ok:',
+        response.ok
+      );
       if (!response.ok) {
         console.warn('[Auth] bootstrapAuth: fallback refresh failed, clearing token');
         safeStorageRemove('refresh_token');
@@ -359,7 +382,7 @@ export interface Lead {
   id: string;
   firstName: string;
   lastName: string;
-  email: string;
+  email: string | null;
   phone: string | null;
   companyName: string | null;
   companyDomain: string | null;
@@ -431,7 +454,8 @@ export interface Task {
   title: string;
   description: string | null;
   dueDate: string | null;
-  assigneeId: string;
+  // null = unassigned, sitting in the open-claim pool on the task board.
+  assigneeId: string | null;
   contactId: string | null;
   companyId: string | null;
   opportunityId: string | null;
@@ -588,10 +612,13 @@ export interface WorkflowRule {
   name: string;
   trigger: 'lead_created' | 'opportunity_stale' | 'task_due_soon' | 'outreach_stale';
   conditions: {
-    channel?: string;
+    channel?: string | null;
     afterAttempts?: number;
     waitDays?: number;
     nextChannel?: string;
+    // Multi-step sequence rules (actions.kind === 'sequence_followup') use
+    // this instead of afterAttempts/waitDays/nextChannel.
+    steps?: { afterDays: number; title: string; priority?: string }[];
     [key: string]: unknown;
   };
   actions: { kind?: string; taskTitle?: string; taskPriority?: string; [key: string]: unknown };
