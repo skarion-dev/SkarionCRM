@@ -18,6 +18,9 @@ import {
   deleteAttachment,
   listImportBatches,
   listIdentityUsers,
+  listExtensionApiKeys,
+  createExtensionApiKey,
+  revokeExtensionApiKey,
   listWorkflowRules,
   createWorkflowRule,
   updateWorkflowRule,
@@ -628,6 +631,34 @@ export function useIdentityUsers(enabled = true) {
       }
     },
     enabled,
+  });
+}
+
+export function useExtensionApiKeys(enabled = true) {
+  return useCrmQuery(
+    ['extension-api-keys'],
+    async () => {
+      const result = await listExtensionApiKeys();
+      return result.keys;
+    },
+    enabled
+  );
+}
+
+export function useCreateExtensionApiKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ email, label }: { email: string; label: string }) =>
+      createExtensionApiKey(email, label),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['extension-api-keys'] }),
+  });
+}
+
+export function useRevokeExtensionApiKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => revokeExtensionApiKey(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['extension-api-keys'] }),
   });
 }
 

@@ -71,7 +71,10 @@ function safeStorageRemove(key: string): void {
 }
 
 function extractHashTokens(): { accessToken: string; refreshToken: string } | null {
-  console.log('[Auth] extractHashTokens: checking hash', window.location.hash ? '(present)' : '(empty)');
+  console.log(
+    '[Auth] extractHashTokens: checking hash',
+    window.location.hash ? '(present)' : '(empty)'
+  );
   try {
     const hash = window.location.hash;
     if (!hash || !hash.includes('access_token=')) {
@@ -81,7 +84,12 @@ function extractHashTokens(): { accessToken: string; refreshToken: string } | nu
     const params = new URLSearchParams(hash.slice(1));
     const access = params.get('access_token');
     const refresh = params.get('refresh_token');
-    console.log('[Auth] extractHashTokens: extracted access_token:', !!access, 'refresh_token:', !!refresh);
+    console.log(
+      '[Auth] extractHashTokens: extracted access_token:',
+      !!access,
+      'refresh_token:',
+      !!refresh
+    );
     if (access && refresh) {
       window.history.replaceState(null, '', window.location.pathname + window.location.search);
       return { accessToken: access, refreshToken: refresh };
@@ -120,7 +128,12 @@ export async function refreshAccessToken(): Promise<string | null> {
         body: JSON.stringify({ refresh_token: localRefreshToken }),
         credentials: 'include',
       });
-      console.log('[Auth] refreshAccessToken: /auth/refresh response status:', response.status, 'ok:', response.ok);
+      console.log(
+        '[Auth] refreshAccessToken: /auth/refresh response status:',
+        response.status,
+        'ok:',
+        response.ok
+      );
       if (!response.ok) {
         accessToken = null;
         safeStorageRemove('refresh_token');
@@ -171,7 +184,12 @@ export async function bootstrapAuth(): Promise<{
           const response = await fetch(`${IDENTITY_API_URL}/me`, {
             headers: { Authorization: `Bearer ${accessToken}` },
           });
-          console.log('[Auth] bootstrapAuth: /me response status:', response.status, 'ok:', response.ok);
+          console.log(
+            '[Auth] bootstrapAuth: /me response status:',
+            response.status,
+            'ok:',
+            response.ok
+          );
           if (response.ok) {
             const data = await response.json();
             console.log('[Auth] bootstrapAuth: /me validation successful, user:', data.email);
@@ -201,7 +219,12 @@ export async function bootstrapAuth(): Promise<{
         body: JSON.stringify({ refresh_token: localRefreshToken }),
         credentials: 'include',
       });
-      console.log('[Auth] bootstrapAuth: fallback /auth/refresh response status:', response.status, 'ok:', response.ok);
+      console.log(
+        '[Auth] bootstrapAuth: fallback /auth/refresh response status:',
+        response.status,
+        'ok:',
+        response.ok
+      );
       if (!response.ok) {
         console.warn('[Auth] bootstrapAuth: fallback refresh failed, clearing token');
         safeStorageRemove('refresh_token');
@@ -304,6 +327,45 @@ export async function crmFetch<T>(path: string, init: RequestInit = {}): Promise
     console.error(`[API] crmFetch: request to ${path} failed:`, body.error);
     throw new ApiError(body.error ?? 'Request failed', response.status);
   }
+  return response.json() as Promise<T>;
+}
+
+export async function identityFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  if (!accessToken) {
+    if (!bootstrapPromise) bootstrapAuth();
+    const user = await bootstrapPromise;
+    if (!user) {
+      redirectToLogin();
+      throw new ApiError('No session.', 401);
+    }
+  }
+
+  const request = () =>
+    fetch(`${IDENTITY_API_URL}${path}`, {
+      ...init,
+      credentials: 'include',
+      headers: {
+        ...(init.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+        Authorization: `Bearer ${accessToken}`,
+        ...init.headers,
+      },
+    });
+
+  let response = await request();
+  if (response.status === 401) {
+    const refreshed = await refreshAccessToken();
+    if (!refreshed) {
+      redirectToLogin();
+      throw new ApiError('Session expired.', 401);
+    }
+    response = await request();
+  }
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({ error: response.statusText }));
+    throw new ApiError(body.error ?? 'Request failed', response.status);
+  }
+
   return response.json() as Promise<T>;
 }
 
@@ -551,34 +613,36 @@ export interface IdentityUser {
 /** Fetch the list of users from the identity /admin/users endpoint. Only
  *  callable by platform admins; non-admins should treat a 403 as "empty". */
 export async function listIdentityUsers(): Promise<{ users: IdentityUser[] }> {
-  if (!accessToken) {
-    const refreshed = await refreshAccessToken();
-    if (!refreshed) {
-      redirectToLogin();
-      throw new ApiError('No session.', 401);
-    }
-  }
-  const url = `${IDENTITY_API_URL}/admin/users`;
-  let response = await fetch(url, {
-    credentials: 'include',
-    headers: { Authorization: `Bearer ${accessToken}` },
+  return identityFetch<{ users: IdentityUser[] }>('/admin/users');
+}
+
+// ─── Extension API keys (identity superadmin only) ───
+
+export interface ExtensionApiKey {
+  id: string;
+  email: string;
+  label: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+}
+
+export function listExtensionApiKeys() {
+  return identityFetch<{ keys: ExtensionApiKey[] }>('/admin/api-keys');
+}
+
+/** The plaintext key is returned once and cannot be fetched again. */
+export function createExtensionApiKey(email: string, label: string) {
+  return identityFetch<{ key: string; id: string }>('/admin/api-keys', {
+    method: 'POST',
+    body: JSON.stringify({ email, label }),
   });
-  if (response.status === 401) {
-    const refreshed = await refreshAccessToken();
-    if (!refreshed) {
-      redirectToLogin();
-      throw new ApiError('Session expired.', 401);
-    }
-    response = await fetch(url, {
-      credentials: 'include',
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-  }
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({ error: response.statusText }));
-    throw new ApiError(body.error ?? 'Request failed', response.status);
-  }
-  return response.json() as Promise<{ users: IdentityUser[] }>;
+}
+
+export function revokeExtensionApiKey(id: string) {
+  return identityFetch<{ ok: true }>(`/admin/api-keys/${id}/revoke`, {
+    method: 'POST',
+  });
 }
 
 // ─── Workflow rules (outreach_stale cadence) ───

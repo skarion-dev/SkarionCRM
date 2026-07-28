@@ -8,8 +8,12 @@ import {
   useDeleteWorkflowRule,
   useAiConfig,
   useUpdateAiConfig,
+  useExtensionApiKeys,
+  useCreateExtensionApiKey,
+  useRevokeExtensionApiKey,
   type AiRuntimeSettings,
 } from '../hooks/use-api.js';
+import { CRM_API_URL } from '../api.js';
 import {
   Settings,
   Users,
@@ -31,6 +35,7 @@ import {
   KeyRound,
   Save,
   Zap,
+  Copy,
 } from 'lucide-react';
 import { cn } from '../lib/utils.js';
 
@@ -41,6 +46,7 @@ const TABS = [
   { id: 'tags', label: 'Tags', icon: Tag },
   { id: 'workflows', label: 'Workflows', icon: Workflow },
   { id: 'ai', label: 'AI & Agents', icon: Bot },
+  { id: 'extension-keys', label: 'Extension Keys', icon: KeyRound },
   { id: 'integrations', label: 'Integrations', icon: Puzzle },
 ] as const;
 
@@ -80,7 +86,7 @@ export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<TabId>('profile');
   const { data: integrationData } = useIntegrationStatus();
 
-  const isManager = role === 'manager';
+  const canManage = role === 'manager' || Boolean(user?.isSuperadmin);
 
   return (
     <div className="space-y-6 max-w-5xl">
@@ -94,7 +100,10 @@ export default function SettingsPage() {
         <div className="flex gap-1 overflow-x-auto">
           {TABS.map((tab) => {
             const Icon = tab.icon;
-            const disabled = tab.id !== 'profile' && !isManager;
+            const disabled =
+              tab.id === 'extension-keys'
+                ? !user?.isSuperadmin
+                : tab.id !== 'profile' && !canManage;
             return (
               <button
                 key={tab.id}
@@ -168,7 +177,7 @@ export default function SettingsPage() {
       )}
 
       {/* Team Tab */}
-      {activeTab === 'team' && isManager && (
+      {activeTab === 'team' && canManage && (
         <div className="bg-white border border-slate-200 rounded-lg p-6">
           <h2 className="font-semibold mb-4 flex items-center gap-2">
             <Users size={18} className="text-slate-500" /> Team
@@ -197,7 +206,7 @@ export default function SettingsPage() {
       )}
 
       {/* Pipelines Tab */}
-      {activeTab === 'pipelines' && isManager && (
+      {activeTab === 'pipelines' && canManage && (
         <div className="bg-white border border-slate-200 rounded-lg p-6">
           <h2 className="font-semibold mb-4 flex items-center gap-2">
             <Layers size={18} className="text-slate-500" /> Opportunity Stages
@@ -229,7 +238,7 @@ export default function SettingsPage() {
       )}
 
       {/* Tags Tab */}
-      {activeTab === 'tags' && isManager && (
+      {activeTab === 'tags' && canManage && (
         <div className="bg-white border border-slate-200 rounded-lg p-6">
           <h2 className="font-semibold mb-4 flex items-center gap-2">
             <Tag size={18} className="text-slate-500" /> Tags
@@ -252,13 +261,18 @@ export default function SettingsPage() {
       )}
 
       {/* Workflows Tab */}
-      {activeTab === 'workflows' && isManager && <WorkflowRulesPanel />}
+      {activeTab === 'workflows' && canManage && <WorkflowRulesPanel />}
 
       {/* AI & Agents Tab */}
-      {activeTab === 'ai' && isManager && <AiControlPanel />}
+      {activeTab === 'ai' && canManage && <AiControlPanel />}
+
+      {/* Extension Keys Tab */}
+      {activeTab === 'extension-keys' && user?.isSuperadmin && (
+        <ExtensionKeysPanel defaultEmail={user.email} />
+      )}
 
       {/* Integrations Tab */}
-      {activeTab === 'integrations' && isManager && (
+      {activeTab === 'integrations' && canManage && (
         <div className="bg-white border border-slate-200 rounded-lg p-6">
           <h2 className="font-semibold mb-4 flex items-center gap-2">
             <Puzzle size={18} className="text-slate-500" /> Integrations
@@ -337,6 +351,194 @@ export default function SettingsPage() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function ExtensionKeysPanel({ defaultEmail }: { defaultEmail: string }) {
+  const { data: keys = [], isLoading, error } = useExtensionApiKeys();
+  const createKey = useCreateExtensionApiKey();
+  const revokeKey = useRevokeExtensionApiKey();
+  const [email, setEmail] = useState(defaultEmail);
+  const [label, setLabel] = useState('LinkedIn extension');
+  const [newKey, setNewKey] = useState('');
+  const [copied, setCopied] = useState(false);
+
+  async function copyForExtension() {
+    await navigator.clipboard.writeText(JSON.stringify({ crmUrl: CRM_API_URL, apiKey: newKey }));
+    setCopied(true);
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="bg-white border border-slate-200 rounded-lg p-6">
+        <h2 className="font-semibold flex items-center gap-2">
+          <KeyRound size={18} className="text-blue-600" /> LinkedIn Extension Keys
+        </h2>
+        <p className="text-sm text-slate-500 mt-1">
+          These keys authenticate the browser extension to Skarion CRM. AI provider credentials
+          remain protected on the server and are selected under AI &amp; Agents.
+        </p>
+
+        {newKey && (
+          <div className="mt-5 rounded-lg border border-amber-300 bg-amber-50 p-4">
+            <div className="text-sm font-semibold text-amber-900">
+              Copy this key now—it will not be shown again.
+            </div>
+            <code className="block mt-2 rounded bg-white border border-amber-200 p-3 text-xs break-all">
+              {newKey}
+            </code>
+            <div className="flex flex-wrap gap-2 mt-3">
+              <button
+                type="button"
+                onClick={() => void copyForExtension()}
+                className="flex items-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700"
+              >
+                <Copy size={15} />
+                {copied ? 'Copied for extension' : 'Copy for extension'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setNewKey('');
+                  setCopied(false);
+                }}
+                className="border border-slate-200 px-4 py-2 rounded-lg text-sm"
+              >
+                Done
+              </button>
+            </div>
+            <p className="text-xs text-amber-800 mt-2">
+              In the extension, open ⚙ Settings and choose “Paste from admin panel.”
+            </p>
+          </div>
+        )}
+
+        <form
+          className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-3 items-end mt-5"
+          onSubmit={(event) => {
+            event.preventDefault();
+            createKey.mutate(
+              { email: email.trim(), label: label.trim() },
+              {
+                onSuccess: (result) => {
+                  setNewKey(result.key);
+                  setCopied(false);
+                },
+              }
+            );
+          }}
+        >
+          <label className="text-xs font-medium text-slate-500">
+            Account email
+            <input
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              required
+              className="block mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 w-full"
+            />
+          </label>
+          <label className="text-xs font-medium text-slate-500">
+            Key label
+            <input
+              type="text"
+              value={label}
+              onChange={(event) => setLabel(event.target.value)}
+              required
+              className="block mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 w-full"
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={createKey.isPending}
+            className="flex items-center justify-center gap-2 bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+          >
+            {createKey.isPending && <Loader2 size={15} className="animate-spin" />}
+            Generate key
+          </button>
+        </form>
+
+        {createKey.isError && (
+          <p className="text-sm text-red-600 mt-3">
+            {createKey.error instanceof Error ? createKey.error.message : 'Could not create key.'}
+          </p>
+        )}
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-200">
+          <h3 className="font-semibold">Issued keys</h3>
+        </div>
+        {isLoading ? (
+          <div className="p-8 flex justify-center">
+            <Loader2 className="animate-spin text-slate-400" />
+          </div>
+        ) : error ? (
+          <div className="p-6 text-sm text-red-600">
+            {error instanceof Error ? error.message : 'Could not load extension keys.'}
+          </div>
+        ) : keys.length === 0 ? (
+          <div className="p-6 text-sm text-slate-500">No extension keys have been issued yet.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-4 py-3">Email</th>
+                  <th className="px-4 py-3">Label</th>
+                  <th className="px-4 py-3">Created</th>
+                  <th className="px-4 py-3">Last used</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3 text-right">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {keys.map((key) => (
+                  <tr key={key.id} className="border-t border-slate-100">
+                    <td className="px-4 py-3">{key.email}</td>
+                    <td className="px-4 py-3">{key.label}</td>
+                    <td className="px-4 py-3">{new Date(key.createdAt).toLocaleDateString()}</td>
+                    <td className="px-4 py-3">
+                      {key.lastUsedAt ? new Date(key.lastUsedAt).toLocaleString() : 'Never'}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={cn(
+                          'text-xs font-medium px-2 py-0.5 rounded-full',
+                          key.revokedAt
+                            ? 'bg-slate-100 text-slate-500'
+                            : 'bg-green-100 text-green-700'
+                        )}
+                      >
+                        {key.revokedAt ? 'Revoked' : 'Active'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      {!key.revokedAt && (
+                        <button
+                          type="button"
+                          disabled={revokeKey.isPending}
+                          onClick={() => {
+                            if (
+                              confirm(`Revoke “${key.label}”? The extension will stop working.`)
+                            ) {
+                              revokeKey.mutate(key.id);
+                            }
+                          }}
+                          className="text-red-600 hover:text-red-700 text-sm font-medium disabled:opacity-50"
+                        >
+                          Revoke
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
