@@ -11,6 +11,8 @@ let selectedId = null;
 // having to know the URL — still fully editable in Settings (e.g. to point
 // at a local dev CRM instead).
 const DEFAULT_CRM_URL = 'https://skarion-crm-platform.skarion-talentos.workers.dev';
+// Frontend (not API) origin — only used to build "open existing record" links.
+const DEFAULT_CRM_WEB_URL = 'https://skarion-crm-cv9.pages.dev';
 let crmSettings = { crmUrl: DEFAULT_CRM_URL, apiKey: '' };
 let leadTags = [];
 
@@ -47,8 +49,10 @@ const lfTagList        = document.getElementById('lfTagList');
 const lfTagInput       = document.getElementById('lfTagInput');
 const lfNotes          = document.getElementById('lfNotes');
 const lfStatusLine     = document.getElementById('lfStatusLine');
+const lfDupeBanner     = document.getElementById('lfDupeBanner');
 const btnSendLead      = document.getElementById('btnSendLead');
 const btnCancelLead    = document.getElementById('btnCancelLead');
+const btnPasteSettings = document.getElementById('btnPasteSettings');
 
 chrome.storage.local.get(['crmSettings'], data => {
   if (data.crmSettings && data.crmSettings.crmUrl) {
@@ -85,6 +89,25 @@ btnSaveSettings.addEventListener('click', () => {
     settingsStatus.className = 'status-line';
     setTimeout(() => { settingsStatus.textContent = ''; }, 3000);
   });
+});
+
+// Admin's "Copy for extension" button (ApiKeysList.tsx) puts a small JSON
+// blob on the clipboard: {"crmUrl": "...", "apiKey": "..."}. Paste it here
+// instead of retyping both fields by hand.
+btnPasteSettings.addEventListener('click', async () => {
+  try {
+    const text = await navigator.clipboard.readText();
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed.apiKey !== 'string') throw new Error('not a key blob');
+    if (typeof parsed.crmUrl === 'string' && parsed.crmUrl) setCrmUrl.value = normalizeCrmUrl(parsed.crmUrl);
+    setApiKey.value = parsed.apiKey;
+    btnSaveSettings.click();
+    settingsStatus.textContent = 'Pasted from clipboard — saved.';
+    settingsStatus.className = 'status-line';
+  } catch {
+    settingsStatus.textContent = 'Clipboard doesn’t contain a key from the admin panel’s "Copy for extension" button.';
+    settingsStatus.className = 'status-line err';
+  }
 });
 
 function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
@@ -221,20 +244,11 @@ lfTagInput.addEventListener('keydown', (e) => {
   renderTags();
 });
 
-// LinkedIn never exposes email on a profile page. Pre-fill a placeholder in
-// the same shape the CRM's own CSV importer already generates for leads
-// with no real email, so a real one can be added later without this field
-// blocking every single send. Still fully editable before sending.
-function placeholderEmail(firstName, lastName) {
-  const slug = `${firstName}${lastName}`.toLowerCase().replace(/[^a-z0-9]/g, '') || 'unknown';
-  return `${slug}-${Date.now().toString(36)}@placeholder.skarion`;
-}
-
 function openLeadForm(p, presetTier) {
   const { firstName, lastName } = splitName(p.name);
   lfFirstName.value = firstName;
   lfLastName.value = lastName;
-  lfEmail.value = placeholderEmail(firstName, lastName);
+  lfEmail.value = '';
   lfPhone.value = '';
   lfCompanyName.value = (p.currentCompanies || '').split(',')[0]?.trim() || '';
   lfCompanyDomain.value = '';
@@ -246,10 +260,85 @@ function openLeadForm(p, presetTier) {
   lfNotes.value = composeNotes(p);
   lfStatusLine.textContent = presetTier ? `Tier: ${presetTier} — review and send.` : '';
   lfStatusLine.className = 'status-line';
+  lfDupeBanner.style.display = 'none';
+  lfDupeBanner.innerHTML = '';
   leadForm.dataset.profileId = p.profileId;
+  // Stable per-profile key so a retried send (or a deliberate re-send later)
+  // always carries the same idempotency key — persisted alongside the
+  // captured profile so it survives popup close/reopen.
+  if (!p.idempotencyKey) {
+    p.idempotencyKey = crypto.randomUUID();
+    allProfiles[p.profileId] = p;
+    chrome.storage.local.set({ profiles: allProfiles });
+  }
+  leadForm.dataset.idempotencyKey = p.idempotencyKey;
   leadForm.classList.add('open');
   leadForm.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  scheduleDuplicateCheck();
 }
+
+function recordLink(entityType, id) {
+  return `${DEFAULT_CRM_WEB_URL}/${entityType === 'contact' ? 'contacts' : 'leads'}/${id}`;
+}
+
+function showDupeBanner(html) {
+  lfDupeBanner.innerHTML = html;
+  lfDupeBanner.style.display = 'block';
+}
+
+function currentLeadFormPayload() {
+  return {
+    firstName: lfFirstName.value.trim(),
+    lastName: lfLastName.value.trim(),
+    email: lfEmail.value.trim() || null,
+    phone: lfPhone.value.trim() || null,
+    companyName: lfCompanyName.value.trim() || null,
+    linkedinUrl: lfLinkedinUrl.value.trim() || null,
+  };
+}
+
+// Preflight — calls /extension/leads/check so the user sees "already
+// exists" (with a link to the real record) before deciding whether to send
+// at all, rather than only finding out after (or, previously, never).
+async function checkDuplicate() {
+  if (!crmSettings.crmUrl || !crmSettings.apiKey) return;
+  try {
+    const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${crmSettings.apiKey}` };
+    const res = await fetch(`${crmSettings.crmUrl}/extension/leads/check`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(currentLeadFormPayload()),
+    });
+    if (!res.ok) return;
+    const result = await res.json();
+    if (result.status === 'exact_duplicate') {
+      const record = result.record;
+      const label = result.entityType === 'contact' ? 'an existing contact' : 'an existing lead';
+      showDupeBanner(
+        `⚠ Already in the CRM as ${label} (matched by ${result.matchType.replace('_', ' ')}). ` +
+        `Sending will just return that record, not create a new one. ` +
+        `<a href="${recordLink(result.entityType, record.id)}" target="_blank">Open existing ${result.entityType}</a>`
+      );
+    } else if (result.status === 'possible_duplicate') {
+      const names = result.matches.map((m) => `${m.firstName} ${m.lastName}`.trim()).join(', ');
+      showDupeBanner(`⚠ Possible duplicate — same name + company already in leads: ${names}. Review before sending.`);
+    } else {
+      lfDupeBanner.style.display = 'none';
+      lfDupeBanner.innerHTML = '';
+    }
+  } catch {
+    // Best-effort — a failed preflight shouldn't block the form from being usable.
+  }
+}
+
+let dupeCheckTimer = null;
+function scheduleDuplicateCheck() {
+  clearTimeout(dupeCheckTimer);
+  dupeCheckTimer = setTimeout(checkDuplicate, 400);
+}
+[lfLinkedinUrl, lfEmail, lfFirstName, lfLastName, lfCompanyName].forEach((el) => {
+  el.addEventListener('input', scheduleDuplicateCheck);
+});
 
 btnCancelLead.addEventListener('click', () => {
   leadForm.classList.remove('open');
@@ -268,8 +357,9 @@ btnSendLead.addEventListener('click', async () => {
     lfStatusLine.className = 'status-line err';
     return;
   }
-  if (!lfFirstName.value.trim() || !lfLastName.value.trim() || !lfEmail.value.trim()) {
-    lfStatusLine.textContent = 'First name, last name, and email are required.';
+  const displayName = `${lfFirstName.value.trim()} ${lfLastName.value.trim()}`.trim();
+  if (!displayName || !(lfLinkedinUrl.value.trim() || lfEmail.value.trim())) {
+    lfStatusLine.textContent = 'A name plus a LinkedIn URL or an email is required.';
     lfStatusLine.className = 'status-line err';
     return;
   }
@@ -277,7 +367,7 @@ btnSendLead.addEventListener('click', async () => {
   const payload = {
     firstName: lfFirstName.value.trim(),
     lastName: lfLastName.value.trim(),
-    email: lfEmail.value.trim(),
+    email: lfEmail.value.trim() || null,
     phone: lfPhone.value.trim() || null,
     companyName: lfCompanyName.value.trim() || null,
     companyDomain: lfCompanyDomain.value.trim() || null,
@@ -295,8 +385,11 @@ btnSendLead.addEventListener('click', async () => {
   lfStatusLine.className = 'status-line';
 
   try {
-    const headers = { 'Content-Type': 'application/json' };
-    if (crmSettings.apiKey) headers.Authorization = `Bearer ${crmSettings.apiKey}`;
+    const headers = {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${crmSettings.apiKey}`,
+      'X-Idempotency-Key': leadForm.dataset.idempotencyKey,
+    };
 
     const res = await fetch(`${crmSettings.crmUrl}/extension/leads`, {
       method: 'POST',
@@ -307,9 +400,21 @@ btnSendLead.addEventListener('click', async () => {
       const body = await res.text();
       throw new Error(`${res.status} ${body}`);
     }
-    lfStatusLine.textContent = 'Sent to CRM ✓';
+    const result = await res.json();
+
+    if (result.duplicate) {
+      const entityType = result.entityType || 'lead';
+      const record = result.contact || result.lead;
+      showDupeBanner(
+        `Already existed as ${entityType === 'contact' ? 'a contact' : 'a lead'} — nothing new was created. ` +
+        `<a href="${recordLink(entityType, record.id)}" target="_blank">Open existing ${entityType}</a>`
+      );
+      lfStatusLine.textContent = result.replayed ? 'Same send as before — no duplicate created.' : 'Already exists in CRM.';
+    } else {
+      lfStatusLine.textContent = 'Sent to CRM ✓';
+      setTimeout(() => leadForm.classList.remove('open'), 1200);
+    }
     lfStatusLine.className = 'status-line';
-    setTimeout(() => leadForm.classList.remove('open'), 1200);
   } catch (err) {
     lfStatusLine.textContent = `Failed to reach ${crmSettings.crmUrl}/extension/leads — ${err.message}`;
     lfStatusLine.className = 'status-line err';
@@ -388,6 +493,15 @@ btnClear.addEventListener('click', () => {
   chrome.action.setBadgeText({ text: '0' });
 });
 
+// A cell value starting with =, +, -, or @ is interpreted as a formula by
+// Excel/Sheets on open — a scraped headline or About section starting with
+// one of those (accidentally, or from a maliciously-crafted profile) would
+// otherwise execute as a formula for whoever opens the export.
+function sanitizeCell(v) {
+  if (typeof v !== 'string') return v;
+  return /^[=+\-@]/.test(v) ? `'${v}` : v;
+}
+
 // Export
 btnExport.addEventListener('click', () => {
   const profiles = Object.values(allProfiles).sort((a,b) => new Date(b.capturedAt)-new Date(a.capturedAt));
@@ -395,9 +509,9 @@ btnExport.addEventListener('click', () => {
 
   const headers = ['#','Name','Headline','Location','Connections','Current Company','About','Experience','Education','Skills','Certifications','Profile URL','Captured At'];
   const rows = profiles.map((p,i) => [
-    i+1, p.name, p.headline, p.location, p.connections, p.currentCompanies,
-    p.about, p.experience, p.education, p.skills, p.certifications,
-    p.profileUrl, p.capturedAt
+    i+1, sanitizeCell(p.name), sanitizeCell(p.headline), sanitizeCell(p.location), p.connections, sanitizeCell(p.currentCompanies),
+    sanitizeCell(p.about), sanitizeCell(p.experience), sanitizeCell(p.education), sanitizeCell(p.skills), sanitizeCell(p.certifications),
+    sanitizeCell(p.profileUrl), p.capturedAt
   ]);
 
   const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);

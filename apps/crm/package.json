@@ -12,7 +12,7 @@
   "scripts": {
     "build": "wrangler build --dry-run 2>/dev/null || tsc --noEmit",
     "dev": "wrangler dev --port 8788 --inspector-port 9231",
-    "test": "echo '(stub) tests coming soon - need vitest + miniflare setup'",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings=0",
     "db:generate": "drizzle-kit generate",
@@ -21,7 +21,8 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260620.1",
     "tsx": "^4.22.4",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.7"
   },
   "dependencies": {
     "@neondatabase/serverless": "1.1.0",

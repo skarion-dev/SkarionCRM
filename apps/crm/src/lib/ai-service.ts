@@ -17,7 +17,8 @@ import { and, eq } from 'drizzle-orm';
 export const DEFAULT_CHAT_MODEL = 'gemini-1.5-flash';
 export const DEFAULT_FALLBACK_MODEL = 'gemini-1.5-pro';
 export const DEFAULT_EMBEDDING_MODEL = 'text-embedding-004';
-export const AI_NOT_CONFIGURED_MSG = 'AI assistant is not configured. Add GOOGLE_API_KEY to enable AI features.';
+export const AI_NOT_CONFIGURED_MSG =
+  'AI assistant is not configured. Add GOOGLE_API_KEY to enable AI features.';
 
 // ── Embeddings ────────────────────────────────────────────────────────────
 
@@ -25,15 +26,21 @@ export async function getEmbedding(text: string, env: Env): Promise<number[] | n
   if (!env.GOOGLE_API_KEY) return null;
   const model = env.GOOGLE_EMBEDDING_MODEL || DEFAULT_EMBEDDING_MODEL;
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent?key=${env.GOOGLE_API_KEY}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: `models/${model}`,
-        content: { parts: [{ text }] },
-      }),
-    });
-    if (!res.ok) { console.error('Google embedding error:', await res.text()); return null; }
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent?key=${env.GOOGLE_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: `models/${model}`,
+          content: { parts: [{ text }] },
+        }),
+      }
+    );
+    if (!res.ok) {
+      console.error('Google embedding error:', await res.text());
+      return null;
+    }
     const data = (await res.json()) as { embedding?: { values?: number[] } };
     return data.embedding?.values ?? null;
   } catch (err) {
@@ -43,7 +50,9 @@ export async function getEmbedding(text: string, env: Env): Promise<number[] | n
 }
 
 export function cosineSimilarity(a: number[], b: number[]): number {
-  let dot = 0, na = 0, nb = 0;
+  let dot = 0,
+    na = 0,
+    nb = 0;
   for (let i = 0; i < a.length; i++) {
     const ai = a[i]!;
     const bi = b[i]!;
@@ -66,13 +75,19 @@ export async function autoEmbed(
   resourceId: string,
   content: string,
   ownerId: string,
-  env: Env,
+  env: Env
 ): Promise<void> {
   if (!env.GOOGLE_API_KEY) return;
   const embedding = await getEmbedding(content, env);
   if (!embedding) return;
-  await db.delete(schema.embeddings)
-    .where(and(eq(schema.embeddings.resourceType, resourceType), eq(schema.embeddings.resourceId, resourceId)));
+  await db
+    .delete(schema.embeddings)
+    .where(
+      and(
+        eq(schema.embeddings.resourceType, resourceType),
+        eq(schema.embeddings.resourceId, resourceId)
+      )
+    );
   await db.insert(schema.embeddings).values({
     resourceType,
     resourceId,
@@ -96,7 +111,8 @@ export async function chatCompletion(
   opts?: { temperature?: number; systemInstruction?: string; model?: string }
 ): Promise<string | null> {
   if (!env.GOOGLE_API_KEY) return null;
-  const preferredModel = opts?.model || env.GOOGLE_MODEL || env.GOOGLE_CHAT_MODEL || DEFAULT_CHAT_MODEL;
+  const preferredModel =
+    opts?.model || env.GOOGLE_MODEL || env.GOOGLE_CHAT_MODEL || DEFAULT_CHAT_MODEL;
   const fallbackModel = env.GOOGLE_FALLBACK_MODEL || DEFAULT_FALLBACK_MODEL;
 
   const contents = messages.map((m) => ({
@@ -106,26 +122,39 @@ export async function chatCompletion(
   if (opts?.systemInstruction) {
     contents.unshift({
       role: 'user',
-      parts: [{ text: 'System instruction: ' + opts.systemInstruction + '\n\n(End of system instruction.)' }],
+      parts: [
+        {
+          text:
+            'System instruction: ' + opts.systemInstruction + '\n\n(End of system instruction.)',
+        },
+      ],
     });
   }
 
   async function tryModel(model: string): Promise<string | null> {
     try {
-      const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + env.GOOGLE_API_KEY, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents,
-          generationConfig: { temperature: opts?.temperature ?? 0.3 },
-        }),
-      });
+      const res = await fetch(
+        'https://generativelanguage.googleapis.com/v1beta/models/' +
+          model +
+          ':generateContent?key=' +
+          env.GOOGLE_API_KEY,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents,
+            generationConfig: { temperature: opts?.temperature ?? 0.3 },
+          }),
+        }
+      );
       if (!res.ok) {
         const errText = await res.text();
         console.error('Google chat error (' + model + '):', errText);
         return null;
       }
-      const data = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
+      const data = (await res.json()) as {
+        candidates?: { content?: { parts?: { text?: string }[] } }[];
+      };
       return data.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
     } catch (err) {
       console.error('Chat completion failed (' + model + '):', err);
@@ -135,11 +164,17 @@ export async function chatCompletion(
 
   const result = await tryModel(preferredModel);
   if (result) return result;
-  console.log('[AI] Preferred model ' + preferredModel + ' failed, trying fallback ' + fallbackModel + '...');
+  console.log(
+    '[AI] Preferred model ' + preferredModel + ' failed, trying fallback ' + fallbackModel + '...'
+  );
   return tryModel(fallbackModel);
 }
 
-export async function chatCompletionSingle(prompt: string, env: Env, opts?: { temperature?: number; systemInstruction?: string }): Promise<string | null> {
+export async function chatCompletionSingle(
+  prompt: string,
+  env: Env,
+  opts?: { temperature?: number; systemInstruction?: string }
+): Promise<string | null> {
   return chatCompletion([{ role: 'user', text: prompt }], env, opts);
 }
 
@@ -150,7 +185,10 @@ export async function extractStructured<T>(
   env: Env,
   opts?: { temperature?: number; systemInstruction?: string }
 ): Promise<T | null> {
-  const text = await chatCompletionSingle(prompt, env, { ...opts, temperature: opts?.temperature ?? 0.1 });
+  const text = await chatCompletionSingle(prompt, env, {
+    ...opts,
+    temperature: opts?.temperature ?? 0.1,
+  });
   if (!text) return null;
   try {
     // Extract JSON from markdown code fences if present
@@ -178,7 +216,10 @@ export interface OutreachDraftRequest {
   channel: 'email' | 'linkedin' | 'sms';
 }
 
-export async function draftOutreach(request: OutreachDraftRequest, env: Env): Promise<string | null> {
+export async function draftOutreach(
+  request: OutreachDraftRequest,
+  env: Env
+): Promise<string | null> {
   if (!env.GOOGLE_API_KEY) return null;
 
   const toneMap: Record<string, string> = {
@@ -196,9 +237,12 @@ export async function draftOutreach(request: OutreachDraftRequest, env: Env): Pr
   };
 
   const positioning: Record<string, string> = {
-    candidate: 'Skarion helps with job search, training, placement, resume/interview prep, and applications.',
-    client: 'Skarion Engineering provides telecom, GIS, OSP, fiber, CAD support with a US-led offshore team and fast turnaround.',
-    vendor: 'Skarion Engineering partners with subcontractors for telecom, GIS, fiber, OSP, CAD projects with fast turnaround.',
+    candidate:
+      'Skarion helps with job search, training, placement, resume/interview prep, and applications.',
+    client:
+      'Skarion Engineering provides telecom, GIS, OSP, fiber, CAD support with a US-led offshore team and fast turnaround.',
+    vendor:
+      'Skarion Engineering partners with subcontractors for telecom, GIS, fiber, OSP, CAD projects with fast turnaround.',
     job_rfp: 'Skarion Engineering is ready to bid on or support this opportunity.',
     other: 'Skarion Engineering can provide engineering and technical support.',
   };
@@ -248,13 +292,21 @@ export interface ExtractedLeadDraft {
   missingFields: string[];
 }
 
-export async function extractLeadFromPdfText(rawText: string, suggestedType: string, env: Env): Promise<ExtractedLeadDraft | null> {
+export async function extractLeadFromPdfText(
+  rawText: string,
+  suggestedType: string,
+  env: Env
+): Promise<ExtractedLeadDraft | null> {
   if (!env.GOOGLE_API_KEY) return null;
 
-  const typePrompt = suggestedType === 'candidate' ? 'This is a resume/CV.' :
-    suggestedType === 'client' ? 'This is a client/vendor document or company profile.' :
-    suggestedType === 'job_rfp' ? 'This is a job posting or RFP document.' :
-    'This is a business document.';
+  const typePrompt =
+    suggestedType === 'candidate'
+      ? 'This is a resume/CV.'
+      : suggestedType === 'client'
+        ? 'This is a client/vendor document or company profile.'
+        : suggestedType === 'job_rfp'
+          ? 'This is a job posting or RFP document.'
+          : 'This is a business document.';
 
   const prompt = `${typePrompt}
 
@@ -313,10 +365,14 @@ export async function extractLeadFromPdfFile(
 
   const base64Data = uint8ArrayToBase64(fileBytes);
 
-  const typePrompt = suggestedType === 'candidate' ? 'This is a resume/CV.' :
-    suggestedType === 'client' ? 'This is a client/vendor document or company profile.' :
-    suggestedType === 'job_rfp' ? 'This is a job posting or RFP document.' :
-    'This is a business document.';
+  const typePrompt =
+    suggestedType === 'candidate'
+      ? 'This is a resume/CV.'
+      : suggestedType === 'client'
+        ? 'This is a client/vendor document or company profile.'
+        : suggestedType === 'job_rfp'
+          ? 'This is a job posting or RFP document.'
+          : 'This is a business document.';
 
   const prompt = `${typePrompt}
 
@@ -352,31 +408,36 @@ Return ONLY the JSON object, no markdown, no explanation.`;
 
   async function tryModel(model: string): Promise<string | null> {
     try {
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GOOGLE_API_KEY}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                { text: prompt },
-                {
-                  inlineData: {
-                    mimeType,
-                    data: base64Data,
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GOOGLE_API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  { text: prompt },
+                  {
+                    inlineData: {
+                      mimeType,
+                      data: base64Data,
+                    },
                   },
-                },
-              ],
-            },
-          ],
-          generationConfig: { temperature: 0.1 },
-        }),
-      });
+                ],
+              },
+            ],
+            generationConfig: { temperature: 0.1 },
+          }),
+        }
+      );
       if (!res.ok) {
         console.error(`Google extract error (${model}):`, await res.text());
         return null;
       }
-      const data = (await res.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] };
+      const data = (await res.json()) as {
+        candidates?: { content?: { parts?: { text?: string }[] } }[];
+      };
       return data.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
     } catch (err) {
       console.error(`File extraction failed (${model}):`, err);
@@ -384,7 +445,7 @@ Return ONLY the JSON object, no markdown, no explanation.`;
     }
   }
 
-  const text = await tryModel(preferredModel) || await tryModel(fallbackModel);
+  const text = (await tryModel(preferredModel)) || (await tryModel(fallbackModel));
   if (!text) return null;
 
   try {
@@ -400,7 +461,16 @@ Return ONLY the JSON object, no markdown, no explanation.`;
 // ── Lead summary ────────────────────────────────────────────────────────────
 
 export async function summarizeLead(
-  lead: { firstName: string; lastName: string; email: string; companyName: string | null; title?: string | null; status: string; source: string; notes: string | null },
+  lead: {
+    firstName: string;
+    lastName: string;
+    email: string | null;
+    companyName: string | null;
+    title?: string | null;
+    status: string;
+    source: string;
+    notes: string | null;
+  },
   env: Env
 ): Promise<string | null> {
   if (!env.GOOGLE_API_KEY) return null;
@@ -408,7 +478,7 @@ export async function summarizeLead(
   const prompt = `Summarize this lead in 2-3 bullet points for a CRM user:
 
 Name: ${lead.firstName} ${lead.lastName}
-Email: ${lead.email}
+${lead.email ? `Email: ${lead.email}` : ''}
 ${lead.companyName ? `Company: ${lead.companyName}` : ''}
 ${lead.title ? `Title: ${lead.title}` : ''}
 Status: ${lead.status}
@@ -443,7 +513,13 @@ Focus on: what they do, how they might fit Skarion's services (telecom, GIS, fib
 // ── Contact summary ─────────────────────────────────────────────────────────
 
 export async function summarizeContact(
-  contact: { firstName: string; lastName: string; email: string; title: string | null; companyName: string | null },
+  contact: {
+    firstName: string;
+    lastName: string;
+    email: string;
+    title: string | null;
+    companyName: string | null;
+  },
   env: Env
 ): Promise<string | null> {
   if (!env.GOOGLE_API_KEY) return null;
@@ -482,7 +558,16 @@ Return ONE clear, actionable next step (e.g., "Send a follow-up email about X", 
 // ── Score lead ──────────────────────────────────────────────────────────────
 
 export async function scoreLead(
-  lead: { firstName: string; lastName: string; email: string; companyName: string | null; title?: string | null; status: string; source: string; notes: string | null },
+  lead: {
+    firstName: string;
+    lastName: string;
+    email: string | null;
+    companyName: string | null;
+    title?: string | null;
+    status: string;
+    source: string;
+    notes: string | null;
+  },
   env: Env
 ): Promise<{ score: number; reasoning: string } | null> {
   if (!env.GOOGLE_API_KEY) return null;
@@ -490,7 +575,7 @@ export async function scoreLead(
   const prompt = `Score this lead from 0-100 for a CRM user and explain why:
 
 Name: ${lead.firstName} ${lead.lastName}
-Email: ${lead.email}
+${lead.email ? `Email: ${lead.email}` : ''}
 ${lead.companyName ? `Company: ${lead.companyName}` : ''}
 ${lead.title ? `Title: ${lead.title}` : ''}
 Status: ${lead.status}

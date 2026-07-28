@@ -178,6 +178,7 @@
         <button class="btn btn-capture" id="btnSaveSettings">Save</button>
         <button class="btn btn-clear" id="btnCloseSettings">Close</button>
       </div>
+      <button class="btn btn-clear" id="btnPasteSettings" style="width:100%;">📋 Paste from admin panel</button>
       <div class="status-line" id="settingsStatus"></div>
     </div>
 
@@ -210,14 +211,14 @@
           <input type="text" id="lfFirstName">
         </div>
         <div class="field">
-          <label>Last Name *</label>
+          <label>Last Name</label>
           <input type="text" id="lfLastName">
         </div>
       </div>
 
       <div class="field">
-        <label>Email *</label>
-        <input type="email" id="lfEmail" placeholder="auto-filled placeholder — replace with the real one if you have it">
+        <label>Email</label>
+        <input type="email" id="lfEmail" placeholder="optional — LinkedIn doesn't expose this">
       </div>
 
       <div class="field">
@@ -278,6 +279,8 @@
         <label>Notes</label>
         <textarea id="lfNotes" rows="5"></textarea>
       </div>
+
+      <div id="lfDupeBanner" style="display:none; background:#fefce8; border:1px solid #fde047; border-radius:6px; padding:8px 10px; font-size:11px; color:#713f12;"></div>
 
       <div class="status-line" id="lfStatusLine"></div>
 

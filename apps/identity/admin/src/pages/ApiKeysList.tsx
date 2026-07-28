@@ -13,6 +13,12 @@ export function ApiKeysList() {
   // the plaintext key again after this response.
   const [newKey, setNewKey] = useState('');
   const [copied, setCopied] = useState(false);
+  const [copiedForExtension, setCopiedForExtension] = useState(false);
+
+  // Production CRM Worker URL the extension talks to — matches the
+  // extension's own DEFAULT_CRM_URL (popup.js) so a fresh install and this
+  // "copy for extension" blob agree without the teammate having to know it.
+  const EXTENSION_CRM_URL = 'https://skarion-crm-platform.skarion-talentos.workers.dev';
 
   async function load() {
     const { keys: rows } = await listApiKeys();
@@ -60,6 +66,16 @@ export function ApiKeysList() {
     setCopied(true);
   }
 
+  // The extension's Settings panel has a matching "Paste from admin panel"
+  // button that reads this back and fills+saves both fields — avoids
+  // hand-retyping a 40-char key into a tiny popup input.
+  function handleCopyForExtension() {
+    void navigator.clipboard.writeText(
+      JSON.stringify({ crmUrl: EXTENSION_CRM_URL, apiKey: newKey })
+    );
+    setCopiedForExtension(true);
+  }
+
   return (
     <div>
       <h2>API Keys</h2>
@@ -101,10 +117,18 @@ export function ApiKeysList() {
             <button type="button" onClick={handleCopy}>
               {copied ? 'Copied ✓' : 'Copy'}
             </button>
+            <button type="button" onClick={handleCopyForExtension}>
+              {copiedForExtension ? 'Copied ✓' : 'Copy for extension'}
+            </button>
             <button type="button" onClick={() => setNewKey('')}>
               Done
             </button>
           </div>
+          <p style={{ fontSize: 11, color: '#71717a', marginTop: 6 }}>
+            &quot;Copy for extension&quot; puts both the key and the CRM URL on the clipboard —
+            paste it with the extension&apos;s ⚙ Settings → &quot;Paste from admin panel&quot;
+            button instead of typing either by hand.
+          </p>
         </div>
       )}
 

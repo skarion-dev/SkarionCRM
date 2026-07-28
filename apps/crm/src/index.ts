@@ -37,6 +37,12 @@ function checkRateLimit(
 import * as ai from './lib/ai-service.js';
 import * as docConv from './lib/document-converter.js';
 import { cleanMarkdownForAi, estimateTokens } from './lib/markdown-utils.js';
+import {
+  canonicalizeLinkedinUrl,
+  normalizePhoneKey,
+  isRealEmail,
+  findExactMatch,
+} from './lib/leadDedup.js';
 
 // --- Outreach status summary ---
 // Ranks a lead's channel stages and maps the "best" one back to the legacy
@@ -302,6 +308,61 @@ async function resolveExtensionKeyOwner(
   return { userId: row.user_id as string, email: row.email as string };
 }
 
+/**
+ * Preflight check the extension calls before showing its send button as
+ * live — lets the user see "already exists" and back out instead of finding
+ * out only after (or never, since the old flow never surfaced it) sending.
+ */
+app.post('/extension/leads/check', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const key = readExtensionKey(c);
+  const resolved = await resolveExtensionKeyOwner(db, key);
+  if (!resolved) {
+    return c.json({ error: 'Invalid or missing API key.' }, 401);
+  }
+
+  const body = await c.req.json();
+  const linkedinUrl = canonicalizeLinkedinUrl(body.linkedinUrl);
+  const email = isRealEmail(body.email) ? body.email.trim().toLowerCase() : null;
+  const phone = normalizePhoneKey(body.phone);
+
+  const exact = await findExactMatch(db, { linkedinUrl, email, phone });
+  if (exact) {
+    return c.json({
+      status: 'exact_duplicate',
+      matchType: exact.matchType,
+      entityType: exact.entityType,
+      record: exact.record,
+    });
+  }
+
+  // Same name at the same company is a warning, not a block — a human
+  // decides, since names collide and company names are scraped/free-typed.
+  let possibleMatches: unknown[] = [];
+  if (body.firstName && body.lastName && body.companyName) {
+    possibleMatches = await db
+      .select()
+      .from(schema.leads)
+      .where(
+        and(
+          eq(sql`lower(${schema.leads.firstName})`, String(body.firstName).trim().toLowerCase()),
+          eq(sql`lower(${schema.leads.lastName})`, String(body.lastName).trim().toLowerCase()),
+          eq(
+            sql`lower(${schema.leads.companyName})`,
+            String(body.companyName).trim().toLowerCase()
+          ),
+          isNull(schema.leads.deletedAt)
+        )
+      )
+      .limit(5);
+  }
+  if (possibleMatches.length > 0) {
+    return c.json({ status: 'possible_duplicate', matches: possibleMatches });
+  }
+
+  return c.json({ status: 'new' });
+});
+
 app.post('/extension/leads', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
 
@@ -314,40 +375,59 @@ app.post('/extension/leads', async (c) => {
   const ownerId = resolved.userId;
 
   const body = await c.req.json();
-  if (!body.firstName || !body.lastName || !body.email) {
-    return c.json({ error: 'firstName, lastName and email are required.' }, 400);
+  const displayName = `${body.firstName ?? ''} ${body.lastName ?? ''}`.trim();
+  const linkedinUrl = canonicalizeLinkedinUrl(body.linkedinUrl);
+  if (!displayName || (!linkedinUrl && !isRealEmail(body.email))) {
+    return c.json(
+      { error: 'A name plus at least a LinkedIn URL or a real email is required.' },
+      400
+    );
   }
 
-  // Every other ingestion path in this app (CSV import, single-create)
-  // dedups by LinkedIn URL - this one didn't, which meant re-capturing (or
-  // re-sending) the same profile silently created a second lead record
-  // every time. Match the existing convention: return the existing lead
-  // instead of inserting a duplicate.
-  if (body.linkedinUrl) {
-    const normalizedLi = String(body.linkedinUrl).toLowerCase().replace(/\/+$/, '');
-    const [existing] = await db
+  // Idempotency: a retried POST (e.g. after a client-side network timeout)
+  // carries the same key as the original attempt — replay that lead instead
+  // of creating a second one, independent of whether the dedup checks below
+  // would have caught it (they may not, if the retry's payload differs
+  // slightly from what actually got committed).
+  const idempotencyKey = c.req.header('X-Idempotency-Key')?.trim() || null;
+  if (idempotencyKey) {
+    const [prior] = await db
       .select()
       .from(schema.leads)
-      .where(
-        and(
-          eq(sql`lower(${schema.leads.linkedinUrl})`, normalizedLi),
-          isNull(schema.leads.deletedAt)
-        )
-      )
+      .where(eq(schema.leads.idempotencyKey, idempotencyKey))
       .limit(1);
-    if (existing) {
-      return c.json({ lead: existing, ownerId: existing.ownerId, duplicate: true }, 200);
+    if (prior) {
+      return c.json({ lead: prior, ownerId: prior.ownerId, duplicate: true, replayed: true }, 200);
     }
   }
 
+  const email = isRealEmail(body.email) ? body.email.trim().toLowerCase() : null;
+  const phone = normalizePhoneKey(body.phone);
+
+  const exact = await findExactMatch(db, { linkedinUrl, email, phone });
+  if (exact) {
+    if (exact.entityType === 'contact') {
+      return c.json(
+        {
+          duplicate: true,
+          entityType: 'contact',
+          contact: exact.record,
+          matchType: exact.matchType,
+        },
+        200
+      );
+    }
+    return c.json({ lead: exact.record, ownerId: exact.record.ownerId, duplicate: true }, 200);
+  }
+
   const data = {
-    firstName: String(body.firstName),
-    lastName: String(body.lastName),
-    email: String(body.email).toLowerCase(),
-    phone: body.phone ?? null,
+    firstName: String(body.firstName ?? '').trim() || displayName,
+    lastName: String(body.lastName ?? '').trim(),
+    email,
+    phone: body.phone ? String(body.phone) : null,
     companyName: body.companyName ?? null,
     companyDomain: body.companyDomain ?? null,
-    linkedinUrl: body.linkedinUrl ?? null,
+    linkedinUrl,
     outreachStatus: body.outreachStatus ?? 'not_approached',
     tags: body.tags ?? null,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -356,9 +436,29 @@ app.post('/extension/leads', async (c) => {
     status: (body.status ?? 'new') as any,
     notes: body.notes ?? null,
     ownerId,
+    idempotencyKey,
   };
 
-  const [result] = await db.insert(schema.leads).values(data).returning();
+  let result;
+  try {
+    [result] = await db.insert(schema.leads).values(data).returning();
+  } catch (err) {
+    // Unique-constraint safety net for the SELECT-then-INSERT race: two
+    // near-simultaneous captures of the same profile can both pass the
+    // findExactMatch check above before either commits. If the DB rejects
+    // this insert as a duplicate, the other request won — fetch and return
+    // what it created instead of surfacing a 500.
+    const code =
+      (err as { cause?: { code?: string }; code?: string })?.cause?.code ??
+      (err as { code?: string })?.code;
+    if (code === '23505') {
+      const raced = await findExactMatch(db, { linkedinUrl, email, phone });
+      if (raced && raced.entityType === 'lead') {
+        return c.json({ lead: raced.record, ownerId: raced.record.ownerId, duplicate: true }, 200);
+      }
+    }
+    throw err;
+  }
   if (!result) return c.json({ error: 'Internal error' }, 500);
 
   await withAudit(db, schema.auditLog, {
@@ -981,7 +1081,9 @@ app.post('/api/leads', async (c) => {
   );
 
   // Basic email stub — will be wired to Resend in a future ticket
-  sendEmail(c.env, result.email, 'New lead in Skarion CRM', 'Welcome to Skarion CRM');
+  if (result.email) {
+    sendEmail(c.env, result.email, 'New lead in Skarion CRM', 'Welcome to Skarion CRM');
+  }
 
   // Auto-embed for RAG chatbot
   c.executionCtx.waitUntil(
@@ -991,7 +1093,7 @@ app.post('/api/leads', async (c) => {
         schema,
         'lead',
         result.id,
-        `${result.firstName} ${result.lastName} ${result.email} ${result.companyName ?? ''} ${result.notes ?? ''}`,
+        `${result.firstName} ${result.lastName} ${result.email ?? ''} ${result.companyName ?? ''} ${result.notes ?? ''}`,
         caller.userId,
         c.env
       )
@@ -1204,7 +1306,7 @@ app.put('/api/leads/:id', async (c) => {
         schema,
         'lead',
         result.id,
-        `${result.firstName} ${result.lastName} ${result.email} ${result.companyName ?? ''} ${result.notes ?? ''}`,
+        `${result.firstName} ${result.lastName} ${result.email ?? ''} ${result.companyName ?? ''} ${result.notes ?? ''}`,
         caller.userId,
         c.env
       )
@@ -1288,7 +1390,7 @@ async function autoCreateLeadChannels(
     id: string;
     ownerId: string;
     linkedinUrl: string | null;
-    email: string;
+    email: string | null;
     phone: string | null;
   }
 ): Promise<void> {
@@ -1938,6 +2040,14 @@ app.post('/api/leads/:id/convert', async (c) => {
     }
   }
 
+  // contacts.email is required — a LinkedIn-only capture may have none yet.
+  if (!lead.email) {
+    return c.json(
+      { error: 'This lead has no email yet. Add one before converting to a contact.' },
+      400
+    );
+  }
+
   const [contact] = await db
     .insert(schema.contacts)
     .values({
@@ -1945,6 +2055,7 @@ app.post('/api/leads/:id/convert', async (c) => {
       lastName: lead.lastName,
       email: lead.email,
       phone: lead.phone,
+      linkedinUrl: lead.linkedinUrl,
       companyId,
       ownerId: caller.userId,
     })
@@ -3574,7 +3685,7 @@ app.post('/api/leads/import/document', async (c) => {
     id: string;
     firstName: string;
     lastName: string;
-    email: string;
+    email: string | null;
     phone: string | null;
   }[] = [];
   if (draftLead.email) {

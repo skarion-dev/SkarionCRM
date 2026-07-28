@@ -1,6 +1,22 @@
 // LinkedIn Profile Auto-Capture
 // Runs on every linkedin.com/in/* page, extracts the full profile, saves to storage
 
+// The manifest auto-loads this script on every profile page (document_idle),
+// and the popup's "Capture Current Profile Now" button injects it again via
+// chrome.scripting.executeScript into the same tab. Without a guard, the
+// second injection would register a second MutationObserver on the same
+// page (duplicate captures, doubled scroll/observer overhead) and both
+// copies would race scrollAndCapture against each other. Guard on a property
+// of `window` (not a top-level const/let) so re-injection reads it as
+// already-true and returns instead of throwing a redeclaration error.
+if (typeof window.__liProfileCaptureInitialized === 'undefined') {
+  window.__liProfileCaptureInitialized = true;
+  window.__liProfileCaptureRunning = false;
+  initLiProfileCapture();
+}
+
+function initLiProfileCapture() {
+
 const CAPTURE_DELAY = 3000; // wait for lazy sections to render
 
 function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
@@ -163,14 +179,25 @@ async function run() {
   // Only capture actual profile pages, not overlays/redirects
   if (!window.location.href.includes('/in/')) return;
 
-  await scrollAndCapture();
+  // Auto-capture (on load) and the popup's manual re-injection can both call
+  // run() close together; without this lock they'd scroll/observe the same
+  // page concurrently.
+  if (window.__liProfileCaptureRunning) return;
+  window.__liProfileCaptureRunning = true;
 
-  const profile = extractProfile();
-  if (!profile.name || profile.name === 'LinkedIn') return;
+  try {
+    await scrollAndCapture();
 
-  // Save to chrome.storage.local keyed by profileId
-  chrome.storage.local.get(['profiles'], data => {
-    const existing = data.profiles || {};
+    const profile = extractProfile();
+    if (!profile.name || profile.name === 'LinkedIn') return;
+
+    // Preserve the idempotency key across re-captures of the same profile so
+    // repeated sends to the CRM stay recognizable as the same intent.
+    const existing = await new Promise(resolve => {
+      chrome.storage.local.get(['profiles'], data => resolve(data.profiles || {}));
+    });
+    const priorKey = existing[profile.profileId]?.idempotencyKey;
+    profile.idempotencyKey = priorKey || crypto.randomUUID();
     existing[profile.profileId] = profile;
     chrome.storage.local.set({ profiles: existing });
     console.log(`[LI Capture] Saved: ${profile.name} (${profile.profileId})`);
@@ -178,7 +205,9 @@ async function run() {
     // Badge the extension icon with count
     const count = Object.keys(existing).length;
     chrome.runtime.sendMessage({ action: 'updateBadge', count });
-  });
+  } finally {
+    window.__liProfileCaptureRunning = false;
+  }
 }
 
 // Run after page is stable
@@ -194,3 +223,5 @@ new MutationObserver(() => {
 }).observe(document.body, { childList: true, subtree: true });
 
 console.log('[LI Profile Capture] Content script loaded');
+
+} // end initLiProfileCapture

@@ -157,6 +157,7 @@ export const contacts = crmSchema.table(
     email: text('email').notNull(),
     phone: text('phone'),
     title: text('title'),
+    linkedinUrl: text('linkedin_url'),
     companyId: uuid('company_id').references(() => companies.id, { onDelete: 'set null' }),
     ownerId: uuid('owner_id').notNull(),
     ...timestamps(),
@@ -167,6 +168,9 @@ export const contacts = crmSchema.table(
     index('idx_contacts_owner').on(table.ownerId),
     uniqueIndex('idx_contacts_email_lower').on(sql`lower(${table.email})`),
     index('idx_contacts_name').on(table.lastName, table.firstName),
+    uniqueIndex('idx_contacts_linkedin_unique')
+      .on(sql`lower(${table.linkedinUrl})`)
+      .where(sql`${table.linkedinUrl} IS NOT NULL AND ${table.deletedAt} IS NULL`),
   ]
 );
 
@@ -177,7 +181,9 @@ export const leads = crmSchema.table(
     leadNumber: text('lead_number'),
     firstName: text('first_name').notNull(),
     lastName: text('last_name').notNull(),
-    email: text('email').notNull(),
+    // Nullable: LinkedIn never exposes email on a profile page, and manufacturing
+    // a fake placeholder address for every capture poisoned dedup and reporting.
+    email: text('email'),
     phone: text('phone'),
     companyName: text('company_name'),
     companyDomain: text('company_domain'),
@@ -196,6 +202,10 @@ export const leads = crmSchema.table(
     convertedToContactId: uuid('converted_to_contact_id'),
     convertedToCompanyId: uuid('converted_to_company_id'),
     convertedAt: timestamp('converted_at', { withTimezone: true }),
+    // Client-generated key (e.g. the extension's per-capture UUID) so a retried
+    // POST after a network timeout replays the original result instead of
+    // creating a second lead.
+    idempotencyKey: text('idempotency_key'),
     ...timestamps(),
     ...softDelete(),
   },
@@ -204,11 +214,19 @@ export const leads = crmSchema.table(
     index('idx_leads_source').on(table.source),
     index('idx_leads_owner').on(table.ownerId),
     index('idx_leads_email_lower').on(sql`lower(${table.email})`),
-    index('idx_leads_linkedin').on(table.linkedinUrl),
     index('idx_leads_outreach').on(table.outreachStatus),
     index('idx_leads_created').on(table.createdAt),
     index('idx_leads_lead_number').on(table.leadNumber),
     index('idx_leads_batch').on(table.batchId),
+    // Replaces the old plain idx_leads_linkedin index — this one is unique so
+    // the database itself rejects a second lead for the same canonical URL
+    // even under concurrent requests, closing the SELECT-then-INSERT race.
+    uniqueIndex('idx_leads_linkedin_unique')
+      .on(sql`lower(${table.linkedinUrl})`)
+      .where(sql`${table.linkedinUrl} IS NOT NULL AND ${table.deletedAt} IS NULL`),
+    uniqueIndex('idx_leads_idempotency_key')
+      .on(table.idempotencyKey)
+      .where(sql`${table.idempotencyKey} IS NOT NULL`),
   ]
 );
 
