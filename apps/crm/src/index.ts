@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { getDb, withAudit } from '@skarion/db-kit';
 import { requireAuth, requireSuperadmin, type AuthedVariables } from '@skarion/auth-client';
+import { AI_AGENTS, AI_MODELS, DEFAULT_AI_MODELS, type AiAgentId } from '@skarion/ai-toolkit';
 import { can, canList } from '@skarion/permissions';
 import { parseContactsCsv, parseCompaniesCsv, parseLeadsCsv } from '@skarion/importers';
 import * as schema from './db/schema.js';
@@ -112,6 +113,7 @@ interface Env {
   AI_MODEL_CHEAP?: string;
   AI_MODEL_FALLBACK?: string;
   AI_EMBEDDING_MODEL?: string;
+  AI_AGENT_MODELS?: string;
   GOOGLE_API_KEY?: string;
   GOOGLE_MODEL?: string;
   GOOGLE_FALLBACK_MODEL?: string;
@@ -493,6 +495,67 @@ app.use('/api/admin/*', requireSuperadmin());
 function getRole(c: unknown): string {
   const apps = (c as { get: (key: string) => unknown }).get('apps');
   return (apps as { crm?: string } | undefined)?.crm ?? '';
+}
+
+type AiRuntimeSettings = {
+  defaultProvider: 'vertex_proxy' | 'google_ai';
+  tierModels: {
+    reasoning: string;
+    fast: string;
+    cheap: string;
+    embedding: string;
+  };
+  agentModels: Partial<Record<AiAgentId, string>>;
+};
+
+const DEFAULT_AI_RUNTIME_SETTINGS: AiRuntimeSettings = {
+  defaultProvider: 'vertex_proxy',
+  tierModels: {
+    reasoning: DEFAULT_AI_MODELS.reasoning,
+    fast: DEFAULT_AI_MODELS.fast,
+    cheap: DEFAULT_AI_MODELS.cheap,
+    embedding: DEFAULT_AI_MODELS.embedding,
+  },
+  agentModels: {},
+};
+
+function readAiRuntimeSettings(value: unknown): AiRuntimeSettings {
+  const input = (value ?? {}) as Partial<AiRuntimeSettings>;
+  return {
+    defaultProvider: input.defaultProvider === 'google_ai' ? 'google_ai' : 'vertex_proxy',
+    tierModels: {
+      ...DEFAULT_AI_RUNTIME_SETTINGS.tierModels,
+      ...(input.tierModels ?? {}),
+    },
+    agentModels: input.agentModels ?? {},
+  };
+}
+
+async function getAiRuntimeSettings(db: CrmDb): Promise<AiRuntimeSettings> {
+  const [row] = await db
+    .select({ settings: schema.integrationConfigs.settings })
+    .from(schema.integrationConfigs)
+    .where(eq(schema.integrationConfigs.provider, 'ai_runtime'))
+    .limit(1);
+  return readAiRuntimeSettings(row?.settings);
+}
+
+async function getConfiguredAiEnv(db: CrmDb, env: Env): Promise<Env> {
+  const settings = await getAiRuntimeSettings(db);
+  const useVertex = settings.defaultProvider === 'vertex_proxy';
+  return {
+    ...env,
+    AI_PROVIDER: settings.defaultProvider,
+    AI_GATEWAY_BASE_URL: useVertex ? env.AI_GATEWAY_BASE_URL : undefined,
+    AI_GATEWAY_API_KEY: useVertex ? env.AI_GATEWAY_API_KEY : undefined,
+    GOOGLE_API_KEY: env.GOOGLE_API_KEY,
+    AI_MODEL_REASONING: settings.tierModels.reasoning,
+    AI_MODEL_DEFAULT: settings.tierModels.fast,
+    AI_MODEL_CHEAP: settings.tierModels.cheap,
+    AI_MODEL_FALLBACK: settings.tierModels.cheap,
+    AI_EMBEDDING_MODEL: settings.tierModels.embedding,
+    AI_AGENT_MODELS: JSON.stringify(settings.agentModels),
+  };
 }
 
 // --- COMPANIES ---
@@ -3298,6 +3361,123 @@ app.delete('/api/integrations/:id', async (c) => {
   return c.json({ success: true });
 });
 
+// --- AI CONTROL PLANE ---
+
+app.get('/api/ai/config', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const role = getRole(c);
+  const isSuperadmin = c.get('isSuperadmin');
+  if (!isSuperadmin && role !== 'manager') return c.json({ error: 'Forbidden.' }, 403);
+
+  const settings = await getAiRuntimeSettings(db);
+  const env = c.env as Env;
+  const selectedModels = Object.fromEntries(
+    AI_AGENTS.map((agent) => [
+      agent.id,
+      settings.agentModels[agent.id] ??
+        (agent.tier === 'embedding'
+          ? settings.tierModels.embedding
+          : settings.tierModels[agent.tier]),
+    ])
+  );
+
+  return c.json({
+    credentials: [
+      {
+        id: 'vertex_proxy',
+        name: 'Vertex AI Proxy',
+        configured: Boolean(env.AI_GATEWAY_BASE_URL && env.AI_GATEWAY_API_KEY),
+        isDefault: settings.defaultProvider === 'vertex_proxy',
+        source: 'Deployment secret',
+        maskedKey: env.AI_GATEWAY_API_KEY ? '••••••••••••••••' : null,
+        baseUrl: env.AI_GATEWAY_BASE_URL ?? null,
+      },
+      {
+        id: 'google_ai',
+        name: 'Google AI fallback',
+        configured: Boolean(env.GOOGLE_API_KEY),
+        isDefault: settings.defaultProvider === 'google_ai',
+        source: 'Deployment secret',
+        maskedKey: env.GOOGLE_API_KEY ? '••••••••••••••••' : null,
+        baseUrl: null,
+      },
+    ],
+    models: AI_MODELS,
+    agents: AI_AGENTS,
+    settings,
+    selectedModels,
+  });
+});
+
+app.put('/api/ai/config', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const role = getRole(c);
+  const isSuperadmin = c.get('isSuperadmin');
+  if (!isSuperadmin && role !== 'manager') return c.json({ error: 'Forbidden.' }, 403);
+
+  const body = (await c.req.json()) as Partial<AiRuntimeSettings>;
+  const allowedModels = new Set(AI_MODELS.map((model) => model.id as string));
+  const allowedAgents = new Set(AI_AGENTS.map((agent) => agent.id));
+  const current = await getAiRuntimeSettings(db);
+  const next = readAiRuntimeSettings({
+    ...current,
+    ...body,
+    tierModels: { ...current.tierModels, ...(body.tierModels ?? {}) },
+    agentModels: body.agentModels ?? current.agentModels,
+  });
+
+  if (!['vertex_proxy', 'google_ai'].includes(next.defaultProvider)) {
+    return c.json({ error: 'Unsupported AI provider.' }, 400);
+  }
+  for (const [tier, model] of Object.entries(next.tierModels)) {
+    if (tier === 'embedding') {
+      if (model !== 'embedding')
+        return c.json({ error: 'Embedding model must be embedding.' }, 400);
+    } else if (!allowedModels.has(model)) {
+      return c.json({ error: `Unsupported model: ${model}` }, 400);
+    }
+  }
+  for (const [agentId, model] of Object.entries(next.agentModels)) {
+    if (!allowedAgents.has(agentId as AiAgentId)) {
+      return c.json({ error: `Unknown AI agent: ${agentId}` }, 400);
+    }
+    const agent = AI_AGENTS.find((candidate) => candidate.id === agentId);
+    if (agent?.tier === 'embedding') {
+      if (model !== 'embedding') {
+        return c.json({ error: `${agent.name} requires the embedding model.` }, 400);
+      }
+    } else if (!allowedModels.has(model)) {
+      return c.json({ error: `Unsupported model: ${model}` }, 400);
+    }
+  }
+
+  const [existing] = await db
+    .select({ id: schema.integrationConfigs.id })
+    .from(schema.integrationConfigs)
+    .where(eq(schema.integrationConfigs.provider, 'ai_runtime'))
+    .limit(1);
+  if (existing) {
+    await db
+      .update(schema.integrationConfigs)
+      .set({
+        label: 'AI runtime and model routing',
+        status: 'connected',
+        settings: next,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.integrationConfigs.id, existing.id));
+  } else {
+    await db.insert(schema.integrationConfigs).values({
+      provider: 'ai_runtime',
+      label: 'AI runtime and model routing',
+      status: 'connected',
+      settings: next,
+    });
+  }
+
+  return c.json({ settings: next });
+});
+
 // ─── CHAT ────────────────────────────────────────────────────────────────
 
 app.get('/api/chat/history', async (c) => {
@@ -3314,6 +3494,7 @@ app.get('/api/chat/history', async (c) => {
 
 app.post('/api/chat', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
+  const aiEnv = await getConfiguredAiEnv(db, c.env);
   const userId = c.get('userId');
   const isSuperadmin = c.get('isSuperadmin') ?? false;
   const role = c.get('apps')?.crm ?? 'member';
@@ -3323,7 +3504,7 @@ app.post('/api/chat', async (c) => {
   if (!message) return c.json({ error: 'Message is required.' }, 400);
 
   // 1. Embed the user's question
-  const queryEmbedding = await ai.getEmbedding(message, c.env);
+  const queryEmbedding = await ai.getEmbedding(message, aiEnv);
 
   // 2. Retrieve all candidate embeddings
   const allEmbeddings = await db.select().from(schema.embeddings);
@@ -3355,7 +3536,10 @@ app.post('/api/chat', async (c) => {
   });
 
   // 6. Call LLM
-  let answer = await ai.chatCompletionSingle(prompt, c.env);
+  let answer = await ai.chatCompletionSingle(prompt, aiEnv, {
+    tier: 'fast',
+    agent: 'crm-copilot',
+  });
   if (!answer) {
     answer = ai.AI_NOT_CONFIGURED_MSG;
   }
@@ -3396,7 +3580,7 @@ app.post('/api/leads/:id/summarize', async (c) => {
     return c.json({ error: 'Forbidden.' }, 403);
   }
 
-  const summary = await ai.summarizeLead(row, c.env);
+  const summary = await ai.summarizeLead(row, await getConfiguredAiEnv(db, c.env));
   if (!summary) return c.json({ error: ai.AI_NOT_CONFIGURED_MSG }, 503);
   return c.json({ summary });
 });
@@ -3431,7 +3615,7 @@ app.post('/api/leads/:id/outreach', async (c) => {
       tone: body.tone ?? 'professional',
       channel: body.channel ?? 'email',
     },
-    c.env
+    await getConfiguredAiEnv(db, c.env)
   );
   if (!draft) return c.json({ error: ai.AI_NOT_CONFIGURED_MSG }, 503);
 
@@ -3466,7 +3650,7 @@ app.post('/api/leads/:id/score', async (c) => {
     return c.json({ error: 'Forbidden.' }, 403);
   }
 
-  const result = await ai.scoreLead(row, c.env);
+  const result = await ai.scoreLead(row, await getConfiguredAiEnv(db, c.env));
   if (!result) return c.json({ error: ai.AI_NOT_CONFIGURED_MSG }, 503);
   return c.json(result);
 });
@@ -3487,7 +3671,7 @@ app.post('/api/leads/:id/suggest-next-action', async (c) => {
     return c.json({ error: 'Forbidden.' }, 403);
   }
 
-  const suggestion = await ai.suggestNextAction(row, c.env);
+  const suggestion = await ai.suggestNextAction(row, await getConfiguredAiEnv(db, c.env));
   if (!suggestion) return c.json({ error: ai.AI_NOT_CONFIGURED_MSG }, 503);
   return c.json({ suggestion });
 });
@@ -3508,7 +3692,7 @@ app.post('/api/companies/:id/summarize', async (c) => {
     return c.json({ error: 'Forbidden.' }, 403);
   }
 
-  const summary = await ai.summarizeCompany(row, c.env);
+  const summary = await ai.summarizeCompany(row, await getConfiguredAiEnv(db, c.env));
   if (!summary) return c.json({ error: ai.AI_NOT_CONFIGURED_MSG }, 503);
   return c.json({ summary });
 });
@@ -3541,7 +3725,7 @@ app.post('/api/contacts/:id/summarize', async (c) => {
       title: row.title,
       companyName: company?.name ?? null,
     },
-    c.env
+    await getConfiguredAiEnv(db, c.env)
   );
   if (!summary) return c.json({ error: ai.AI_NOT_CONFIGURED_MSG }, 503);
   return c.json({ summary });
@@ -3652,11 +3836,12 @@ app.post('/api/leads/import/document', async (c) => {
 
   // ── Step 3: AI extraction ─────────────────────────────────────────────
   let aiResult: ai.ExtractedLeadDraft | null = null;
-  if (ai.isAiConfigured(c.env)) {
+  const aiEnv = await getConfiguredAiEnv(db, c.env);
+  if (ai.isAiConfigured(aiEnv)) {
     if (usedFallback && isPdf) {
-      aiResult = await ai.extractLeadFromPdfFile(bytes, file.type, leadType, c.env);
+      aiResult = await ai.extractLeadFromPdfFile(bytes, file.type, leadType, aiEnv);
     } else {
-      aiResult = await ai.extractLeadFromPdfText(cleanedText, leadType, c.env);
+      aiResult = await ai.extractLeadFromPdfText(cleanedText, leadType, aiEnv);
     }
   }
 
@@ -4128,7 +4313,8 @@ app.post('/api/notifications/:id/read', async (c) => {
 // ─── INTEGRATIONS STATUS ───────────────────────────────────────────
 
 app.get('/api/integrations/status', async (c) => {
-  const env = c.env as Env;
+  const db = getDb(c.env, schema) as CrmDb;
+  const env = await getConfiguredAiEnv(db, c.env);
   const aiConfigured = ai.isAiConfigured(env);
   return c.json({
     googleApiKey: aiConfigured,
@@ -4143,7 +4329,8 @@ app.get('/api/integrations/status', async (c) => {
 // ─── OCR FOR SCANNED PDFS ───────────────────────────────────────────
 
 app.post('/api/ocr', async (c) => {
-  const env = c.env as Env;
+  const db = getDb(c.env, schema) as CrmDb;
+  const env = await getConfiguredAiEnv(db, c.env);
   const body = await c.req.parseBody();
   const file = body['file'] as File;
   if (!file) return c.json({ error: 'No file uploaded' }, 400);

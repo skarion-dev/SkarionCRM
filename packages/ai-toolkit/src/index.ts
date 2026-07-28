@@ -10,6 +10,8 @@ export interface AiGatewayEnv {
   AI_MODEL_CHEAP?: string;
   AI_MODEL_FALLBACK?: string;
   AI_EMBEDDING_MODEL?: string;
+  /** JSON object mapping an AI agent id to a model alias. */
+  AI_AGENT_MODELS?: string;
 }
 
 export type AiGatewayContentPart =
@@ -28,6 +30,156 @@ export const DEFAULT_AI_MODELS = {
   embedding: 'embedding',
 } as const;
 
+export const AI_MODELS = [
+  {
+    id: 'coding-best',
+    backingModel: 'gemini-3.1-pro-preview',
+    label: 'Coding Best',
+    costClass: 'high',
+  },
+  {
+    id: 'coding-fast',
+    backingModel: 'gemini-3.6-flash',
+    label: 'Coding Fast',
+    costClass: 'medium',
+  },
+  {
+    id: 'coding-cheap',
+    backingModel: 'gemini-3.5-flash-lite',
+    label: 'Coding Cheap',
+    costClass: 'low',
+  },
+  {
+    id: 'gemini-3.1-pro-preview',
+    backingModel: 'gemini-3.1-pro-preview',
+    label: 'Gemini 3.1 Pro Preview',
+    costClass: 'high',
+  },
+  {
+    id: 'gemini-3.6-flash',
+    backingModel: 'gemini-3.6-flash',
+    label: 'Gemini 3.6 Flash',
+    costClass: 'medium',
+  },
+  {
+    id: 'gemini-3.5-flash',
+    backingModel: 'gemini-3.5-flash',
+    label: 'Gemini 3.5 Flash',
+    costClass: 'medium',
+  },
+  {
+    id: 'gemini-3.5-flash-lite',
+    backingModel: 'gemini-3.5-flash-lite',
+    label: 'Gemini 3.5 Flash Lite',
+    costClass: 'low',
+  },
+  {
+    id: 'gemini-2.5-pro',
+    backingModel: 'gemini-2.5-pro',
+    label: 'Gemini 2.5 Pro',
+    costClass: 'high',
+  },
+  {
+    id: 'gemini-2.5-flash',
+    backingModel: 'gemini-2.5-flash',
+    label: 'Gemini 2.5 Flash',
+    costClass: 'medium',
+  },
+  {
+    id: 'gemini-2.5-flash-lite',
+    backingModel: 'gemini-2.5-flash-lite',
+    label: 'Gemini 2.5 Flash Lite',
+    costClass: 'low',
+  },
+] as const;
+
+export type AiAgentId =
+  | 'crm-copilot'
+  | 'lead-intake'
+  | 'document-ocr'
+  | 'outreach-writer'
+  | 'lead-scorer'
+  | 'next-best-action'
+  | 'lead-summarizer'
+  | 'company-summarizer'
+  | 'contact-summarizer'
+  | 'rag-search'
+  | 'rag-indexer';
+
+export const AI_AGENTS: ReadonlyArray<{
+  id: AiAgentId;
+  name: string;
+  description: string;
+  tier: AiModelTier | 'embedding';
+}> = [
+  {
+    id: 'crm-copilot',
+    name: 'CRM Copilot',
+    description: 'Answers CRM questions using permission-filtered RAG context.',
+    tier: 'fast',
+  },
+  {
+    id: 'lead-intake',
+    name: 'Lead Intake Agent',
+    description: 'Extracts structured lead data from PDFs, resumes, and pasted text.',
+    tier: 'reasoning',
+  },
+  {
+    id: 'document-ocr',
+    name: 'Document OCR Agent',
+    description: 'Reads scanned PDFs and images.',
+    tier: 'reasoning',
+  },
+  {
+    id: 'outreach-writer',
+    name: 'Outreach Writer',
+    description: 'Drafts email, LinkedIn, and SMS outreach.',
+    tier: 'fast',
+  },
+  {
+    id: 'lead-scorer',
+    name: 'Lead Scoring Agent',
+    description: 'Scores lead quality and returns structured reasoning.',
+    tier: 'reasoning',
+  },
+  {
+    id: 'next-best-action',
+    name: 'Next Best Action Agent',
+    description: 'Suggests a concise next step for a lead.',
+    tier: 'cheap',
+  },
+  {
+    id: 'lead-summarizer',
+    name: 'Lead Summarizer',
+    description: 'Creates short CRM lead summaries.',
+    tier: 'cheap',
+  },
+  {
+    id: 'company-summarizer',
+    name: 'Company Summarizer',
+    description: 'Creates short company-fit summaries.',
+    tier: 'cheap',
+  },
+  {
+    id: 'contact-summarizer',
+    name: 'Contact Summarizer',
+    description: 'Creates short contact and approach summaries.',
+    tier: 'cheap',
+  },
+  {
+    id: 'rag-search',
+    name: 'RAG Search Agent',
+    description: 'Embeds CRM questions for semantic retrieval.',
+    tier: 'embedding',
+  },
+  {
+    id: 'rag-indexer',
+    name: 'RAG Indexer',
+    description: 'Builds and refreshes embeddings for CRM records.',
+    tier: 'embedding',
+  },
+];
+
 export function hasAiGateway(env: AiGatewayEnv): boolean {
   return Boolean(env.AI_GATEWAY_BASE_URL && env.AI_GATEWAY_API_KEY);
 }
@@ -36,6 +188,22 @@ export function selectAiModel(env: AiGatewayEnv, tier: AiModelTier = 'fast'): st
   if (tier === 'reasoning') return env.AI_MODEL_REASONING || DEFAULT_AI_MODELS.reasoning;
   if (tier === 'cheap') return env.AI_MODEL_CHEAP || DEFAULT_AI_MODELS.cheap;
   return env.AI_MODEL_DEFAULT || DEFAULT_AI_MODELS.fast;
+}
+
+export function selectAiAgentModel(
+  env: AiGatewayEnv,
+  agentId: AiAgentId,
+  tier: AiModelTier = 'fast'
+): string {
+  if (env.AI_AGENT_MODELS) {
+    try {
+      const overrides = JSON.parse(env.AI_AGENT_MODELS) as Record<string, string>;
+      if (overrides[agentId]) return overrides[agentId];
+    } catch {
+      console.error('AI_AGENT_MODELS must be a JSON object.');
+    }
+  }
+  return selectAiModel(env, tier);
 }
 
 function gatewayUrl(env: AiGatewayEnv, path: string): string {

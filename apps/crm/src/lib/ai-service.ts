@@ -7,7 +7,9 @@ import {
   gatewayChatCompletion,
   gatewayEmbedding,
   hasAiGateway,
+  selectAiAgentModel,
   selectAiModel,
+  type AiAgentId,
   type AiGatewayEnv,
   type AiGatewayMessage,
   type AiModelTier,
@@ -130,6 +132,7 @@ export async function chatCompletion(
     systemInstruction?: string;
     model?: string;
     tier?: AiModelTier;
+    agent?: AiAgentId;
   }
 ): Promise<string | null> {
   if (!isAiConfigured(env)) return null;
@@ -143,7 +146,11 @@ export async function chatCompletion(
       gatewayMessages.unshift({ role: 'system', content: opts.systemInstruction });
     }
 
-    const preferredModel = opts?.model || selectAiModel(env, opts?.tier || 'fast');
+    const preferredModel =
+      opts?.model ||
+      (opts?.agent
+        ? selectAiAgentModel(env, opts.agent, opts?.tier || 'fast')
+        : selectAiModel(env, opts?.tier || 'fast'));
     const fallbackModel = env.AI_MODEL_FALLBACK || selectAiModel(env, 'cheap');
     const result = await gatewayChatCompletion(gatewayMessages, env, {
       model: preferredModel,
@@ -230,6 +237,7 @@ export async function chatCompletionSingle(
     systemInstruction?: string;
     model?: string;
     tier?: AiModelTier;
+    agent?: AiAgentId;
   }
 ): Promise<string | null> {
   return chatCompletion([{ role: 'user', text: prompt }], env, opts);
@@ -240,12 +248,13 @@ export async function chatCompletionSingle(
 export async function extractStructured<T>(
   prompt: string,
   env: Env,
-  opts?: { temperature?: number; systemInstruction?: string }
+  opts?: { temperature?: number; systemInstruction?: string; agent?: AiAgentId }
 ): Promise<T | null> {
   const text = await chatCompletionSingle(prompt, env, {
     ...opts,
     temperature: opts?.temperature ?? 0.1,
     tier: 'reasoning',
+    agent: opts?.agent,
   });
   if (!text) return null;
   try {
@@ -324,7 +333,11 @@ Skarion positioning: ${position}
 
 Do not include any markdown formatting. Output plain text only. Include a clear call to action.`;
 
-  return chatCompletionSingle(prompt, env, { temperature: 0.4 });
+  return chatCompletionSingle(prompt, env, {
+    temperature: 0.4,
+    tier: 'fast',
+    agent: 'outreach-writer',
+  });
 }
 
 // ── PDF lead extraction ────────────────────────────────────────────────────
@@ -400,7 +413,7 @@ ${rawText.substring(0, 12000)}
 
 Return ONLY the JSON object, no markdown, no explanation.`;
 
-  return extractStructured<ExtractedLeadDraft>(prompt, env);
+  return extractStructured<ExtractedLeadDraft>(prompt, env, { agent: 'lead-intake' });
 }
 
 function uint8ArrayToBase64(arr: Uint8Array): string {
@@ -475,7 +488,7 @@ Return ONLY the JSON object, no markdown, no explanation.`;
         ],
       },
     ];
-    const preferredModel = selectAiModel(env, 'reasoning');
+    const preferredModel = selectAiAgentModel(env, 'lead-intake', 'reasoning');
     text = await gatewayChatCompletion(messages, env, {
       model: preferredModel,
       temperature: 0.1,
@@ -576,7 +589,10 @@ export async function extractDocumentText(
         },
       ],
       env,
-      { tier: 'reasoning', temperature: 0.1 }
+      {
+        model: selectAiAgentModel(env, 'document-ocr', 'reasoning'),
+        temperature: 0.1,
+      }
     );
     if (result) return result;
   }
@@ -641,7 +657,11 @@ ${lead.notes ? `Notes: ${lead.notes}` : ''}
 
 Focus on: what they likely want, how strong the lead is, and what next action to take.`;
 
-  return chatCompletionSingle(prompt, env, { temperature: 0.3 });
+  return chatCompletionSingle(prompt, env, {
+    temperature: 0.3,
+    tier: 'cheap',
+    agent: 'lead-summarizer',
+  });
 }
 
 // ── Company summary ─────────────────────────────────────────────────────────
@@ -661,7 +681,11 @@ ${company.size ? `Size: ${company.size}` : ''}
 
 Focus on: what they do, how they might fit Skarion's services (telecom, GIS, fiber, OSP, CAD, engineering), and any outreach suggestions.`;
 
-  return chatCompletionSingle(prompt, env, { temperature: 0.3 });
+  return chatCompletionSingle(prompt, env, {
+    temperature: 0.3,
+    tier: 'cheap',
+    agent: 'company-summarizer',
+  });
 }
 
 // ── Contact summary ─────────────────────────────────────────────────────────
@@ -687,7 +711,11 @@ ${contact.companyName ? `Company: ${contact.companyName}` : ''}
 
 Focus on: their role, how to approach them, and what Skarion services might be relevant.`;
 
-  return chatCompletionSingle(prompt, env, { temperature: 0.3 });
+  return chatCompletionSingle(prompt, env, {
+    temperature: 0.3,
+    tier: 'cheap',
+    agent: 'contact-summarizer',
+  });
 }
 
 // ── Suggest next action ─────────────────────────────────────────────────────
@@ -706,7 +734,11 @@ ${lead.notes ? `Notes: ${lead.notes}` : ''}
 
 Return ONE clear, actionable next step (e.g., "Send a follow-up email about X", "Schedule a call to discuss Y", "Connect on LinkedIn with Z message"). Keep it to 1-2 sentences.`;
 
-  return chatCompletionSingle(prompt, env, { temperature: 0.3 });
+  return chatCompletionSingle(prompt, env, {
+    temperature: 0.3,
+    tier: 'cheap',
+    agent: 'next-best-action',
+  });
 }
 
 // ── Score lead ──────────────────────────────────────────────────────────────
@@ -738,5 +770,7 @@ ${lead.notes ? `Notes: ${lead.notes}` : ''}
 
 Return ONLY JSON: {"score": 75, "reasoning": "brief explanation"}`;
 
-  return extractStructured<{ score: number; reasoning: string }>(prompt, env);
+  return extractStructured<{ score: number; reasoning: string }>(prompt, env, {
+    agent: 'lead-scorer',
+  });
 }

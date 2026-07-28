@@ -474,12 +474,76 @@ export interface IntegrationStatus {
   googleApiKey: boolean;
   resendConfigured: boolean;
   documentConverter: boolean;
+  aiGateway?: boolean;
+  googleAiFallback?: boolean;
 }
 
 export function useIntegrationStatus() {
   return useCrmQuery(['integrations', 'status'], () =>
     crmFetch<IntegrationStatus>('/api/integrations/status')
   );
+}
+
+export interface AiCredential {
+  id: 'vertex_proxy' | 'google_ai';
+  name: string;
+  configured: boolean;
+  isDefault: boolean;
+  source: string;
+  maskedKey: string | null;
+  baseUrl: string | null;
+}
+
+export interface AiModelOption {
+  id: string;
+  backingModel: string;
+  label: string;
+  costClass: 'low' | 'medium' | 'high';
+}
+
+export interface AiAgentConfig {
+  id: string;
+  name: string;
+  description: string;
+  tier: 'reasoning' | 'fast' | 'cheap' | 'embedding';
+}
+
+export interface AiRuntimeSettings {
+  defaultProvider: 'vertex_proxy' | 'google_ai';
+  tierModels: {
+    reasoning: string;
+    fast: string;
+    cheap: string;
+    embedding: string;
+  };
+  agentModels: Record<string, string>;
+}
+
+export interface AiConfig {
+  credentials: AiCredential[];
+  models: AiModelOption[];
+  agents: AiAgentConfig[];
+  settings: AiRuntimeSettings;
+  selectedModels: Record<string, string>;
+}
+
+export function useAiConfig() {
+  return useCrmQuery(['ai', 'config'], () => crmFetch<AiConfig>('/api/ai/config'));
+}
+
+export function useUpdateAiConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (settings: AiRuntimeSettings) =>
+      crmFetch<{ settings: AiRuntimeSettings }>('/api/ai/config', {
+        method: 'PUT',
+        body: JSON.stringify(settings),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['ai', 'config'] });
+      qc.invalidateQueries({ queryKey: ['integrations', 'status'] });
+    },
+  });
 }
 
 // ─── OUTREACH CHANNELS / ATTACHMENTS / IMPORT BATCHES ───
