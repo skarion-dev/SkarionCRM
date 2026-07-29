@@ -8,6 +8,7 @@ import {
   journeyStageFromLegacy,
   mergeJourneyWithChannelStages,
   normalizeTagNames,
+  profileCaptureCompleteTags,
   syncHoldingTagsForJourney,
 } from './leadJourney.js';
 
@@ -58,5 +59,12 @@ describe('lead tags', () => {
     expect(isLeadActivationStage('future')).toBe(false);
     expect(isLeadHoldingStage('future')).toBe(true);
     expect(isLeadHoldingStage('foreign_national')).toBe(true);
+  });
+
+  it('replaces the pending profile-capture tag with one canonical completion tag', () => {
+    expect(
+      profileCaptureCompleteTags(['Batch 8', 'Needs Profile Capture', 'PROFILE CAPTURE COMPLETE'])
+    ).toEqual(['Batch 8', 'profile capture complete']);
+    expect(profileCaptureCompleteTags(null)).toEqual(['profile capture complete']);
   });
 });

@@ -19,6 +19,9 @@ export const LEAD_JOURNEY_STAGES = [
 
 export type LeadJourneyStage = (typeof LEAD_JOURNEY_STAGES)[number];
 
+export const NEEDS_PROFILE_CAPTURE_TAG = 'needs profile capture';
+export const PROFILE_CAPTURE_COMPLETE_TAG = 'profile capture complete';
+
 const ACTIVE_STAGE_RANK: Partial<Record<LeadJourneyStage, number>> = {
   future: 0,
   foreign_national: 0,
@@ -171,6 +174,17 @@ export function normalizeTagNames(values: unknown): string[] {
 export function hasLeadTag(values: unknown, expectedTag: string): boolean {
   const expected = expectedTag.trim().toLowerCase();
   return normalizeTagNames(values).some((tag) => tag.toLowerCase() === expected);
+}
+
+export function profileCaptureCompleteTags(values: unknown): string[] {
+  const obsoleteTags = new Set([
+    NEEDS_PROFILE_CAPTURE_TAG.toLowerCase(),
+    PROFILE_CAPTURE_COMPLETE_TAG.toLowerCase(),
+  ]);
+  return normalizeTagNames([
+    ...normalizeTagNames(values).filter((tag) => !obsoleteTags.has(tag.toLowerCase())),
+    PROFILE_CAPTURE_COMPLETE_TAG,
+  ]);
 }
 
 function isFutureTagName(tag: string): boolean {

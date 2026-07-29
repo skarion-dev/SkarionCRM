@@ -204,6 +204,13 @@
       "when": 1785365000000,
       "tag": "0028_linkedin_replies_are_engaged",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1785366500000,
+      "tag": "0029_profile_capture_complete_tag",
+      "breakpoints": true
     }
   ]
 }

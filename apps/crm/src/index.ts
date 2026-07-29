@@ -115,6 +115,8 @@ import {
   legacyFieldsForJourney,
   mergeJourneyWithChannelStages,
   normalizeTagNames,
+  profileCaptureCompleteTags,
+  PROFILE_CAPTURE_COMPLETE_TAG,
   syncHoldingTagsForJourney,
   tagSlug,
   type LeadJourneyStage,
@@ -517,21 +519,14 @@ async function reviewProspect(
   const linkedinUrl =
     canonicalizeLinkedinUrl(profileString(profile ?? {}, 'profileUrl')) ?? lead.linkedinUrl;
   const captureReceived = Boolean(profile);
+  const dispositionTags = mergeLeadTags(
+    lead.tags,
+    [dispositionTag(effectiveDisposition)],
+    ['Excellent Fit', 'Worth Trying', 'Maybe', 'Future', 'Foreign National', 'Disqualified']
+  );
   const tags = await ensureTagDefinitions(
     db,
-    mergeLeadTags(
-      lead.tags,
-      [dispositionTag(effectiveDisposition)],
-      [
-        'Excellent Fit',
-        'Worth Trying',
-        'Maybe',
-        'Future',
-        'Foreign National',
-        'Disqualified',
-        ...(captureReceived ? ['needs profile capture'] : []),
-      ]
-    ),
+    captureReceived ? profileCaptureCompleteTags(dispositionTags) : dispositionTags,
     actorUserId
   );
   const completeness = calculateLeadCompleteness({
@@ -1323,12 +1318,22 @@ async function enrichExtensionLead(
     notes: typeof body.notes === 'string' ? body.notes : null,
     tags: body.tags,
   });
-  if (enrichedFields.length === 0) {
-    await linkImportedLinkedInConversationsToLead(db, existing);
-    return { lead: existing, enrichedFields };
-  }
+  const now = new Date();
+  await ensureTagDefinitions(db, [PROFILE_CAPTURE_COMPLETE_TAG], actorUserId, true);
+  const tags = await ensureTagDefinitions(
+    db,
+    profileCaptureCompleteTags(patch.tags ?? existing.tags),
+    actorUserId
+  );
+  const tagsChanged =
+    JSON.stringify(normalizeTagNames(existing.tags)) !== JSON.stringify(normalizeTagNames(tags));
+  const appliedFields =
+    tagsChanged && !enrichedFields.includes('tags') ? [...enrichedFields, 'tags'] : enrichedFields;
   const databasePatch = {
     ...patch,
+    tags,
+    profileCaptureStatus: 'captured' as const,
+    lastCapturedAt: now,
     ...(typeof patch.linkedinUrl === 'string'
       ? { linkedinProfileKey: linkedinProfileKey(patch.linkedinUrl) }
       : {}),
@@ -1336,7 +1341,7 @@ async function enrichExtensionLead(
 
   const [lead] = await db
     .update(schema.leads)
-    .set({ ...databasePatch, updatedAt: new Date() })
+    .set({ ...databasePatch, updatedAt: now })
     .where(eq(schema.leads.id, existing.id))
     .returning();
   if (!lead) return { lead: existing, enrichedFields: [] };
@@ -1354,10 +1359,10 @@ async function enrichExtensionLead(
     resourceType: 'lead',
     resourceId: lead.id,
     before: existing,
-    after: { ...finalLead, enrichedFields, source: 'linkedin-extension' },
+    after: { ...finalLead, enrichedFields: appliedFields, source: 'linkedin-extension' },
     app: 'crm',
   });
-  return { lead: finalLead, enrichedFields };
+  return { lead: finalLead, enrichedFields: appliedFields };
 }
 
 async function linkImportedLinkedInConversationsToLead(
@@ -1600,7 +1605,12 @@ app.post('/extension/leads', async (c) => {
     outreachStatus:
       typeof body.outreachStatus === 'string' ? body.outreachStatus : 'not_approached',
   });
-  const extensionTags = await ensureTagDefinitions(db, body.tags, ownerId);
+  await ensureTagDefinitions(db, [PROFILE_CAPTURE_COMPLETE_TAG], ownerId, true);
+  const extensionTags = await ensureTagDefinitions(
+    db,
+    profileCaptureCompleteTags(body.tags),
+    ownerId
+  );
   const extensionJourneyStage = journeyStageForTags(extensionBaseJourneyStage, extensionTags);
   const extensionLegacy = legacyFieldsForJourney(extensionJourneyStage);
   const extensionIdentity = await nextLeadIdentity(db);
@@ -1623,6 +1633,8 @@ app.post('/extension/leads', async (c) => {
     status: extensionLegacy.status as any,
     journeyStage: extensionJourneyStage,
     notes: body.notes ?? null,
+    profileCaptureStatus: 'captured' as const,
+    lastCapturedAt: new Date(),
     ownerId,
     idempotencyKey,
   };
