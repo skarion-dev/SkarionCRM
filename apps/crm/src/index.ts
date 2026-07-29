@@ -103,9 +103,11 @@ import {
   type LeadJourneyStage,
 } from './lib/leadJourney.js';
 import {
+  ACTIVE_CONVERSATION_JOURNEY_STAGES,
   calculateLeadCompleteness,
   deriveProspectName,
   dispositionTag,
+  findActiveLeadIdentityDuplicate,
   isProspectDisposition,
   normalizeProspectCsvRecord,
   type ProspectDisposition,
@@ -637,6 +639,7 @@ async function processProspectImport(
         yearsExperience: string | null;
         connectionDegree: string | null;
         prospectSourceContext: unknown;
+        journeyStage: string;
       }
     >();
     for (const keyChunk of chunksOf(
@@ -660,6 +663,7 @@ async function processProspectImport(
           yearsExperience: schema.leads.yearsExperience,
           connectionDegree: schema.leads.connectionDegree,
           prospectSourceContext: schema.leads.prospectSourceContext,
+          journeyStage: schema.leads.journeyStage,
         })
         .from(schema.leads)
         .where(
@@ -674,8 +678,53 @@ async function processProspectImport(
       }
     }
 
+    const activeConversationLeads = await db
+      .select({
+        id: schema.leads.id,
+        firstName: schema.leads.firstName,
+        lastName: schema.leads.lastName,
+        email: schema.leads.email,
+        phone: schema.leads.phone,
+        companyName: schema.leads.companyName,
+        linkedinProfileKey: schema.leads.linkedinProfileKey,
+      })
+      .from(schema.leads)
+      .where(
+        and(
+          eq(schema.leads.workspaceId, batch.workspaceId),
+          inArray(schema.leads.journeyStage, [...ACTIVE_CONVERSATION_JOURNEY_STAGES]),
+          isNull(schema.leads.deletedAt)
+        )
+      );
+    const discardedActiveDuplicateKeys = new Map<string, { leadId: string; reason: string }>();
+    for (const candidate of candidates) {
+      const exactExisting = existingByKey.get(candidate.linkedinProfileKey);
+      if (
+        exactExisting &&
+        ACTIVE_CONVERSATION_JOURNEY_STAGES.includes(
+          exactExisting.journeyStage as (typeof ACTIVE_CONVERSATION_JOURNEY_STAGES)[number]
+        )
+      ) {
+        discardedActiveDuplicateKeys.set(candidate.linkedinProfileKey, {
+          leadId: exactExisting.id,
+          reason: 'linkedin',
+        });
+        continue;
+      }
+      if (exactExisting) continue;
+      const identityDuplicate = findActiveLeadIdentityDuplicate(candidate, activeConversationLeads);
+      if (identityDuplicate) {
+        discardedActiveDuplicateKeys.set(candidate.linkedinProfileKey, {
+          leadId: identityDuplicate.lead.id,
+          reason: identityDuplicate.reason,
+        });
+      }
+    }
+
     const newCandidates = candidates.filter(
-      (candidate) => !existingByKey.has(candidate.linkedinProfileKey)
+      (candidate) =>
+        !existingByKey.has(candidate.linkedinProfileKey) &&
+        !discardedActiveDuplicateKeys.has(candidate.linkedinProfileKey)
     );
     const tagNames = await ensureTagDefinitions(db, [batch.name], actorUserId);
     const needsCaptureTag = await ensureTagDefinitions(
@@ -777,7 +826,12 @@ async function processProspectImport(
     );
     const unresolvedKeys = candidates
       .map((candidate) => candidate.linkedinProfileKey)
-      .filter((key) => !existingByKey.has(key) && !createdByKey.has(key));
+      .filter(
+        (key) =>
+          !existingByKey.has(key) &&
+          !createdByKey.has(key) &&
+          !discardedActiveDuplicateKeys.has(key)
+      );
     for (const keyChunk of chunksOf(unresolvedKeys, 400)) {
       if (keyChunk.length === 0) continue;
       const racedRows = await db
@@ -797,6 +851,7 @@ async function processProspectImport(
           yearsExperience: schema.leads.yearsExperience,
           connectionDegree: schema.leads.connectionDegree,
           prospectSourceContext: schema.leads.prospectSourceContext,
+          journeyStage: schema.leads.journeyStage,
         })
         .from(schema.leads)
         .where(
@@ -816,6 +871,7 @@ async function processProspectImport(
     );
     const cleanupLeadIds = new Set<string>();
     for (const [profileKey, existing] of existingByKey) {
+      if (discardedActiveDuplicateKeys.has(profileKey)) continue;
       const candidate = candidateByKey.get(profileKey);
       if (!candidate || !hasLeadProfileEvidence({ source: 'linkedin', ...candidate })) continue;
       const [enriched] = await db
@@ -851,6 +907,7 @@ async function processProspectImport(
     }
     const memberships = candidates
       .map((candidate) => {
+        if (discardedActiveDuplicateKeys.has(candidate.linkedinProfileKey)) return null;
         const leadId =
           existingByKey.get(candidate.linkedinProfileKey)?.id ??
           createdByKey.get(candidate.linkedinProfileKey);
@@ -881,7 +938,18 @@ async function processProspectImport(
         createdCount: created.length,
         duplicateCount,
         invalidCount: invalidRows.length,
-        errorRows: invalidRows,
+        errorRows: [
+          ...invalidRows,
+          ...candidates
+            .filter((candidate) => discardedActiveDuplicateKeys.has(candidate.linkedinProfileKey))
+            .map((candidate) => {
+              const duplicate = discardedActiveDuplicateKeys.get(candidate.linkedinProfileKey);
+              return {
+                row: candidate.sourceRow,
+                error: `Discarded: already active in CRM (${duplicate?.reason ?? 'duplicate'}, lead ${duplicate?.leadId ?? 'unknown'}).`,
+              };
+            }),
+        ],
         completedAt: new Date(),
         updatedAt: new Date(),
       })
@@ -895,6 +963,7 @@ async function processProspectImport(
         batchId: batch.id,
         createdCount: created.length,
         duplicateCount,
+        discardedActiveDuplicateCount: discardedActiveDuplicateKeys.size,
         invalidCount: invalidRows.length,
       },
     });

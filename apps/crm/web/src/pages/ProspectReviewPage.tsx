@@ -524,8 +524,8 @@ export default function ProspectReviewPage() {
             />
           </div>
           <div className="text-xs text-slate-500 mt-2">
-            {importJob.job.createdCount} created · {importJob.job.duplicateCount} existing ·{' '}
-            {importJob.job.invalidCount} invalid
+            {importJob.job.createdCount} created · {importJob.job.duplicateCount} discarded
+            duplicates · {importJob.job.invalidCount} invalid
           </div>
         </div>
       )}

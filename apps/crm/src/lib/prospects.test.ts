@@ -3,7 +3,9 @@ import {
   calculateLeadCompleteness,
   deriveProspectName,
   dispositionTag,
+  findActiveLeadIdentityDuplicate,
   normalizeProspectCsvRecord,
+  prospectIdentityNameKey,
 } from './prospects.js';
 
 describe('prospect ingestion', () => {
@@ -108,5 +110,70 @@ describe('prospect ingestion', () => {
         linkedinUrl: 'https://www.linkedin.com/in/ada',
       })
     ).toBe(40);
+  });
+
+  it('matches an uploaded prospect to one uniquely active CRM lead by normalized name', () => {
+    const duplicate = findActiveLeadIdentityDuplicate(
+      {
+        firstName: '  Ada ',
+        lastName: 'Lovelace',
+        companyName: null,
+      },
+      [
+        {
+          id: 'lead-1',
+          firstName: 'ADA',
+          lastName: 'Lovelace',
+          companyName: 'Analytical Engines',
+        },
+      ]
+    );
+    expect(duplicate).toMatchObject({
+      reason: 'unique_name',
+      lead: { id: 'lead-1' },
+    });
+  });
+
+  it('uses company to disambiguate common names and ignores generated placeholders', () => {
+    const activeLeads = [
+      {
+        id: 'lead-1',
+        firstName: 'Sam',
+        lastName: 'Rahman',
+        companyName: 'Alpha',
+      },
+      {
+        id: 'lead-2',
+        firstName: 'Sam',
+        lastName: 'Rahman',
+        companyName: 'Beta',
+      },
+    ];
+    expect(
+      findActiveLeadIdentityDuplicate(
+        {
+          firstName: 'Sam',
+          lastName: 'Rahman',
+          companyName: 'Beta',
+        },
+        activeLeads
+      )
+    ).toMatchObject({ reason: 'name_company', lead: { id: 'lead-2' } });
+    expect(
+      findActiveLeadIdentityDuplicate(
+        {
+          firstName: 'Sam',
+          lastName: 'Rahman',
+          companyName: null,
+        },
+        activeLeads
+      )
+    ).toBeNull();
+    expect(
+      prospectIdentityNameKey({
+        firstName: 'LinkedIn',
+        lastName: 'Candidate ABC123',
+      })
+    ).toBeNull();
   });
 });

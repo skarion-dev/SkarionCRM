@@ -11,6 +11,82 @@ export const PROSPECT_DISPOSITIONS = [
 
 export type ProspectDisposition = (typeof PROSPECT_DISPOSITIONS)[number];
 
+export const ACTIVE_CONVERSATION_JOURNEY_STAGES = [
+  'connection_sent',
+  'connected',
+  'engaged',
+  'qualified',
+  'meeting_booked',
+  'opportunity',
+  'follow_up',
+  'converted',
+] as const;
+
+type ProspectIdentity = {
+  id?: string;
+  firstName: string;
+  lastName: string;
+  email?: string | null;
+  phone?: string | null;
+  companyName?: string | null;
+};
+
+function identityText(value: string | null | undefined): string {
+  return (value ?? '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function identityPhone(value: string | null | undefined): string {
+  const digits = (value ?? '').replace(/\D/g, '');
+  return digits.length >= 7 ? digits.slice(-10) : '';
+}
+
+export function prospectIdentityNameKey(identity: ProspectIdentity): string | null {
+  const firstName = identityText(identity.firstName);
+  const lastName = identityText(identity.lastName);
+  if (!firstName || !lastName || firstName === 'linkedin' || firstName === 'candidate') {
+    return null;
+  }
+  return `${firstName}|${lastName}`;
+}
+
+export function findActiveLeadIdentityDuplicate<T extends ProspectIdentity>(
+  candidate: ProspectIdentity,
+  activeLeads: T[]
+): { lead: T; reason: 'email' | 'phone' | 'name_company' | 'unique_name' } | null {
+  const email = identityText(candidate.email);
+  if (email) {
+    const match = activeLeads.find((lead) => identityText(lead.email) === email);
+    if (match) return { lead: match, reason: 'email' };
+  }
+
+  const phone = identityPhone(candidate.phone);
+  if (phone) {
+    const match = activeLeads.find((lead) => identityPhone(lead.phone) === phone);
+    if (match) return { lead: match, reason: 'phone' };
+  }
+
+  const nameKey = prospectIdentityNameKey(candidate);
+  if (!nameKey) return null;
+  const nameMatches = activeLeads.filter((lead) => prospectIdentityNameKey(lead) === nameKey);
+  if (nameMatches.length === 0) return null;
+
+  const companyName = identityText(candidate.companyName);
+  if (companyName) {
+    const companyMatches = nameMatches.filter(
+      (lead) => identityText(lead.companyName) === companyName
+    );
+    if (companyMatches.length === 1) {
+      return { lead: companyMatches[0] as T, reason: 'name_company' };
+    }
+  }
+  return nameMatches.length === 1 ? { lead: nameMatches[0] as T, reason: 'unique_name' } : null;
+}
+
 export function isProspectDisposition(value: unknown): value is ProspectDisposition {
   return typeof value === 'string' && (PROSPECT_DISPOSITIONS as readonly string[]).includes(value);
 }
