@@ -16,7 +16,13 @@ import type { CrmDb } from '../db/types.js';
  */
 export function canonicalizeLinkedinUrl(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
-  const trimmed = raw.trim();
+  const trimmed = raw
+    .trim()
+    // Recruiter exports occasionally concatenate the LinkedIn origin twice.
+    .replace(
+      /^https?:\/\/www\.linkedin\.comhttps?:\/\/(?:www\.)?linkedin\.com/i,
+      'https://www.linkedin.com'
+    );
   if (!trimmed) return null;
 
   let parsed: URL;
@@ -43,7 +49,13 @@ export function linkedinProfileKey(raw: unknown): string | null {
   if (!canonical) return null;
   try {
     const parts = new URL(canonical).pathname.split('/').filter(Boolean);
-    return parts[0] === 'in' && parts[1] ? decodeURIComponent(parts[1]).toLowerCase() : null;
+    if (parts[0] === 'in' && parts[1]) {
+      return decodeURIComponent(parts[1]).toLowerCase();
+    }
+    if (parts[0] === 'talent' && parts[1] === 'profile' && parts[2]) {
+      return `talent:${decodeURIComponent(parts[2]).toLowerCase()}`;
+    }
+    return null;
   } catch {
     return null;
   }

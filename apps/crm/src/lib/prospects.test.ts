@@ -41,14 +41,50 @@ describe('prospect ingestion', () => {
         Education: 'Yale University — PhD Mathematics',
         Experience: 'Rear Admiral — U.S. Navy',
         Skills: 'Compilers, COBOL',
+        'Current Role': 'Researcher',
+        'Current Company': 'Navy Lab',
+        'Current Dates': '1944 – 1986',
+        'Open To Work Filter': 'Yes',
+        'Open To Work': '',
+        Keywords: 'Bangladesh OR Bengali',
       },
       4
     );
     expect(result.row).toMatchObject({
       about: 'Computer scientist and naval officer.',
       education: 'Yale University — PhD Mathematics',
-      experience: 'Rear Admiral — U.S. Navy',
+      experience: 'Researcher at Navy Lab · 1944 – 1986 | Rear Admiral — U.S. Navy',
       skills: 'Compilers, COBOL',
+      currentRole: 'Researcher',
+      openToWork: null,
+      sourceContext: {
+        keywords: 'Bangladesh OR Bengali',
+        openToWorkFilter: 'Yes',
+      },
+    });
+  });
+
+  it('cleans common Recruiter export column shifts without inventing evidence', () => {
+    const result = normalizeProspectCsvRecord(
+      {
+        'Full Name': 'Suyash Mohta',
+        'Profile URL':
+          'https://www.linkedin.comhttps://www.linkedin.com/talent/profile/AEMAAExample',
+        Location: 'Data Scientist | SQL, Tableau, Statistics',
+        'Current Role': 'Enhanced by resume',
+        School: 'UC Davis, Master of Science · 2024 – 2025',
+        Degree: 'Indiana University, Bachelor of Science · 2016 – 2020',
+        'Edu Dates': 'High School · 2001 – 2016',
+      },
+      5
+    );
+    expect(result.row).toMatchObject({
+      linkedinProfileKey: 'talent:aemaaexample',
+      headline: 'Data Scientist | SQL, Tableau, Statistics',
+      location: null,
+      currentRole: null,
+      education:
+        'UC Davis, Master of Science · 2024 – 2025 | Indiana University, Bachelor of Science · 2016 – 2020 | High School · 2001 – 2016',
     });
   });
 

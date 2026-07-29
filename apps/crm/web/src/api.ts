@@ -476,6 +476,12 @@ export interface Lead {
   experience: string | null;
   education: string | null;
   skills: string | null;
+  currentRole: string | null;
+  currentRoleDates: string | null;
+  openToWork: boolean | null;
+  yearsExperience: string | null;
+  connectionDegree: string | null;
+  prospectSourceContext: Record<string, string | null> | null;
   profileSummary: string | null;
   educationEntries: LeadEducationEntry[] | null;
   experienceEntries: LeadExperienceEntry[] | null;
@@ -560,6 +566,9 @@ export interface LeadAiAssessment {
   rawScore: number;
   classification: string;
   confidenceLevel: string;
+  profileEvidenceQuality: 'strong' | 'usable' | 'thin' | 'insufficient';
+  marketEntryTiming: 'now' | 'within_6_months' | 'six_to_18_months' | 'future' | 'unknown';
+  candidateNeedEvidence: 'explicit' | 'probable' | 'none';
   scoreBreakdown: Record<string, number>;
   verifiedPositiveSignals: string[];
   risksOrMissingInformation: string[];

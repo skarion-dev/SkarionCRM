@@ -2,8 +2,9 @@ import { gunzipSync } from 'node:zlib';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { getDb } from '@skarion/db-kit';
 import * as schema from '../db/schema.js';
+import { linkedinProfileKey } from '../lib/leadDedup.js';
 import { formatLeadNumber } from '../lib/leadNumber.js';
-import { hasLeadTag, normalizeTagNames, tagSlug } from '../lib/leadJourney.js';
+import { normalizeTagNames, tagSlug } from '../lib/leadJourney.js';
 
 type CuratedCandidate = {
   sourceRow: number;
@@ -11,6 +12,19 @@ type CuratedCandidate = {
   lastName: string;
   email: string | null;
   linkedinUrl: string;
+  linkedinProfileKey: string;
+  companyName: string | null;
+  headline: string | null;
+  location: string | null;
+  experience: string | null;
+  education: string | null;
+  skills: string | null;
+  currentRole: string | null;
+  currentRoleDates: string | null;
+  openToWork: boolean | null;
+  yearsExperience: string | null;
+  connectionDegree: string | null;
+  sourceContext: Record<string, string | null>;
   notes: string | null;
   tags: string[];
 };
@@ -21,12 +35,31 @@ type ExistingLead = {
   lastName: string;
   email: string | null;
   linkedinUrl: string | null;
+  linkedinProfileKey: string | null;
+  companyName: string | null;
+  headline: string | null;
+  location: string | null;
+  experience: string | null;
+  education: string | null;
+  skills: string | null;
+  currentRole: string | null;
+  currentRoleDates: string | null;
+  openToWork: boolean | null;
+  yearsExperience: string | null;
+  connectionDegree: string | null;
+  prospectSourceContext: unknown;
+  profileCaptureStatus: string;
   notes: string | null;
   tags: unknown;
 };
 
 const databaseUrl = process.env.DATABASE_URL ?? '';
-const payloadBase64 = process.env.CURATED_LEADS_PAYLOAD_B64 ?? '';
+const payloadBase64 =
+  process.env.CURATED_LEADS_PAYLOAD_B64 ||
+  Array.from(
+    { length: 30 },
+    (_, index) => process.env[`CURATED_LEADS_PAYLOAD_${String(index + 1).padStart(2, '0')}`] ?? ''
+  ).join('');
 const ownerId = process.env.CURATED_LEADS_OWNER_ID ?? '';
 const batchName = process.env.CURATED_LEADS_BATCH_NAME?.trim() || 'Curated Leads';
 const mode = process.env.CURATED_LEADS_MODE === 'import' ? 'import' : 'dry-run';
@@ -38,20 +71,8 @@ if (!/^[0-9a-f-]{36}$/i.test(ownerId)) throw new Error('A valid owner UUID is re
 const candidates = JSON.parse(
   gunzipSync(Buffer.from(payloadBase64, 'base64')).toString('utf8')
 ) as CuratedCandidate[];
-if (!Array.isArray(candidates) || candidates.length === 0 || candidates.length > 500) {
-  throw new Error('Curated payload must contain between 1 and 500 candidates.');
-}
-
-function canonicalLinkedIn(value: string | null): string | null {
-  if (!value) return null;
-  try {
-    const url = new URL(value);
-    const parts = url.pathname.split('/').filter(Boolean);
-    if (parts[0]?.toLowerCase() !== 'in' || !parts[1]) return null;
-    return decodeURIComponent(parts[1]).toLowerCase();
-  } catch {
-    return null;
-  }
+if (!Array.isArray(candidates) || candidates.length === 0 || candidates.length > 2_500) {
+  throw new Error('Curated payload must contain between 1 and 2,500 candidates.');
 }
 
 function canonicalName(firstName: string, lastName: string): string {
@@ -88,6 +109,20 @@ const existingLeads = await db
     lastName: schema.leads.lastName,
     email: schema.leads.email,
     linkedinUrl: schema.leads.linkedinUrl,
+    linkedinProfileKey: schema.leads.linkedinProfileKey,
+    companyName: schema.leads.companyName,
+    headline: schema.leads.headline,
+    location: schema.leads.location,
+    experience: schema.leads.experience,
+    education: schema.leads.education,
+    skills: schema.leads.skills,
+    currentRole: schema.leads.currentRole,
+    currentRoleDates: schema.leads.currentRoleDates,
+    openToWork: schema.leads.openToWork,
+    yearsExperience: schema.leads.yearsExperience,
+    connectionDegree: schema.leads.connectionDegree,
+    prospectSourceContext: schema.leads.prospectSourceContext,
+    profileCaptureStatus: schema.leads.profileCaptureStatus,
     notes: schema.leads.notes,
     tags: schema.leads.tags,
   })
@@ -97,7 +132,7 @@ const existingLeads = await db
 const byLinkedIn = new Map<string, ExistingLead[]>();
 const byName = new Map<string, ExistingLead[]>();
 for (const lead of existingLeads) {
-  pushToMap(byLinkedIn, canonicalLinkedIn(lead.linkedinUrl), lead);
+  pushToMap(byLinkedIn, lead.linkedinProfileKey ?? linkedinProfileKey(lead.linkedinUrl), lead);
   pushToMap(byName, canonicalName(lead.firstName, lead.lastName), lead);
 }
 
@@ -120,7 +155,10 @@ const ambiguousCandidates: Array<{
 }> = [];
 
 for (const candidate of candidates) {
-  const linkMatches = byLinkedIn.get(canonicalLinkedIn(candidate.linkedinUrl) ?? '') ?? [];
+  const linkMatches =
+    byLinkedIn.get(
+      candidate.linkedinProfileKey || linkedinProfileKey(candidate.linkedinUrl) || ''
+    ) ?? [];
   const nameMatches = byName.get(canonicalName(candidate.firstName, candidate.lastName)) ?? [];
   const nameIds = new Set(nameMatches.map((lead) => lead.id));
   const shared = linkMatches.filter((lead) => nameIds.has(lead.id));
@@ -213,7 +251,10 @@ const result = await (async (tx: typeof db) => {
   for (const { lead, candidate } of plannedUpdates) {
     const tags = mergedTags(lead.tags, [
       batchName,
-      ...candidate.tags.filter((tag) => tag.toLowerCase() !== 'needs profile capture'),
+      ...candidate.tags.filter(
+        (tag) =>
+          tag.toLowerCase() !== 'needs profile capture' || lead.profileCaptureStatus !== 'captured'
+      ),
     ]);
     const update: Partial<typeof schema.leads.$inferInsert> = {
       tags,
@@ -223,6 +264,7 @@ const result = await (async (tx: typeof db) => {
 
     if (!lead.linkedinUrl && candidate.linkedinUrl) {
       update.linkedinUrl = candidate.linkedinUrl;
+      update.linkedinProfileKey = candidate.linkedinProfileKey;
       enriched = true;
     }
     if (candidate.email && (!lead.email || lead.email.includes('@placeholder.skarion'))) {
@@ -241,8 +283,55 @@ const result = await (async (tx: typeof db) => {
       update.notes = [lead.notes, candidate.notes].filter(Boolean).join('\n');
       enriched = true;
     }
+    const fill = <K extends keyof CuratedCandidate & keyof ExistingLead>(field: K) => {
+      const existingValue = lead[field];
+      const candidateValue = candidate[field];
+      if (
+        (existingValue === null || existingValue === undefined || existingValue === '') &&
+        candidateValue !== null &&
+        candidateValue !== undefined &&
+        candidateValue !== ''
+      ) {
+        (update as Record<string, unknown>)[field] = candidateValue;
+        enriched = true;
+      }
+    };
+    fill('companyName');
+    fill('headline');
+    fill('location');
+    fill('experience');
+    fill('education');
+    fill('skills');
+    fill('currentRole');
+    fill('currentRoleDates');
+    fill('openToWork');
+    fill('yearsExperience');
+    fill('connectionDegree');
+    if (!lead.prospectSourceContext && candidate.sourceContext) {
+      update.prospectSourceContext = candidate.sourceContext;
+      enriched = true;
+    }
+    if (enriched) {
+      update.profileNormalizationStatus = 'pending';
+    }
 
     await tx.update(schema.leads).set(update).where(eq(schema.leads.id, lead.id));
+    if (enriched) {
+      await tx
+        .insert(schema.leadProfileJobs)
+        .values({ leadId: lead.id })
+        .onConflictDoUpdate({
+          target: schema.leadProfileJobs.leadId,
+          set: {
+            status: 'pending',
+            nextAttemptAt: new Date(),
+            lockedAt: null,
+            completedAt: null,
+            lastError: null,
+            updatedAt: new Date(),
+          },
+        });
+    }
     taggedExisting += 1;
     if (enriched) enrichedExisting += 1;
   }
@@ -279,7 +368,6 @@ const result = await (async (tx: typeof db) => {
         throw new Error('Lead number sequence returned no value.');
       }
       const tags = mergedTags([], [batchName, ...candidate.tags]);
-      const journeyStage = hasLeadTag(tags, 'future') ? 'future' : 'new';
       leadValues.push({
         leadNumber: formatLeadNumber(typeof sequence === 'string' ? BigInt(sequence) : sequence),
         leadSequence:
@@ -287,19 +375,34 @@ const result = await (async (tx: typeof db) => {
         firstName: candidate.firstName,
         lastName: candidate.lastName,
         email: candidate.email,
+        companyName: candidate.companyName,
+        headline: candidate.headline,
+        location: candidate.location,
+        experience: candidate.experience,
+        education: candidate.education,
+        skills: candidate.skills,
+        currentRole: candidate.currentRole,
+        currentRoleDates: candidate.currentRoleDates,
+        openToWork: candidate.openToWork,
+        yearsExperience: candidate.yearsExperience,
+        connectionDegree: candidate.connectionDegree,
+        prospectSourceContext: candidate.sourceContext,
         linkedinUrl: candidate.linkedinUrl,
-        linkedinProfileKey: canonicalLinkedIn(candidate.linkedinUrl),
+        linkedinProfileKey: candidate.linkedinProfileKey,
         source: 'linkedin',
         status: 'new',
-        journeyStage,
+        journeyStage: 'new',
         outreachStatus: 'not_approached',
+        reviewState: 'pending',
+        profileCaptureStatus: 'partial',
+        profileNormalizationStatus: 'pending',
         notes: candidate.notes,
         sourceSheet: batchName,
         originalRowNumber: candidate.sourceRow,
         tags,
         ownerId,
         batchId: batch.id,
-        idempotencyKey: `curated:${tagSlug(batchName)}:${canonicalLinkedIn(candidate.linkedinUrl)}`,
+        idempotencyKey: `curated:${tagSlug(batchName)}:${candidate.linkedinProfileKey}`,
       });
     }
   }
@@ -310,23 +413,15 @@ const result = await (async (tx: typeof db) => {
           .insert(schema.leads)
           .values(leadValues)
           .onConflictDoNothing()
-          .returning({ id: schema.leads.id, journeyStage: schema.leads.journeyStage })
+          .returning({ id: schema.leads.id })
       : [];
   const createdLeadIds = createdLeads.map((lead) => lead.id);
-  const activatedLeadIds = createdLeads
-    .filter((lead) => lead.journeyStage !== 'future')
-    .map((lead) => lead.id);
 
-  if (activatedLeadIds.length > 0) {
-    await tx.insert(schema.leadChannels).values(
-      activatedLeadIds.map((leadId) => ({
-        leadId,
-        channel: 'linkedin' as const,
-        stage: 'not_started' as const,
-        sequence: 1,
-        ownerId,
-      }))
-    );
+  if (createdLeadIds.length > 0) {
+    await tx
+      .insert(schema.leadProfileJobs)
+      .values(createdLeadIds.map((leadId) => ({ leadId })))
+      .onConflictDoNothing({ target: schema.leadProfileJobs.leadId });
   }
 
   await tx
@@ -337,10 +432,10 @@ const result = await (async (tx: typeof db) => {
   const [verification] = await tx
     .select({
       imported: sql<number>`count(*)`,
-      queued: sql<number>`count(${schema.leadScoreJobs.id})`,
+      queued: sql<number>`count(${schema.leadProfileJobs.id})`,
     })
     .from(schema.leads)
-    .leftJoin(schema.leadScoreJobs, eq(schema.leadScoreJobs.leadId, schema.leads.id))
+    .leftJoin(schema.leadProfileJobs, eq(schema.leadProfileJobs.leadId, schema.leads.id))
     .where(and(eq(schema.leads.batchId, batch.id), isNull(schema.leads.deletedAt)));
 
   return {

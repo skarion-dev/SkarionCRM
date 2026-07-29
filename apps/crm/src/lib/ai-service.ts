@@ -1060,6 +1060,10 @@ export interface LeadProfileNormalizationInput {
   education: string | null;
   experience: string | null;
   skills: string | null;
+  currentRole?: string | null;
+  currentRoleDates?: string | null;
+  openToWork?: boolean | null;
+  yearsExperience?: string | null;
   legacyNotes?: string | null;
 }
 
@@ -1163,6 +1167,10 @@ ${profile.about ? `About:\n${profile.about.substring(0, 6000)}` : ''}
 ${profile.experience ? `Experience:\n${profile.experience.substring(0, 12000)}` : ''}
 ${profile.education ? `Education:\n${profile.education.substring(0, 8000)}` : ''}
 ${profile.skills ? `Skills:\n${profile.skills.substring(0, 6000)}` : ''}
+${profile.currentRole ? `Current role: ${profile.currentRole}` : ''}
+${profile.currentRoleDates ? `Current role dates: ${profile.currentRoleDates}` : ''}
+${profile.openToWork === true ? 'Candidate-level Open to Work signal: yes' : ''}
+${profile.yearsExperience ? `Years of experience label: ${profile.yearsExperience}` : ''}
 ${profile.legacyNotes ? `Legacy captured notes:\n${profile.legacyNotes.substring(0, 6000)}` : ''}
 
 Return ONLY valid JSON:
@@ -1216,6 +1224,12 @@ export interface LeadQualificationInput {
   education?: NormalizedEducationEntry[] | null;
   experience?: NormalizedExperienceEntry[] | null;
   skills?: string[] | null;
+  currentRole?: string | null;
+  currentRoleDates?: string | null;
+  openToWork?: boolean | null;
+  yearsExperience?: string | null;
+  connectionDegree?: string | null;
+  sourceContext?: Record<string, unknown> | null;
 }
 
 export interface LeadQualificationAssessment {
@@ -1229,6 +1243,9 @@ export interface LeadQualificationAssessment {
     | 'NURTURE'
     | 'REJECT OR LOW PRIORITY';
   confidenceLevel: 'high' | 'medium' | 'low';
+  profileEvidenceQuality: 'strong' | 'usable' | 'thin' | 'insufficient';
+  marketEntryTiming: 'now' | 'within_6_months' | 'six_to_18_months' | 'future' | 'unknown';
+  candidateNeedEvidence: 'explicit' | 'probable' | 'none';
   scoreBreakdown: {
     careerStage: number;
     jobSearchNeed: number;
@@ -1280,6 +1297,20 @@ EVIDENCE AND ETHICS
 - Distinguish verified facts from reasonable interpretation and missing facts.
 - Prestige, publications, AI projects, and a polished profile do not by
   themselves show that the person needs Skarion.
+- Source-search context is metadata about how the recruiter found the profile,
+  never evidence about the candidate. Do not use search keywords, filter
+  locations, filter titles, schools, date filters, or the search-level Open to
+  Work filter to score any category.
+- A candidate is Open to Work only when the candidate-level field is true or
+  their own headline/about explicitly says they are seeking opportunities.
+- Recruiter captures can contain shifted fields. Treat "Enhanced by resume",
+  "Profile experience", "--", follower counts, and connection degree as UI
+  noise. A location-looking headline or a headline-looking location is usable
+  only for its apparent content, not its column label.
+- The three raw education strings can each be separate education records.
+  Never assume they are respectively a school, degree, and date.
+- Missing, contradictory, or garbled evidence must reduce confidence and
+  profileEvidenceQuality; it must never be filled by the model.
 
 STRONGEST PATHWAYS
 1. Civil/construction/infrastructure: civil, transportation, project/field
@@ -1345,11 +1376,33 @@ U.S. intent, insufficient profile information, fraud, disrespect, or refusal
 to use legitimate hiring. Employment alone is not disqualifying when someone
 is underemployed, temporary, outside their field, or transitioning.
 
+CALIBRATION RULES FROM REVIEWED PROSPECTS
+- A 2025/2026 graduate with internship, assistantship, temporary, part-time, or
+  outside-field work can still have strong job-search need and pathway fit.
+- A current PhD candidate, postdoc, professor, founder, staff engineer, senior
+  manager, or established specialist does not receive high need points without
+  explicit transition, underemployment, or search evidence.
+- A future graduation year should produce marketEntryTiming "future" and
+  normally NURTURE rather than a fabricated immediate need. Do not hard
+  disqualify solely because someone is an early student.
+- Academic research only scores as pathway fit when the supplied evidence maps
+  to a realistic Skarion pathway and the person shows non-academic career intent.
+- Generic software, AI, biotech, law, arts, content creation, and unrelated
+  business profiles require an explicit adjacent path; prestige alone is not fit.
+- A relevant full-time role lowers jobSearchNeed unless the evidence explicitly
+  shows a transition or active search.
+- connectionDegree is outreach logistics only and must not change fit or need.
+
 LEAD EVIDENCE
 Name: ${lead.firstName} ${lead.lastName}
 ${lead.email ? `Email: ${lead.email}` : ''}
 ${lead.companyName ? `Company: ${lead.companyName}` : ''}
 ${lead.title ? `Title: ${lead.title}` : ''}
+${lead.currentRole ? `Current role: ${lead.currentRole}` : ''}
+${lead.currentRoleDates ? `Current role dates: ${lead.currentRoleDates}` : ''}
+${lead.openToWork === true ? 'Candidate-level Open to Work: Yes' : ''}
+${lead.yearsExperience ? `Years of experience label: ${lead.yearsExperience}` : ''}
+${lead.connectionDegree ? `Connection degree (outreach logistics only): ${lead.connectionDegree}` : ''}
 Status: ${lead.status}
 Source: ${lead.source}
 ${lead.profileSummary ? `Clean profile summary: ${lead.profileSummary}` : ''}
@@ -1357,6 +1410,7 @@ ${lead.education?.length ? `Education records:\n${JSON.stringify(lead.education)
 ${lead.experience?.length ? `Experience records:\n${JSON.stringify(lead.experience).substring(0, 12000)}` : ''}
 ${lead.skills?.length ? `Verified skills: ${lead.skills.join(', ').substring(0, 4000)}` : ''}
 ${lead.notes ? `Profile and conversation evidence:\n${lead.notes.substring(0, 18000)}` : 'No profile or conversation evidence supplied.'}
+${lead.sourceContext ? `SOURCE-SEARCH CONTEXT — DO NOT TREAT AS CANDIDATE EVIDENCE:\n${JSON.stringify(lead.sourceContext).substring(0, 4000)}` : ''}
 
 Return ONLY valid JSON:
 {
@@ -1364,6 +1418,9 @@ Return ONLY valid JSON:
   "rawScore": 0,
   "classification": "PRIORITY A1 | PRIORITY A2 | QUALIFIED B | BORDERLINE | NURTURE | REJECT OR LOW PRIORITY",
   "confidenceLevel": "high | medium | low",
+  "profileEvidenceQuality": "strong | usable | thin | insufficient",
+  "marketEntryTiming": "now | within_6_months | six_to_18_months | future | unknown",
+  "candidateNeedEvidence": "explicit | probable | none",
   "scoreBreakdown": {
     "careerStage": 0,
     "jobSearchNeed": 0,
@@ -1415,6 +1472,21 @@ questions that resolve the highest-impact missing information.`;
     0
   );
   assessment.overallScore = Math.round((assessment.rawScore * 100) / 105);
+  assessment.profileEvidenceQuality = (
+    ['strong', 'usable', 'thin', 'insufficient'] as const
+  ).includes(assessment.profileEvidenceQuality)
+    ? assessment.profileEvidenceQuality
+    : 'insufficient';
+  assessment.marketEntryTiming = (
+    ['now', 'within_6_months', 'six_to_18_months', 'future', 'unknown'] as const
+  ).includes(assessment.marketEntryTiming)
+    ? assessment.marketEntryTiming
+    : 'unknown';
+  assessment.candidateNeedEvidence = (['explicit', 'probable', 'none'] as const).includes(
+    assessment.candidateNeedEvidence
+  )
+    ? assessment.candidateNeedEvidence
+    : 'none';
   assessment.classification = assessment.hardDisqualifier
     ? 'REJECT OR LOW PRIORITY'
     : assessment.overallScore >= 90

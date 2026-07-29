@@ -164,6 +164,15 @@ function profileString(profile: Record<string, unknown>, key: string): string | 
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+function profileBoolean(profile: Record<string, unknown>, key: string): boolean | null {
+  const value = profile[key];
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') return null;
+  if (/^(yes|true|1)$/i.test(value.trim())) return true;
+  if (/^(no|false|0)$/i.test(value.trim())) return false;
+  return null;
+}
+
 const PROFILE_NORMALIZATION_VERSION = 1;
 
 function hasLeadProfileEvidence(lead: {
@@ -174,6 +183,8 @@ function hasLeadProfileEvidence(lead: {
   experience?: string | null;
   education?: string | null;
   skills?: string | null;
+  currentRole?: string | null;
+  currentRoleDates?: string | null;
   notes?: string | null;
 }): boolean {
   return Boolean(
@@ -183,6 +194,8 @@ function hasLeadProfileEvidence(lead: {
     lead.experience?.trim() ||
     lead.education?.trim() ||
     lead.skills?.trim() ||
+    lead.currentRole?.trim() ||
+    lead.currentRoleDates?.trim() ||
     (lead.source === 'linkedin' && lead.notes?.trim())
   );
 }
@@ -231,6 +244,15 @@ function structuredLeadQualificationInput(
       ? (lead.experienceEntries as ai.NormalizedExperienceEntry[])
       : null,
     skills: Array.isArray(lead.skillNames) ? (lead.skillNames as string[]) : null,
+    currentRole: lead.currentRole,
+    currentRoleDates: lead.currentRoleDates,
+    openToWork: lead.openToWork,
+    yearsExperience: lead.yearsExperience,
+    connectionDegree: lead.connectionDegree,
+    sourceContext:
+      lead.prospectSourceContext && typeof lead.prospectSourceContext === 'object'
+        ? (lead.prospectSourceContext as Record<string, unknown>)
+        : null,
     notes: [
       lead.notes,
       !lead.profileSummary && lead.headline ? `Headline: ${lead.headline}` : null,
@@ -272,6 +294,10 @@ async function normalizeAndSaveLeadProfile(
       experience: lead.experience,
       education: lead.education,
       skills: lead.skills,
+      currentRole: lead.currentRole,
+      currentRoleDates: lead.currentRoleDates,
+      openToWork: lead.openToWork,
+      yearsExperience: lead.yearsExperience,
       legacyNotes: lead.source === 'linkedin' ? lead.notes : null,
     },
     aiEnv
@@ -343,8 +369,13 @@ async function reviewProspect(
   const experience = profileString(profile ?? {}, 'experience');
   const education = profileString(profile ?? {}, 'education');
   const skills = profileString(profile ?? {}, 'skills');
+  const currentRole = profileString(profile ?? {}, 'currentRole');
+  const currentRoleDates = profileString(profile ?? {}, 'currentRoleDates');
+  const openToWork = profileBoolean(profile ?? {}, 'openToWork');
+  const yearsExperience = profileString(profile ?? {}, 'yearsExperience');
+  const connectionDegree = profileString(profile ?? {}, 'connectionDegree');
   const profileEvidence = Boolean(
-    headline || location || about || experience || education || skills || lead.notes
+    headline || location || about || experience || education || skills || currentRole || lead.notes
   );
   const linkedinUrl =
     canonicalizeLinkedinUrl(profileString(profile ?? {}, 'profileUrl')) ?? lead.linkedinUrl;
@@ -401,6 +432,11 @@ async function reviewProspect(
       experience: experience ?? lead.experience,
       education: education ?? lead.education,
       skills: skills ?? lead.skills,
+      currentRole: currentRole ?? lead.currentRole,
+      currentRoleDates: currentRoleDates ?? lead.currentRoleDates,
+      openToWork: openToWork ?? lead.openToWork,
+      yearsExperience: yearsExperience ?? lead.yearsExperience,
+      connectionDegree: connectionDegree ?? lead.connectionDegree,
       companyName: companyName ?? lead.companyName,
       reviewState: accepted ? 'accepted' : 'rejected',
       reviewDisposition: disposition,
@@ -495,6 +531,12 @@ async function processProspectImport(
         experience: string | null;
         education: string | null;
         skills: string | null;
+        currentRole: string | null;
+        currentRoleDates: string | null;
+        openToWork: boolean | null;
+        yearsExperience: string | null;
+        connectionDegree: string | null;
+        prospectSourceContext: unknown;
       }
     >();
     for (const keyChunk of chunksOf(
@@ -512,6 +554,12 @@ async function processProspectImport(
           experience: schema.leads.experience,
           education: schema.leads.education,
           skills: schema.leads.skills,
+          currentRole: schema.leads.currentRole,
+          currentRoleDates: schema.leads.currentRoleDates,
+          openToWork: schema.leads.openToWork,
+          yearsExperience: schema.leads.yearsExperience,
+          connectionDegree: schema.leads.connectionDegree,
+          prospectSourceContext: schema.leads.prospectSourceContext,
         })
         .from(schema.leads)
         .where(
@@ -569,6 +617,12 @@ async function processProspectImport(
           experience: candidate.experience,
           education: candidate.education,
           skills: candidate.skills,
+          currentRole: candidate.currentRole,
+          currentRoleDates: candidate.currentRoleDates,
+          openToWork: candidate.openToWork,
+          yearsExperience: candidate.yearsExperience,
+          connectionDegree: candidate.connectionDegree,
+          prospectSourceContext: candidate.sourceContext,
           linkedinUrl: candidate.linkedinUrl,
           linkedinProfileKey: candidate.linkedinProfileKey,
           source: 'linkedin',
@@ -605,6 +659,12 @@ async function processProspectImport(
           experience: schema.leads.experience,
           education: schema.leads.education,
           skills: schema.leads.skills,
+          currentRole: schema.leads.currentRole,
+          currentRoleDates: schema.leads.currentRoleDates,
+          openToWork: schema.leads.openToWork,
+          yearsExperience: schema.leads.yearsExperience,
+          connectionDegree: schema.leads.connectionDegree,
+          prospectSourceContext: schema.leads.prospectSourceContext,
         });
       created.push(...rows);
     }
@@ -631,6 +691,12 @@ async function processProspectImport(
           experience: schema.leads.experience,
           education: schema.leads.education,
           skills: schema.leads.skills,
+          currentRole: schema.leads.currentRole,
+          currentRoleDates: schema.leads.currentRoleDates,
+          openToWork: schema.leads.openToWork,
+          yearsExperience: schema.leads.yearsExperience,
+          connectionDegree: schema.leads.connectionDegree,
+          prospectSourceContext: schema.leads.prospectSourceContext,
         })
         .from(schema.leads)
         .where(
@@ -661,6 +727,12 @@ async function processProspectImport(
           experience: existing.experience || candidate.experience,
           education: existing.education || candidate.education,
           skills: existing.skills || candidate.skills,
+          currentRole: existing.currentRole || candidate.currentRole,
+          currentRoleDates: existing.currentRoleDates || candidate.currentRoleDates,
+          openToWork: existing.openToWork ?? candidate.openToWork,
+          yearsExperience: existing.yearsExperience || candidate.yearsExperience,
+          connectionDegree: existing.connectionDegree || candidate.connectionDegree,
+          prospectSourceContext: existing.prospectSourceContext ?? candidate.sourceContext,
           profileCaptureStatus: 'partial',
           profileNormalizationStatus: 'pending',
           updatedAt: new Date(),
@@ -1653,6 +1725,9 @@ function leadQualificationValues(leadId: string, assessment: ai.LeadQualificatio
     rawScore: assessment.rawScore,
     classification: assessment.classification,
     confidenceLevel: assessment.confidenceLevel,
+    profileEvidenceQuality: assessment.profileEvidenceQuality,
+    marketEntryTiming: assessment.marketEntryTiming,
+    candidateNeedEvidence: assessment.candidateNeedEvidence,
     scoreBreakdown: assessment.scoreBreakdown,
     verifiedPositiveSignals: assessment.verifiedPositiveSignals,
     risksOrMissingInformation: assessment.risksOrMissingInformation,
@@ -2221,6 +2296,12 @@ app.post('/api/contacts', async (c) => {
     experience: body.experience ?? null,
     education: body.education ?? null,
     skills: body.skills ?? null,
+    currentRole: body.currentRole ?? null,
+    currentRoleDates: body.currentRoleDates ?? null,
+    openToWork: typeof body.openToWork === 'boolean' ? body.openToWork : null,
+    yearsExperience: body.yearsExperience ?? null,
+    connectionDegree: body.connectionDegree ?? null,
+    prospectSourceContext: body.prospectSourceContext ?? null,
     title: body.title ?? null,
     companyId: body.companyId ?? null,
     ownerId: caller.userId,
@@ -3387,6 +3468,11 @@ app.put('/api/leads/:id', async (c) => {
   if (body.experience !== undefined) update.experience = body.experience;
   if (body.education !== undefined) update.education = body.education;
   if (body.skills !== undefined) update.skills = body.skills;
+  if (body.currentRole !== undefined) update.currentRole = body.currentRole;
+  if (body.currentRoleDates !== undefined) update.currentRoleDates = body.currentRoleDates;
+  if (body.openToWork !== undefined) update.openToWork = body.openToWork;
+  if (body.yearsExperience !== undefined) update.yearsExperience = body.yearsExperience;
+  if (body.connectionDegree !== undefined) update.connectionDegree = body.connectionDegree;
   if (body.companyName !== undefined) update.companyName = body.companyName;
   if (body.companyDomain !== undefined) update.companyDomain = body.companyDomain;
   if (body.linkedinUrl !== undefined) update.linkedinUrl = body.linkedinUrl;
@@ -3460,9 +3546,18 @@ app.put('/api/leads/:id', async (c) => {
     .returning();
   if (
     result &&
-    ['headline', 'location', 'about', 'experience', 'education', 'skills'].some(
-      (field) => body[field] !== undefined
-    ) &&
+    [
+      'headline',
+      'location',
+      'about',
+      'experience',
+      'education',
+      'skills',
+      'currentRole',
+      'currentRoleDates',
+      'openToWork',
+      'yearsExperience',
+    ].some((field) => body[field] !== undefined) &&
     hasLeadProfileEvidence(result)
   ) {
     await enqueueLeadProfileCleanup(db, result.id);

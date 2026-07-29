@@ -513,6 +513,17 @@ export default function LeadDetail() {
                       ? 'Generated from the lead details saved in CRM. Edit the note before copying if needed.'
                       : 'Scored automatically from the lead details saved in CRM. Generate a connection note when you are ready to reach out.'}
                   </p>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    <span className="rounded-full border border-violet-200 bg-white px-2 py-0.5 text-xs text-violet-700">
+                      Evidence: {aiAssessment.profileEvidenceQuality.replace(/_/g, ' ')}
+                    </span>
+                    <span className="rounded-full border border-violet-200 bg-white px-2 py-0.5 text-xs text-violet-700">
+                      Timing: {aiAssessment.marketEntryTiming.replace(/_/g, ' ')}
+                    </span>
+                    <span className="rounded-full border border-violet-200 bg-white px-2 py-0.5 text-xs text-violet-700">
+                      Need: {aiAssessment.candidateNeedEvidence}
+                    </span>
+                  </div>
                 </div>
                 {hasConnectionNote && (
                   <div className="flex flex-wrap items-center gap-2">

@@ -99,6 +99,12 @@ export type ProspectCsvRow = {
   experience: string | null;
   education: string | null;
   skills: string | null;
+  currentRole: string | null;
+  currentRoleDates: string | null;
+  openToWork: boolean | null;
+  yearsExperience: string | null;
+  connectionDegree: string | null;
+  sourceContext: Record<string, string | null>;
   notes: string | null;
   generatedName: boolean;
 };
@@ -148,6 +154,62 @@ export function normalizeProspectCsvRecord(
     const text = value == null ? '' : String(value).trim();
     return text || null;
   };
+  const joinEvidence = (values: unknown[]): string | null => {
+    const parts = values.map(nullable).filter((value): value is string => Boolean(value));
+    return parts.length > 0 ? parts.join(' | ') : null;
+  };
+  const cleanRecruiterNoise = (value: unknown): string | null => {
+    const text = nullable(value);
+    return text && !/^(enhanced by resume|profile experience|--)$/i.test(text) ? text : null;
+  };
+  let headline = nullable(firstValue(record, ['headline', 'title', 'currenttitle', 'jobtitle']));
+  let location = nullable(firstValue(record, ['location', 'city', 'region', 'country']));
+  if (
+    headline &&
+    !location &&
+    /\b(?:united states|canada|california|new york|texas|florida)\b.*[·|]/i.test(headline)
+  ) {
+    location = headline.split(/[·|]/)[0]?.trim() || null;
+    headline = null;
+  }
+  if (
+    !headline &&
+    location &&
+    /[|@]|\b(?:engineer|scientist|student|analyst|manager)\b/i.test(location)
+  ) {
+    headline = location;
+    location = null;
+  }
+  const currentRole = cleanRecruiterNoise(
+    firstValue(record, ['currentrole', 'currenttitle', 'role'])
+  );
+  const currentCompany = nullable(
+    firstValue(record, ['currentcompany', 'company', 'companyname', 'organization'])
+  );
+  const currentRoleDates = nullable(firstValue(record, ['currentdates', 'roledates']));
+  const pastRoles = nullable(
+    firstValue(record, ['pastroles', 'experience', 'workexperience', 'employment', 'workhistory'])
+  );
+  const experience = joinEvidence([
+    currentRole
+      ? `${currentRole}${currentCompany ? ` at ${currentCompany}` : ''}${currentRoleDates ? ` · ${currentRoleDates}` : ''}`
+      : null,
+    pastRoles,
+  ]);
+  const education = joinEvidence([
+    firstValue(record, ['education', 'schools', 'school', 'academicbackground']),
+    firstValue(record, ['degree']),
+    firstValue(record, ['edudates', 'educationdates']),
+  ]);
+  const openToWorkText = nullable(firstValue(record, ['opentowork']));
+  const openToWork =
+    openToWorkText === null
+      ? null
+      : /^(yes|true|1|open|actively looking)$/i.test(openToWorkText)
+        ? true
+        : /^(no|false|0)$/i.test(openToWorkText)
+          ? false
+          : null;
 
   return {
     row: {
@@ -158,17 +220,25 @@ export function normalizeProspectCsvRecord(
       lastName: name.lastName,
       email: nullable(firstValue(record, ['email', 'emailaddress'])),
       phone: nullable(firstValue(record, ['phone', 'phonenumber'])),
-      companyName: nullable(firstValue(record, ['company', 'companyname', 'organization'])),
-      headline: nullable(firstValue(record, ['headline', 'title', 'currenttitle', 'jobtitle'])),
-      location: nullable(firstValue(record, ['location', 'city', 'region', 'country'])),
+      companyName: currentCompany,
+      headline,
+      location,
       about: nullable(firstValue(record, ['about', 'summary', 'bio', 'profileabout'])),
-      experience: nullable(
-        firstValue(record, ['experience', 'workexperience', 'employment', 'workhistory'])
-      ),
-      education: nullable(
-        firstValue(record, ['education', 'schools', 'school', 'academicbackground'])
-      ),
+      experience,
+      education,
       skills: nullable(firstValue(record, ['skills', 'skillset', 'topskills'])),
+      currentRole,
+      currentRoleDates,
+      openToWork,
+      yearsExperience: nullable(firstValue(record, ['yrsexp', 'yearsexperience'])),
+      connectionDegree: nullable(firstValue(record, ['connection', 'connectiondegree'])),
+      sourceContext: {
+        searchName: nullable(firstValue(record, ['searchname'])),
+        keywords: nullable(firstValue(record, ['keywords'])),
+        filterLocations: nullable(firstValue(record, ['filterlocations'])),
+        filterTitles: nullable(firstValue(record, ['filtertitles'])),
+        openToWorkFilter: nullable(firstValue(record, ['opentoworkfilter'])),
+      },
       notes: nullable(firstValue(record, ['notes', 'remarks', 'note'])),
       generatedName: name.generated,
     },

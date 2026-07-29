@@ -17,6 +17,15 @@ describe('canonicalizeLinkedinUrl', () => {
     );
   });
 
+  it('repairs and identifies Recruiter profile URLs without fetching them', () => {
+    const malformed =
+      'https://www.linkedin.comhttps://www.linkedin.com/talent/profile/AEMAAExample';
+    expect(canonicalizeLinkedinUrl(malformed)).toBe(
+      'https://www.linkedin.com/talent/profile/aemaaexample'
+    );
+    expect(linkedinProfileKey(malformed)).toBe('talent:aemaaexample');
+  });
+
   it('folds mobile and bare linkedin.com hosts to www', () => {
     expect(canonicalizeLinkedinUrl('https://m.linkedin.com/in/jane-doe')).toBe(
       'https://www.linkedin.com/in/jane-doe'
