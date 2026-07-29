@@ -24,7 +24,6 @@ export interface CeoReportingSnapshot {
     lastLinkedinMessageAt: string | null;
   };
   leadsByStatus: ReportingSeriesItem[];
-  leadsByOutreachStatus: ReportingSeriesItem[];
   leadsBySource: ReportingSeriesItem[];
   leadClassifications: ReportingSeriesItem[];
   opportunitiesByStage: ReportingSeriesItem[];

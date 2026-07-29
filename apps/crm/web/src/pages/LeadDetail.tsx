@@ -3,7 +3,6 @@ import {
   useLead,
   useDeleteEntity,
   useUpdateEntity,
-  useImportBatches,
   useLeadAiAssessment,
   useGenerateLeadAiAssessment,
   useUpdateLeadConnectionNote,
@@ -21,10 +20,7 @@ import {
   Trash2,
   Linkedin,
   Target,
-  BarChart3,
-  Hash,
   Tag,
-  Layers,
   AlertTriangle,
   ChevronRight,
   UserCheck,
@@ -47,7 +43,14 @@ import ActivityForm from '../components/ActivityForm.js';
 import LeadForm from '../components/forms/LeadForm.js';
 import ChannelPanel from '../components/ChannelPanel.js';
 import Attachments from '../components/Attachments.js';
-import type { ActivityType } from '../api.js';
+import type { ActivityType, LeadJourneyStage } from '../api.js';
+import {
+  ACTIVE_LEAD_JOURNEY,
+  LEAD_JOURNEY_LABELS,
+  LEAD_JOURNEY_STAGES,
+  journeyBadgeClass,
+  journeyLabel,
+} from '../lib/leadJourney.js';
 
 const STATUS_PIPELINE: {
   key: string;
@@ -56,37 +59,20 @@ const STATUS_PIPELINE: {
   bg: string;
   icon: React.ComponentType<{ size?: number; className?: string }>;
 }[] = [
-  { key: 'new', label: 'New', color: 'text-blue-700', bg: 'bg-blue-100', icon: Sparkles },
-  {
-    key: 'contacted',
-    label: 'Contacted',
-    color: 'text-amber-700',
-    bg: 'bg-amber-100',
-    icon: MessageSquare,
-  },
-  {
-    key: 'qualified',
-    label: 'Qualified',
-    color: 'text-green-700',
-    bg: 'bg-green-100',
-    icon: UserCheck,
-  },
-  {
-    key: 'converted',
-    label: 'Converted',
-    color: 'text-purple-700',
-    bg: 'bg-purple-100',
-    icon: CalendarCheck,
-  },
-];
-
-const OUTREACH_PIPELINE: { key: string; label: string }[] = [
-  { key: 'not_approached', label: 'Not Approached' },
-  { key: 'connection_request_sent', label: 'Connection Sent' },
-  { key: 'approached', label: 'Approached' },
-  { key: 'connected', label: 'Connected' },
-  { key: 'replied', label: 'Replied' },
-  { key: 'booked_call', label: 'Call Booked' },
+  ...ACTIVE_LEAD_JOURNEY.map((key) => ({
+    key,
+    label: LEAD_JOURNEY_LABELS[key],
+    color: key === 'converted' ? 'text-emerald-700' : 'text-blue-700',
+    bg: key === 'converted' ? 'bg-emerald-100' : 'bg-blue-100',
+    icon:
+      key === 'new' || key === 'ready_to_reach_out'
+        ? Sparkles
+        : key === 'qualified'
+          ? UserCheck
+          : key === 'meeting_booked' || key === 'converted'
+            ? CalendarCheck
+            : MessageSquare,
+  })),
 ];
 
 function StatusPipeline({ status }: { status: string }) {
@@ -125,48 +111,9 @@ function StatusPipeline({ status }: { status: string }) {
   );
 }
 
-function OutreachPipeline({ status }: { status: string }) {
-  const currentIndex = OUTREACH_PIPELINE.findIndex((s) => s.key === status);
-  if (currentIndex < 0) return null;
-  return (
-    <div className="flex items-center gap-0.5">
-      {OUTREACH_PIPELINE.map((s, i) => (
-        <div
-          key={s.key}
-          className={cn(
-            'h-1.5 rounded-full transition-all',
-            i <= currentIndex ? 'bg-blue-500 w-6' : 'bg-slate-200 w-4'
-          )}
-          title={s.label}
-        />
-      ))}
-    </div>
-  );
-}
-
-function getNextStatus(current: string): { next: string | null; label: string; color: string } {
-  switch (current) {
-    case 'new':
-      return {
-        next: 'contacted',
-        label: 'Mark as Contacted',
-        color: 'bg-amber-600 hover:bg-amber-700',
-      };
-    case 'contacted':
-      return {
-        next: 'qualified',
-        label: 'Mark as Qualified',
-        color: 'bg-green-600 hover:bg-green-700',
-      };
-    case 'qualified':
-      return {
-        next: 'converted',
-        label: 'Mark as Converted',
-        color: 'bg-purple-600 hover:bg-purple-700',
-      };
-    default:
-      return { next: null, label: '', color: '' };
-  }
+function getNextStatus(current: LeadJourneyStage): LeadJourneyStage | null {
+  const currentIndex = ACTIVE_LEAD_JOURNEY.indexOf(current);
+  return currentIndex >= 0 ? (ACTIVE_LEAD_JOURNEY[currentIndex + 1] ?? null) : null;
 }
 
 export default function LeadDetail() {
@@ -179,7 +126,6 @@ export default function LeadDetail() {
   const updateOutreachStage = useLogOutreachAction(id ?? '');
   const deleteMutation = useDeleteEntity();
   const updateLead = useUpdateEntity('leads');
-  const { data: batches } = useImportBatches();
   const [editOpen, setEditOpen] = useState(false);
   const [activityType, setActivityType] = useState<ActivityType | null>(null);
   const [statusDropdownOpen, setStatusDropdownOpen] = useState(false);
@@ -220,36 +166,23 @@ export default function LeadDetail() {
     );
 
   const lead = data.lead;
-  const nextStatus = getNextStatus(lead.status);
+  const nextStatus = getNextStatus(lead.journeyStage);
   const isPlaceholderEmail = (lead.email ?? '').includes('@placeholder.skarion');
-  const batch = lead.batchId ? batches?.find((b) => b.id === lead.batchId) : undefined;
   const connectionNoteCharacterCount = [...connectionNoteDraft].length;
   const connectionNoteDirty = aiAssessment
     ? connectionNoteDraft.trim() !== aiAssessment.connectionNote
     : false;
   const connectionNoteBusy = updateConnectionNote.isPending || updateOutreachStage.isPending;
 
-  const handleStatusChange = (newStatus: string) => {
+  const handleStatusChange = (newStatus: LeadJourneyStage) => {
     updateLead.mutate(
-      { id: lead.id, data: { status: newStatus } },
+      { id: lead.id, data: { journeyStage: newStatus } },
       {
         onSuccess: () => {
-          showToast(`Status updated to ${newStatus}`, 'success');
+          showToast(`Journey updated to ${journeyLabel(newStatus)}`, 'success');
           setStatusDropdownOpen(false);
         },
         onError: () => showToast('Failed to update status', 'error'),
-      }
-    );
-  };
-
-  const handleOutreachChange = (newStatus: string) => {
-    updateLead.mutate(
-      { id: lead.id, data: { outreachStatus: newStatus } },
-      {
-        onSuccess: () => {
-          showToast(`Outreach updated to ${newStatus.replace(/_/g, ' ')}`, 'success');
-        },
-        onError: () => showToast('Failed to update outreach', 'error'),
       }
     );
   };
@@ -352,7 +285,7 @@ export default function LeadDetail() {
       <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
         {/* Top bar with status pipeline */}
         <div className="px-6 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-          <StatusPipeline status={lead.status} />
+          <StatusPipeline status={lead.journeyStage} />
           <div className="flex items-center gap-2">
             <button
               onClick={() => setEditOpen(true)}
@@ -407,14 +340,6 @@ export default function LeadDetail() {
                       {lead.leadNumber}
                     </span>
                   )}
-                  {batch && (
-                    <span
-                      className="px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded text-xs font-medium"
-                      title="Import set"
-                    >
-                      Set: {batch.name}
-                    </span>
-                  )}
                 </div>
                 <div className="text-slate-500 text-sm">
                   {isPlaceholderEmail ? 'No email on file' : lead.email}
@@ -424,39 +349,11 @@ export default function LeadDetail() {
             <div className="flex items-center gap-2">
               <span
                 className={cn(
-                  'px-3 py-1 rounded-full text-sm font-medium capitalize',
-                  lead.status === 'new'
-                    ? 'bg-blue-100 text-blue-700'
-                    : lead.status === 'contacted'
-                      ? 'bg-amber-100 text-amber-700'
-                      : lead.status === 'qualified'
-                        ? 'bg-green-100 text-green-700'
-                        : lead.status === 'converted'
-                          ? 'bg-purple-100 text-purple-700'
-                          : 'bg-slate-100 text-slate-600'
+                  'px-3 py-1 rounded-full text-sm font-medium',
+                  journeyBadgeClass(lead.journeyStage)
                 )}
               >
-                {lead.status}
-              </span>
-              <span
-                className={cn(
-                  'px-3 py-1 rounded-full text-sm font-medium capitalize',
-                  lead.outreachStatus === 'not_approached'
-                    ? 'bg-slate-100 text-slate-600'
-                    : lead.outreachStatus === 'connection_request_sent'
-                      ? 'bg-blue-100 text-blue-700'
-                      : lead.outreachStatus === 'approached'
-                        ? 'bg-amber-100 text-amber-700'
-                        : lead.outreachStatus === 'connected'
-                          ? 'bg-blue-100 text-blue-700'
-                          : lead.outreachStatus === 'replied'
-                            ? 'bg-green-100 text-green-700'
-                            : lead.outreachStatus === 'booked_call'
-                              ? 'bg-purple-100 text-purple-700'
-                              : 'bg-slate-100 text-slate-600'
-                )}
-              >
-                {lead.outreachStatus?.replace(/_/g, ' ') ?? 'not approached'}
+                {journeyLabel(lead.journeyStage)}
               </span>
             </div>
           </div>
@@ -464,21 +361,18 @@ export default function LeadDetail() {
           {/* Quick Action Buttons */}
           <div className="flex flex-wrap items-center gap-2 mb-6">
             {/* Primary: Next Status */}
-            {nextStatus.next && (
+            {nextStatus && (
               <button
-                onClick={() => handleStatusChange(nextStatus.next!)}
-                className={cn(
-                  'flex items-center gap-1.5 px-3 py-2 rounded-md text-sm font-medium text-white transition-colors',
-                  nextStatus.color
-                )}
+                onClick={() => handleStatusChange(nextStatus)}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-md text-sm font-medium text-white transition-colors bg-blue-600 hover:bg-blue-700"
               >
                 <ArrowRight size={16} />
-                {nextStatus.label}
+                Move to {journeyLabel(nextStatus)}
               </button>
             )}
 
             {/* Disqualify (available from any non-disqualified status) */}
-            {lead.status !== 'disqualified' && (
+            {lead.journeyStage !== 'disqualified' && (
               <button
                 onClick={() => {
                   if (
@@ -497,7 +391,7 @@ export default function LeadDetail() {
             )}
 
             {/* Re-qualify (if disqualified) */}
-            {lead.status === 'disqualified' && (
+            {lead.journeyStage === 'disqualified' && (
               <button
                 onClick={() => handleStatusChange('new')}
                 className="flex items-center gap-1.5 px-3 py-2 rounded-md text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 transition-colors"
@@ -508,7 +402,7 @@ export default function LeadDetail() {
             )}
 
             {/* Outreach quick actions */}
-            {lead.outreachStatus === 'not_approached' && lead.linkedinUrl && (
+            {['new', 'ready_to_reach_out'].includes(lead.journeyStage) && lead.linkedinUrl && (
               <a
                 href={lead.linkedinUrl}
                 target="_blank"
@@ -538,9 +432,9 @@ export default function LeadDetail() {
                   : 'Generate Connection Note'}
             </button>
 
-            {lead.outreachStatus === 'connected' && (
+            {lead.journeyStage === 'connected' && (
               <button
-                onClick={() => handleOutreachChange('replied')}
+                onClick={() => handleStatusChange('engaged')}
                 className="flex items-center gap-1.5 px-3 py-2 rounded-md text-sm font-medium border border-green-200 text-green-600 hover:bg-green-50 transition-colors"
               >
                 <MessageSquare size={16} />
@@ -548,9 +442,9 @@ export default function LeadDetail() {
               </button>
             )}
 
-            {lead.outreachStatus === 'replied' && (
+            {lead.journeyStage === 'engaged' && (
               <button
-                onClick={() => handleOutreachChange('booked_call')}
+                onClick={() => handleStatusChange('meeting_booked')}
                 className="flex items-center gap-1.5 px-3 py-2 rounded-md text-sm font-medium border border-purple-200 text-purple-600 hover:bg-purple-50 transition-colors"
               >
                 <Video size={16} />
@@ -564,7 +458,7 @@ export default function LeadDetail() {
                 onClick={() => setStatusDropdownOpen(!statusDropdownOpen)}
                 className="flex items-center gap-1.5 px-3 py-2 rounded-md text-sm font-medium border border-slate-200 text-slate-600 hover:bg-slate-50 transition-colors"
               >
-                Set Status...
+                Set journey...
               </button>
               {statusDropdownOpen && (
                 <>
@@ -574,46 +468,19 @@ export default function LeadDetail() {
                   />
                   <div className="absolute right-0 mt-1 w-48 bg-white border border-slate-200 rounded-lg shadow-lg z-50 py-1">
                     <div className="px-3 py-1.5 text-xs font-medium text-slate-400 uppercase tracking-wider">
-                      Lead Status
+                      Lead journey
                     </div>
-                    {['new', 'contacted', 'qualified', 'converted', 'disqualified'].map((s) => (
+                    {LEAD_JOURNEY_STAGES.map((s) => (
                       <button
                         key={s}
                         onClick={() => handleStatusChange(s)}
                         className={cn(
                           'w-full text-left px-3 py-2 text-sm hover:bg-slate-50 capitalize',
-                          lead.status === s && 'font-medium text-blue-600 bg-blue-50'
+                          lead.journeyStage === s && 'font-medium text-blue-600 bg-blue-50'
                         )}
                       >
-                        {s}
-                        {lead.status === s && (
-                          <span className="ml-2 text-xs text-blue-400">(current)</span>
-                        )}
-                      </button>
-                    ))}
-                    <div className="border-t border-slate-100 my-1" />
-                    <div className="px-3 py-1.5 text-xs font-medium text-slate-400 uppercase tracking-wider">
-                      Outreach
-                    </div>
-                    {[
-                      'not_approached',
-                      'approached',
-                      'connected',
-                      'replied',
-                      'booked_call',
-                      'not_interested',
-                      'bad_fit',
-                    ].map((s) => (
-                      <button
-                        key={s}
-                        onClick={() => handleOutreachChange(s)}
-                        className={cn(
-                          'w-full text-left px-3 py-2 text-sm hover:bg-slate-50 capitalize',
-                          lead.outreachStatus === s && 'font-medium text-blue-600 bg-blue-50'
-                        )}
-                      >
-                        {s.replace(/_/g, ' ')}
-                        {lead.outreachStatus === s && (
+                        {journeyLabel(s)}
+                        {lead.journeyStage === s && (
                           <span className="ml-2 text-xs text-blue-400">(current)</span>
                         )}
                       </button>
@@ -714,24 +581,6 @@ export default function LeadDetail() {
             </div>
           )}
 
-          {/* Outreach Progress */}
-          {lead.outreachStatus &&
-            lead.outreachStatus !== 'not_interested' &&
-            lead.outreachStatus !== 'bad_fit' && (
-              <div className="mb-4">
-                <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs font-medium text-slate-500 uppercase tracking-wider">
-                    Outreach Progress
-                  </span>
-                  <span className="text-xs text-slate-400">
-                    {OUTREACH_PIPELINE.find((s) => s.key === lead.outreachStatus)?.label ??
-                      lead.outreachStatus.replace(/_/g, ' ')}
-                  </span>
-                </div>
-                <OutreachPipeline status={lead.outreachStatus} />
-              </div>
-            )}
-
           {/* Contact Info Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-3">
             <div className="flex items-start gap-2.5">
@@ -800,18 +649,6 @@ export default function LeadDetail() {
               </div>
             </div>
 
-            <div className="flex items-start gap-2.5">
-              <div className="w-8 h-8 rounded-md bg-slate-100 flex items-center justify-center shrink-0">
-                <BarChart3 size={14} className="text-slate-500" />
-              </div>
-              <div>
-                <div className="text-xs font-medium text-slate-400 uppercase tracking-wider">
-                  Connection
-                </div>
-                <div className="text-sm text-slate-700">{lead.connectionStatus ?? 'Unknown'}</div>
-              </div>
-            </div>
-
             {lead.linkedinUrl && (
               <div className="flex items-start gap-2.5">
                 <div className="w-8 h-8 rounded-md bg-blue-100 flex items-center justify-center shrink-0">
@@ -829,34 +666,6 @@ export default function LeadDetail() {
                   >
                     View Profile
                   </a>
-                </div>
-              </div>
-            )}
-
-            {lead.sourceSheet && (
-              <div className="flex items-start gap-2.5">
-                <div className="w-8 h-8 rounded-md bg-slate-100 flex items-center justify-center shrink-0">
-                  <Layers size={14} className="text-slate-500" />
-                </div>
-                <div>
-                  <div className="text-xs font-medium text-slate-400 uppercase tracking-wider">
-                    Source Sheet
-                  </div>
-                  <div className="text-sm text-slate-700">{lead.sourceSheet}</div>
-                </div>
-              </div>
-            )}
-
-            {lead.originalRowNumber !== null && (
-              <div className="flex items-start gap-2.5">
-                <div className="w-8 h-8 rounded-md bg-slate-100 flex items-center justify-center shrink-0">
-                  <Hash size={14} className="text-slate-500" />
-                </div>
-                <div>
-                  <div className="text-xs font-medium text-slate-400 uppercase tracking-wider">
-                    Row
-                  </div>
-                  <div className="text-sm text-slate-700">#{lead.originalRowNumber}</div>
                 </div>
               </div>
             )}

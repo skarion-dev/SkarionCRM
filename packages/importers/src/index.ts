@@ -42,6 +42,7 @@ export interface LeadImportRow {
   connectionStatus?: string;
   sourceSheet?: string;
   originalRowNumber?: number;
+  batchNumber?: string;
   tags?: string[];
   emailIsPlaceholder?: boolean;
 }
@@ -269,6 +270,15 @@ export function parseLeadsCsv(csvText: string): ImportResult<LeadImportRow> {
   const notesAliases = ['notes', 'comments', 'personalizednote', 'note', 'remarks'];
   const connectionAliases = ['connection', 'connectionstatus', 'connected', 'approached'];
   const tagsAliases = ['tags', 'tag', 'labels'];
+  const batchNumberAliases = [
+    'batch',
+    'batchnumber',
+    'batch number',
+    'batch_number',
+    'set',
+    'setnumber',
+    'set number',
+  ];
 
   rows.forEach((row, idx) => {
     const rowNum = idx + 2;
@@ -360,6 +370,7 @@ export function parseLeadsCsv(csvText: string): ImportResult<LeadImportRow> {
           .map((t) => t.trim())
           .filter(Boolean)
       : undefined;
+    const batchNumber = findColumn(row, batchNumberAliases)?.trim() || undefined;
 
     // Determine outreach status from connection status or status
     let outreachStatus = 'not_approached';
@@ -447,6 +458,7 @@ export function parseLeadsCsv(csvText: string): ImportResult<LeadImportRow> {
       connectionStatus: connectionStatus || undefined,
       sourceSheet: undefined,
       originalRowNumber: rowNum,
+      batchNumber,
       tags,
     });
   });

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useAuthStore, type AuthStore } from '../stores/auth.js';
 import {
   useIntegrationStatus,
@@ -12,6 +12,8 @@ import {
   useExtensionApiKeys,
   useCreateExtensionApiKey,
   useRevokeExtensionApiKey,
+  useTags,
+  useCreateTag,
   type AiRuntimeSettings,
   type AiUsagePeriod,
   type AiUsageResponse,
@@ -66,25 +68,6 @@ const PIPELINE_STAGES = [
   { name: 'Negotiation', description: 'Terms and final details', probability: 75 },
   { name: 'Closed Won', description: 'Deal signed and won', probability: 100 },
   { name: 'Closed Lost', description: 'Deal lost or abandoned', probability: 0 },
-];
-
-const TAGS = [
-  'Hot Lead',
-  'Warm Lead',
-  'Cold Lead',
-  'Decision Maker',
-  'Influencer',
-  'Enterprise',
-  'SMB',
-  'Startup',
-  'Referral',
-  'Inbound',
-  'Outbound',
-  'Follow-up',
-  'Nurture',
-  'Qualified',
-  'Unqualified',
-  'Competitor',
 ];
 
 export default function SettingsPage() {
@@ -245,27 +228,7 @@ export default function SettingsPage() {
       )}
 
       {/* Tags Tab */}
-      {activeTab === 'tags' && canManage && (
-        <div className="bg-white border border-slate-200 rounded-lg p-6">
-          <h2 className="font-semibold mb-4 flex items-center gap-2">
-            <Tag size={18} className="text-slate-500" /> Tags
-          </h2>
-          <div className="flex flex-wrap gap-2">
-            {TAGS.map((tag) => (
-              <span
-                key={tag}
-                className="px-3 py-1.5 bg-slate-100 text-slate-700 rounded-full text-sm font-medium hover:bg-slate-200 transition-colors cursor-default"
-              >
-                {tag}
-              </span>
-            ))}
-          </div>
-          <p className="text-sm text-slate-500 mt-4">
-            Tags are read-only placeholders for now. Tag management will be available in a future
-            update.
-          </p>
-        </div>
-      )}
+      {activeTab === 'tags' && canManage && <TagsPanel />}
 
       {/* Workflows Tab */}
       {activeTab === 'workflows' && canManage && <WorkflowRulesPanel />}
@@ -358,6 +321,109 @@ export default function SettingsPage() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+const TAG_COLOR_CLASSES: Record<string, string> = {
+  slate: 'bg-slate-100 text-slate-700',
+  red: 'bg-red-100 text-red-700',
+  amber: 'bg-amber-100 text-amber-700',
+  green: 'bg-green-100 text-green-700',
+  emerald: 'bg-emerald-100 text-emerald-700',
+  blue: 'bg-blue-100 text-blue-700',
+  violet: 'bg-violet-100 text-violet-700',
+  pink: 'bg-pink-100 text-pink-700',
+  cyan: 'bg-cyan-100 text-cyan-700',
+};
+
+function TagsPanel() {
+  const { data, isLoading } = useTags();
+  const createTag = useCreateTag();
+  const [name, setName] = useState('');
+  const [color, setColor] = useState('slate');
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    const trimmedName = name.trim();
+    if (!trimmedName) return;
+    createTag.mutate(
+      { name: trimmedName, color },
+      {
+        onSuccess: () => setName(''),
+      }
+    );
+  };
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-6 space-y-5">
+      <div>
+        <h2 className="font-semibold flex items-center gap-2">
+          <Tag size={18} className="text-slate-500" /> Lead tags
+        </h2>
+        <p className="text-sm text-slate-500 mt-1">
+          Tags hold flexible context such as campaign batches, source sheets, and lead traits. A
+          lead can have any number of tags.
+        </p>
+      </div>
+
+      <form onSubmit={submit} className="flex flex-col sm:flex-row gap-2">
+        <input
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          maxLength={60}
+          placeholder="New tag name"
+          className="flex-1 px-3 py-2 border border-slate-200 rounded-md text-sm"
+        />
+        <select
+          value={color}
+          onChange={(event) => setColor(event.target.value)}
+          className="px-3 py-2 border border-slate-200 rounded-md text-sm bg-white"
+        >
+          {Object.keys(TAG_COLOR_CLASSES).map((tagColor) => (
+            <option key={tagColor} value={tagColor}>
+              {tagColor.charAt(0).toUpperCase() + tagColor.slice(1)}
+            </option>
+          ))}
+        </select>
+        <button
+          type="submit"
+          disabled={!name.trim() || createTag.isPending}
+          className="inline-flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md text-sm font-medium disabled:opacity-50"
+        >
+          {createTag.isPending ? (
+            <Loader2 size={15} className="animate-spin" />
+          ) : (
+            <Plus size={15} />
+          )}
+          Create tag
+        </button>
+      </form>
+
+      {createTag.error && (
+        <p className="text-sm text-red-600">
+          {createTag.error instanceof Error ? createTag.error.message : 'Could not create tag.'}
+        </p>
+      )}
+
+      <div className="flex flex-wrap gap-2">
+        {isLoading && <Loader2 size={18} className="animate-spin text-slate-400" />}
+        {data?.tags.map((tag) => (
+          <span
+            key={tag.id}
+            title={tag.description ?? (tag.isSystem ? 'System tag' : 'Team tag')}
+            className={cn(
+              'px-3 py-1.5 rounded-full text-sm font-medium',
+              TAG_COLOR_CLASSES[tag.color] ?? TAG_COLOR_CLASSES.slate
+            )}
+          >
+            {tag.name}
+          </span>
+        ))}
+        {!isLoading && data?.tags.length === 0 && (
+          <p className="text-sm text-slate-400">No tags yet. Create the first one above.</p>
+        )}
+      </div>
     </div>
   );
 }

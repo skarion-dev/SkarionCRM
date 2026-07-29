@@ -11,6 +11,7 @@ import {
   type Activity,
   type LeadAttachment,
   type ImportBatch,
+  type TagDefinition,
   type WorkflowRule,
   getLeadChannels,
   logOutreachAction,
@@ -85,6 +86,24 @@ export function useContacts() {
   return useCrmQuery(['contacts'], () => crmFetch<{ contacts: Contact[] }>('/api/contacts'));
 }
 
+export function useTags() {
+  return useCrmQuery(['tag-definitions'], () => crmFetch<{ tags: TagDefinition[] }>('/api/tags'));
+}
+
+export function useCreateTag() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: { name: string; color?: string; description?: string }) =>
+      crmFetch<{ tag: TagDefinition }>('/api/tags', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['tag-definitions'] });
+    },
+  });
+}
+
 export function useLeads(
   page: number = 1,
   pageSize: number = 50,
@@ -130,7 +149,6 @@ export function useLeads(
         total: number;
         totalPages: number;
         statusCounts: Record<string, number>;
-        outreachStatusCounts: Record<string, number>;
       }>(`/api/leads?${qs.toString()}`)
   );
 }
@@ -142,7 +160,6 @@ export interface LeadsResponse {
   total: number;
   totalPages: number;
   statusCounts: Record<string, number>;
-  outreachStatusCounts: Record<string, number>;
 }
 
 const LEADS_BATCH_SIZE = 100;
@@ -332,10 +349,12 @@ export function useBulkLeads() {
       action:
         | 'delete'
         | 'update_status'
+        | 'update_journey_stage'
         | 'update_outreach_status'
         | 'update_tags'
         | 'assign_owner';
       status?: string;
+      journeyStage?: string;
       outreachStatus?: string;
       tags?: string[];
       tagMode?: 'merge' | 'replace';

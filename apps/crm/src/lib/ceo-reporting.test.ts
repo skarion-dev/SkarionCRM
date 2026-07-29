@@ -24,7 +24,6 @@ const snapshot: CeoReportingSnapshot = {
     lastLinkedinMessageAt: '2026-07-28T00:00:00.000Z',
   },
   leadsByStatus: [{ label: 'new', value: 6 }],
-  leadsByOutreachStatus: [],
   leadsBySource: [],
   leadClassifications: [],
   opportunitiesByStage: [],

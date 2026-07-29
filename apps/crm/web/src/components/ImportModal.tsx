@@ -49,6 +49,7 @@ interface PreviewResult {
 
 export default function ImportModal({ open, onClose, type, title, sampleCsv }: ImportModalProps) {
   const [csvText, setCsvText] = useState('');
+  const [batchNumber, setBatchNumber] = useState('');
   const [batchName, setBatchName] = useState('');
   const [defaultTags, setDefaultTags] = useState('');
   const [assigneeId, setAssigneeId] = useState('');
@@ -78,6 +79,7 @@ export default function ImportModal({ open, onClose, type, title, sampleCsv }: I
     .filter(Boolean);
   const extraImportFields = isLeads
     ? {
+        batchNumber: batchNumber.trim() || undefined,
         batchName: batchName.trim() || undefined,
         tags: tagsArray.length > 0 ? tagsArray : undefined,
         assigneeId: assigneeId || undefined,
@@ -175,6 +177,7 @@ export default function ImportModal({ open, onClose, type, title, sampleCsv }: I
 
   const handleClose = () => {
     setCsvText('');
+    setBatchNumber('');
     setBatchName('');
     setDefaultTags('');
     setAssigneeId('');
@@ -220,16 +223,28 @@ export default function ImportModal({ open, onClose, type, title, sampleCsv }: I
 
             <form onSubmit={handlePreview} className="space-y-3">
               {isLeads && (
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div>
                     <label className="block text-sm font-medium text-slate-600 mb-1">
-                      Batch name
+                      Batch number
+                    </label>
+                    <input
+                      value={batchNumber}
+                      onChange={(e) => setBatchNumber(e.target.value)}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-md text-sm"
+                      placeholder="e.g. 42"
+                    />
+                    <p className="mt-1 text-xs text-slate-400">Adds the tag “Batch 42”</p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-600 mb-1">
+                      Import name
                     </label>
                     <input
                       value={batchName}
                       onChange={(e) => setBatchName(e.target.value)}
                       className="w-full px-3 py-2 border border-slate-200 rounded-md text-sm"
-                      placeholder="e.g. Set 1"
+                      placeholder="e.g. July founders"
                     />
                   </div>
                   <div>
@@ -244,7 +259,7 @@ export default function ImportModal({ open, onClose, type, title, sampleCsv }: I
                     />
                   </div>
                   {canManage && (
-                    <div className="col-span-2">
+                    <div className="sm:col-span-3">
                       <label className="block text-sm font-medium text-slate-600 mb-1">
                         Assign to
                       </label>

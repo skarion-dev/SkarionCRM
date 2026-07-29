@@ -405,7 +405,22 @@ export interface Contact {
   deletedAt: string | null;
 }
 
-export type LeadStatus = 'new' | 'contacted' | 'qualified' | 'disqualified' | 'converted';
+export type LeadJourneyStage =
+  | 'new'
+  | 'ready_to_reach_out'
+  | 'connection_sent'
+  | 'connected'
+  | 'engaged'
+  | 'qualified'
+  | 'meeting_booked'
+  | 'opportunity'
+  | 'converted'
+  | 'nurture'
+  | 'no_response'
+  | 'disqualified'
+  | 'lost';
+/** Compatibility alias while older components and integrations migrate. */
+export type LeadStatus = LeadJourneyStage;
 export type LeadSource =
   | 'linkedin'
   | 'website'
@@ -443,7 +458,8 @@ export interface Lead {
   originalRowNumber: number | null;
   tags: string[] | null;
   source: LeadSource;
-  status: LeadStatus;
+  status: string;
+  journeyStage: LeadJourneyStage;
   notes: string | null;
   ownerId: string;
   convertedToContactId: string | null;
@@ -454,6 +470,18 @@ export interface Lead {
   deletedAt: string | null;
   leadNumber?: string;
   batchId?: string | null;
+}
+
+export interface TagDefinition {
+  id: string;
+  name: string;
+  slug: string;
+  color: string;
+  description: string | null;
+  isSystem: boolean;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface LeadAiAssessment {

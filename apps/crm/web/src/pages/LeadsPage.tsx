@@ -37,35 +37,20 @@ import { cn } from '../lib/utils.js';
 import LeadForm from '../components/forms/LeadForm.js';
 import ImportModal from '../components/ImportModal.js';
 import PdfImportModal from '../components/PdfImportModal.js';
-import type { Lead, LeadStatus, OutreachStatus } from '../api.js';
+import type { Lead, LeadJourneyStage } from '../api.js';
 import { CRM_API_URL, getAccessToken } from '../api.js';
 import { showToast } from '../stores/toast.js';
 import { buildLeadsQueryString, type LeadFilters } from '../lib/leadFilters.js';
-
-const LEAD_STATUSES: LeadStatus[] = ['new', 'contacted', 'qualified', 'disqualified', 'converted'];
-const OUTREACH_STATUSES: OutreachStatus[] = [
-  'not_approached',
-  'approached',
-  'connection_request_sent',
-  'in_conversation',
-  'connected',
-  'replied',
-  'booked_call',
-  'not_interested',
-  'bad_fit',
-];
+import { LEAD_JOURNEY_STAGES, journeyBadgeClass, journeyLabel } from '../lib/leadJourney.js';
 
 export default function LeadsPage() {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | LeadStatus>('all');
-  const [outreachFilter, setOutreachFilter] = useState<'all' | OutreachStatus>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | LeadJourneyStage>('all');
   const [sortBy, setSortBy] = useState<string>('createdAt');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [bulkActionOpen, setBulkActionOpen] = useState<
-    false | 'status' | 'outreach' | 'tag' | 'assign'
-  >(false);
+  const [bulkActionOpen, setBulkActionOpen] = useState<false | 'status' | 'tag' | 'assign'>(false);
   const [tagInput, setTagInput] = useState('');
   const [assigneeId, setAssigneeId] = useState('');
   const [batchFilter, setBatchFilter] = useState<'all' | string>('all');
@@ -75,8 +60,7 @@ export default function LeadsPage() {
   const [editLead, setEditLead] = useState<Lead | null>(null);
 
   // Additive "More filters" — date range, tag, and (superadmin/manager-only)
-  // owner multi-select. Kept separate from the single-select status/outreach
-  // pill rows above so those stay the fast, unchanged common path.
+  // owner multi-select. Journey remains the fast primary filter above.
   const [moreFiltersOpen, setMoreFiltersOpen] = useState(false);
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
@@ -96,7 +80,6 @@ export default function LeadsPage() {
     () => ({
       search: debouncedSearch || undefined,
       statuses: statusFilter === 'all' ? undefined : [statusFilter],
-      outreachStatuses: outreachFilter === 'all' ? undefined : [outreachFilter],
       owners: ownerFilters.length > 0 ? ownerFilters : undefined,
       tags: tagFilters.length > 0 ? tagFilters : undefined,
       batchId: batchFilter === 'all' ? undefined : batchFilter,
@@ -108,7 +91,6 @@ export default function LeadsPage() {
     [
       debouncedSearch,
       statusFilter,
-      outreachFilter,
       ownerFilters,
       tagFilters,
       batchFilter,
@@ -138,24 +120,7 @@ export default function LeadsPage() {
   const firstPage = data?.pages[0];
   const total = firstPage?.total ?? 0;
   const loadedCount = leads.length;
-  const statusCounts = firstPage?.statusCounts ?? {
-    new: 0,
-    contacted: 0,
-    qualified: 0,
-    disqualified: 0,
-    converted: 0,
-  };
-  const outreachStatusCounts = firstPage?.outreachStatusCounts ?? {
-    not_approached: 0,
-    approached: 0,
-    connection_request_sent: 0,
-    in_conversation: 0,
-    connected: 0,
-    replied: 0,
-    booked_call: 0,
-    not_interested: 0,
-    bad_fit: 0,
-  };
+  const statusCounts = firstPage?.statusCounts ?? {};
 
   // Reset selection whenever the filtered/sorted set changes — the old
   // accumulated selection wouldn't make sense against a different result set.
@@ -189,8 +154,7 @@ export default function LeadsPage() {
   const applySavedSearch = useCallback((saved: LeadFilters) => {
     setSearch(saved.search ?? '');
     setDebouncedSearch(saved.search ?? '');
-    setStatusFilter((saved.statuses?.[0] as LeadStatus | undefined) ?? 'all');
-    setOutreachFilter((saved.outreachStatuses?.[0] as OutreachStatus | undefined) ?? 'all');
+    setStatusFilter((saved.statuses?.[0] as LeadJourneyStage | undefined) ?? 'all');
     setOwnerFilters(saved.owners ?? []);
     setTagFilters(saved.tags ?? []);
     setBatchFilter(saved.batchId ?? 'all');
@@ -309,27 +273,14 @@ export default function LeadsPage() {
 
   const handleBulkUpdateStatus = (status: string) => {
     bulkMutation.mutate(
-      { ids: Array.from(selectedIds), action: 'update_status', status },
+      {
+        ids: Array.from(selectedIds),
+        action: 'update_journey_stage',
+        journeyStage: status,
+      },
       {
         onSuccess: (res) => {
           showToast(`${res.processed} leads updated to ${status}`, 'success');
-          setSelectedIds(new Set());
-          setBulkActionOpen(false);
-        },
-        onError: () => showToast('Bulk update failed', 'error'),
-      }
-    );
-  };
-
-  const handleBulkUpdateOutreach = (outreachStatus: string) => {
-    bulkMutation.mutate(
-      { ids: Array.from(selectedIds), action: 'update_outreach_status', outreachStatus },
-      {
-        onSuccess: (res) => {
-          showToast(
-            `${res.processed} leads updated to ${outreachStatus.replace(/_/g, ' ')}`,
-            'success'
-          );
           setSelectedIds(new Set());
           setBulkActionOpen(false);
         },
@@ -431,7 +382,7 @@ export default function LeadsPage() {
         >
           All ({total})
         </button>
-        {(Object.keys(statusCounts) as LeadStatus[]).map((s) => (
+        {LEAD_JOURNEY_STAGES.map((s) => (
           <button
             key={s}
             onClick={() => setStatusFilter(s)}
@@ -442,36 +393,7 @@ export default function LeadsPage() {
                 : 'bg-white border-slate-200 hover:bg-slate-50'
             )}
           >
-            {s} ({statusCounts[s] || 0})
-          </button>
-        ))}
-      </div>
-
-      {/* Outreach filters */}
-      <div className="flex flex-wrap gap-2">
-        <button
-          onClick={() => setOutreachFilter('all')}
-          className={cn(
-            'px-3 py-1.5 rounded-md text-sm border',
-            outreachFilter === 'all'
-              ? 'bg-slate-900 text-white border-slate-900'
-              : 'bg-white border-slate-200 hover:bg-slate-50'
-          )}
-        >
-          All Outreach
-        </button>
-        {(Object.keys(outreachStatusCounts) as OutreachStatus[]).map((s) => (
-          <button
-            key={s}
-            onClick={() => setOutreachFilter(s)}
-            className={cn(
-              'px-3 py-1.5 rounded-md text-sm border capitalize',
-              outreachFilter === s
-                ? 'bg-slate-900 text-white border-slate-900'
-                : 'bg-white border-slate-200 hover:bg-slate-50'
-            )}
-          >
-            {s.replace(/_/g, ' ')} ({outreachStatusCounts[s] || 0})
+            {journeyLabel(s)} ({statusCounts[s] || 0})
           </button>
         ))}
       </div>
@@ -673,13 +595,7 @@ export default function LeadsPage() {
               onClick={() => setBulkActionOpen('status')}
               className="px-3 py-1.5 text-sm border border-slate-300 rounded-md bg-white hover:bg-slate-50 text-slate-700"
             >
-              Change Status
-            </button>
-            <button
-              onClick={() => setBulkActionOpen('outreach')}
-              className="px-3 py-1.5 text-sm border border-slate-300 rounded-md bg-white hover:bg-slate-50 text-slate-700"
-            >
-              Change Outreach
+              Change journey
             </button>
             {canManage && (
               <>
@@ -717,39 +633,21 @@ export default function LeadsPage() {
       {/* Bulk action dropdowns */}
       {bulkActionOpen === 'status' && (
         <div className="flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-lg px-4 py-2">
-          <span className="text-sm text-blue-700 font-medium">Set status to:</span>
-          {LEAD_STATUSES.map((s) => (
-            <button
-              key={s}
-              onClick={() => handleBulkUpdateStatus(s)}
-              className="px-3 py-1 text-xs border border-slate-300 rounded-md bg-white hover:bg-slate-50 capitalize"
-            >
-              {s}
-            </button>
-          ))}
+          <span className="text-sm text-blue-700 font-medium">Set journey to:</span>
+          <div className="flex flex-wrap gap-2">
+            {LEAD_JOURNEY_STAGES.map((s) => (
+              <button
+                key={s}
+                onClick={() => handleBulkUpdateStatus(s)}
+                className="px-3 py-1 text-xs border border-slate-300 rounded-md bg-white hover:bg-slate-50 capitalize"
+              >
+                {journeyLabel(s)}
+              </button>
+            ))}
+          </div>
           <button
             onClick={() => setBulkActionOpen(false)}
             className="p-1 rounded hover:bg-blue-100 text-blue-600"
-          >
-            <X size={14} />
-          </button>
-        </div>
-      )}
-      {bulkActionOpen === 'outreach' && (
-        <div className="flex items-center gap-2 bg-purple-50 border border-purple-200 rounded-lg px-4 py-2">
-          <span className="text-sm text-purple-700 font-medium">Set outreach to:</span>
-          {OUTREACH_STATUSES.map((s) => (
-            <button
-              key={s}
-              onClick={() => handleBulkUpdateOutreach(s)}
-              className="px-3 py-1 text-xs border border-slate-300 rounded-md bg-white hover:bg-slate-50 capitalize"
-            >
-              {s.replace(/_/g, ' ')}
-            </button>
-          ))}
-          <button
-            onClick={() => setBulkActionOpen(false)}
-            className="p-1 rounded hover:bg-purple-100 text-purple-600"
           >
             <X size={14} />
           </button>
@@ -890,28 +788,11 @@ export default function LeadsPage() {
                 <th className="text-left px-4 py-3 font-medium text-slate-600">Tags</th>
                 <th
                   className="text-left px-4 py-3 font-medium text-slate-600 cursor-pointer select-none hover:bg-slate-100"
-                  onClick={() => toggleSort('outreachStatus')}
+                  onClick={() => toggleSort('journeyStage')}
                 >
                   <div className="flex items-center gap-1">
-                    Outreach{' '}
-                    {sortBy === 'outreachStatus' ? (
-                      sortOrder === 'asc' ? (
-                        <ArrowUp size={14} />
-                      ) : (
-                        <ArrowDown size={14} />
-                      )
-                    ) : (
-                      <ArrowUpDown size={14} className="text-slate-300" />
-                    )}
-                  </div>
-                </th>
-                <th
-                  className="text-left px-4 py-3 font-medium text-slate-600 cursor-pointer select-none hover:bg-slate-100"
-                  onClick={() => toggleSort('status')}
-                >
-                  <div className="flex items-center gap-1">
-                    Status{' '}
-                    {sortBy === 'status' ? (
+                    Journey{' '}
+                    {sortBy === 'journeyStage' ? (
                       sortOrder === 'asc' ? (
                         <ArrowUp size={14} />
                       ) : (
@@ -1004,42 +885,10 @@ export default function LeadsPage() {
                     <span
                       className={cn(
                         'px-2 py-0.5 rounded text-xs font-medium',
-                        lead.outreachStatus === 'not_approached'
-                          ? 'bg-slate-100 text-slate-600'
-                          : lead.outreachStatus === 'approached'
-                            ? 'bg-amber-100 text-amber-700'
-                            : lead.outreachStatus === 'connection_request_sent'
-                              ? 'bg-amber-100 text-amber-700'
-                              : lead.outreachStatus === 'in_conversation'
-                                ? 'bg-teal-100 text-teal-700'
-                                : lead.outreachStatus === 'connected'
-                                  ? 'bg-blue-100 text-blue-700'
-                                  : lead.outreachStatus === 'replied'
-                                    ? 'bg-green-100 text-green-700'
-                                    : lead.outreachStatus === 'booked_call'
-                                      ? 'bg-purple-100 text-purple-700'
-                                      : 'bg-slate-100 text-slate-600'
+                        journeyBadgeClass(lead.journeyStage)
                       )}
                     >
-                      {lead.outreachStatus?.replace(/_/g, ' ') ?? 'not approached'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span
-                      className={cn(
-                        'px-2 py-0.5 rounded text-xs font-medium',
-                        lead.status === 'new'
-                          ? 'bg-blue-100 text-blue-700'
-                          : lead.status === 'contacted'
-                            ? 'bg-amber-100 text-amber-700'
-                            : lead.status === 'qualified'
-                              ? 'bg-green-100 text-green-700'
-                              : lead.status === 'converted'
-                                ? 'bg-purple-100 text-purple-700'
-                                : 'bg-slate-100 text-slate-600'
-                      )}
-                    >
-                      {lead.status}
+                      {journeyLabel(lead.journeyStage)}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-slate-600">

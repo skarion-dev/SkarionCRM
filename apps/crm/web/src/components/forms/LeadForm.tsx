@@ -2,11 +2,12 @@ import { useState, type FormEvent } from 'react';
 import {
   useCreateEntity,
   useUpdateEntity,
-  useImportBatches,
   useIdentityUsers,
+  useTags,
 } from '../../hooks/use-api.js';
 import { useAuthStore } from '../../stores/auth.js';
-import type { Lead, LeadStatus, LeadSource, OutreachStatus } from '../../api.js';
+import type { Lead, LeadSource } from '../../api.js';
+import { LEAD_JOURNEY_STAGES, LEAD_JOURNEY_LABELS } from '../../lib/leadJourney.js';
 import { X as XIcon } from 'lucide-react';
 import Modal from '../ui/Modal.js';
 
@@ -16,7 +17,6 @@ interface LeadFormProps {
   lead?: Lead | null;
 }
 
-const statuses: LeadStatus[] = ['new', 'contacted', 'qualified', 'disqualified', 'converted'];
 const sources: LeadSource[] = [
   'linkedin',
   'website',
@@ -27,18 +27,6 @@ const sources: LeadSource[] = [
   'event',
   'other',
 ];
-const outreachStatuses: OutreachStatus[] = [
-  'not_approached',
-  'approached',
-  'connection_request_sent',
-  'in_conversation',
-  'connected',
-  'replied',
-  'booked_call',
-  'not_interested',
-  'bad_fit',
-];
-
 export default function LeadForm({ open, onClose, lead }: LeadFormProps) {
   const create = useCreateEntity('leads');
   const update = useUpdateEntity('leads');
@@ -47,7 +35,7 @@ export default function LeadForm({ open, onClose, lead }: LeadFormProps) {
   const role = useAuthStore((s) => s.user?.role ?? '');
   const isSuperadmin = useAuthStore((s) => s.user?.isSuperadmin ?? false);
   const canManage = isSuperadmin || role === 'manager';
-  const { data: batches } = useImportBatches();
+  const { data: tagData } = useTags();
   const { data: identityUsers } = useIdentityUsers(canManage);
   const crmUsers = (identityUsers ?? []).filter((u) =>
     u.appMemberships?.some((m) => m.app === 'crm')
@@ -61,14 +49,9 @@ export default function LeadForm({ open, onClose, lead }: LeadFormProps) {
     companyName: lead?.companyName ?? '',
     companyDomain: lead?.companyDomain ?? '',
     linkedinUrl: lead?.linkedinUrl ?? '',
-    outreachStatus: lead?.outreachStatus ?? 'not_approached',
-    connectionStatus: lead?.connectionStatus ?? '',
-    sourceSheet: lead?.sourceSheet ?? '',
-    originalRowNumber: lead?.originalRowNumber != null ? String(lead.originalRowNumber) : '',
     source: lead?.source ?? 'website',
-    status: lead?.status ?? 'new',
+    journeyStage: lead?.journeyStage ?? 'new',
     notes: lead?.notes ?? '',
-    batchId: lead?.batchId ?? '',
     ownerId: lead?.ownerId ?? '',
   });
   const [tags, setTags] = useState<string[]>(lead?.tags ?? []);
@@ -79,7 +62,12 @@ export default function LeadForm({ open, onClose, lead }: LeadFormProps) {
   const addTag = () => {
     const tag = tagInput.trim();
     if (!tag) return;
-    if (!tags.includes(tag)) setTags((t) => [...t, tag]);
+    const knownTag = tagData?.tags.find((item) => item.name.toLowerCase() === tag.toLowerCase());
+    if (!knownTag && !canManage) return;
+    const resolvedTag = knownTag?.name ?? tag;
+    if (!tags.some((item) => item.toLowerCase() === resolvedTag.toLowerCase())) {
+      setTags((current) => [...current, resolvedTag]);
+    }
     setTagInput('');
   };
   const removeTag = (tag: string) => setTags((t) => t.filter((x) => x !== tag));
@@ -87,10 +75,6 @@ export default function LeadForm({ open, onClose, lead }: LeadFormProps) {
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
     const payload: Record<string, unknown> = { ...form, tags };
-    if (form.originalRowNumber)
-      payload.originalRowNumber = parseInt(form.originalRowNumber, 10) || null;
-    else payload.originalRowNumber = null;
-    if (!form.batchId) payload.batchId = null;
     if (isEdit && lead) {
       update.mutate({ id: lead.id, data: payload }, { onSuccess: onClose });
     } else {
@@ -127,7 +111,6 @@ export default function LeadForm({ open, onClose, lead }: LeadFormProps) {
           <label className="block text-sm font-medium text-slate-600 mb-1">Email</label>
           <input
             type="email"
-            required
             value={form.email}
             onChange={(e) => handleChange('email', e.target.value)}
             className="w-full px-3 py-2 border border-slate-200 rounded-md text-sm"
@@ -169,61 +152,15 @@ export default function LeadForm({ open, onClose, lead }: LeadFormProps) {
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-sm font-medium text-slate-600 mb-1">Outreach Status</label>
+            <label className="block text-sm font-medium text-slate-600 mb-1">Lead journey</label>
             <select
-              value={form.outreachStatus}
-              onChange={(e) => handleChange('outreachStatus', e.target.value)}
+              value={form.journeyStage}
+              onChange={(e) => handleChange('journeyStage', e.target.value)}
               className="w-full px-3 py-2 border border-slate-200 rounded-md text-sm bg-white"
             >
-              {outreachStatuses.map((s) => (
+              {LEAD_JOURNEY_STAGES.map((s) => (
                 <option key={s} value={s}>
-                  {s.replace(/_/g, ' ')}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-600 mb-1">
-              Connection Status
-            </label>
-            <input
-              value={form.connectionStatus}
-              onChange={(e) => handleChange('connectionStatus', e.target.value)}
-              className="w-full px-3 py-2 border border-slate-200 rounded-md text-sm"
-              placeholder="1st, 2nd, 3rd"
-            />
-          </div>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="block text-sm font-medium text-slate-600 mb-1">Source Sheet</label>
-            <input
-              value={form.sourceSheet}
-              onChange={(e) => handleChange('sourceSheet', e.target.value)}
-              className="w-full px-3 py-2 border border-slate-200 rounded-md text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-600 mb-1">Original Row #</label>
-            <input
-              type="number"
-              value={form.originalRowNumber}
-              onChange={(e) => handleChange('originalRowNumber', e.target.value)}
-              className="w-full px-3 py-2 border border-slate-200 rounded-md text-sm"
-            />
-          </div>
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="block text-sm font-medium text-slate-600 mb-1">Status</label>
-            <select
-              value={form.status}
-              onChange={(e) => handleChange('status', e.target.value)}
-              className="w-full px-3 py-2 border border-slate-200 rounded-md text-sm bg-white"
-            >
-              {statuses.map((s) => (
-                <option key={s} value={s}>
-                  {s}
+                  {LEAD_JOURNEY_LABELS[s]}
                 </option>
               ))}
             </select>
@@ -263,6 +200,7 @@ export default function LeadForm({ open, onClose, lead }: LeadFormProps) {
             ))}
           </div>
           <input
+            list="lead-tag-options"
             value={tagInput}
             onChange={(e) => setTagInput(e.target.value)}
             onKeyDown={(e) => {
@@ -272,47 +210,41 @@ export default function LeadForm({ open, onClose, lead }: LeadFormProps) {
               }
             }}
             className="w-full px-3 py-2 border border-slate-200 rounded-md text-sm"
-            placeholder="Type a tag and press Enter"
+            placeholder={
+              canManage
+                ? 'Choose or create a tag, then press Enter'
+                : 'Choose a team tag, then press Enter'
+            }
           />
+          <datalist id="lead-tag-options">
+            {tagData?.tags
+              .filter(
+                (tag) => !tags.some((selected) => selected.toLowerCase() === tag.name.toLowerCase())
+              )
+              .map((tag) => (
+                <option key={tag.id} value={tag.name} />
+              ))}
+          </datalist>
         </div>
-        <div className="grid grid-cols-2 gap-3">
+        {canManage && (
           <div>
             <label className="block text-sm font-medium text-slate-600 mb-1">
-              Set / Batch (optional)
+              Owner / Assign to
             </label>
             <select
-              value={form.batchId}
-              onChange={(e) => handleChange('batchId', e.target.value)}
+              value={form.ownerId}
+              onChange={(e) => handleChange('ownerId', e.target.value)}
               className="w-full px-3 py-2 border border-slate-200 rounded-md text-sm bg-white"
             >
               <option value="">—</option>
-              {(batches ?? []).map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}
+              {crmUsers.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.displayName || u.email}
                 </option>
               ))}
             </select>
           </div>
-          {canManage && (
-            <div>
-              <label className="block text-sm font-medium text-slate-600 mb-1">
-                Owner / Assign to
-              </label>
-              <select
-                value={form.ownerId}
-                onChange={(e) => handleChange('ownerId', e.target.value)}
-                className="w-full px-3 py-2 border border-slate-200 rounded-md text-sm bg-white"
-              >
-                <option value="">—</option>
-                {crmUsers.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.displayName || u.email}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-        </div>
+        )}
         <div>
           <label className="block text-sm font-medium text-slate-600 mb-1">Notes</label>
           <textarea

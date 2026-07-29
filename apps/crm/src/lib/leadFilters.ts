@@ -53,10 +53,10 @@ export function buildLeadConditions(params: LeadFilterParams): SQL[] {
 
   if (params.statuses?.length) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    conditions.push(inArray(schema.leads.status, params.statuses as any));
+    conditions.push(inArray(schema.leads.journeyStage, params.statuses as any));
   } else if (params.status) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    conditions.push(eq(schema.leads.status, params.status as any));
+    conditions.push(eq(schema.leads.journeyStage, params.status as any));
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -122,7 +122,8 @@ export const LEAD_SORT_COLUMNS: Record<string, any> = {
   lastName: schema.leads.lastName,
   email: schema.leads.email,
   companyName: schema.leads.companyName,
-  status: schema.leads.status,
+  status: schema.leads.journeyStage,
+  journeyStage: schema.leads.journeyStage,
   outreachStatus: schema.leads.outreachStatus,
   leadNumber: schema.leads.leadNumber,
 };

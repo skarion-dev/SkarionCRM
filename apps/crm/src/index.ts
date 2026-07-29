@@ -72,6 +72,45 @@ import {
   type CeoReportingSnapshot,
   type ReportingSeriesItem,
 } from './lib/ceo-reporting.js';
+import {
+  formatBatchTag,
+  isLeadJourneyStage,
+  journeyStageFromLegacy,
+  LEAD_JOURNEY_STAGES,
+  legacyFieldsForJourney,
+  mergeJourneyWithChannelStages,
+  normalizeTagNames,
+  tagSlug,
+  type LeadJourneyStage,
+} from './lib/leadJourney.js';
+
+async function ensureTagDefinitions(
+  db: CrmDb,
+  values: unknown,
+  actorUserId: string,
+  isSystem = false
+): Promise<string[]> {
+  const names = normalizeTagNames(values);
+  for (const name of names) {
+    const slug = tagSlug(name);
+    if (!slug) continue;
+    await db
+      .insert(schema.tagDefinitions)
+      .values({ name, slug, createdBy: actorUserId, isSystem })
+      .onConflictDoNothing({ target: schema.tagDefinitions.slug });
+  }
+  return names;
+}
+
+async function unknownTagNames(db: CrmDb, values: unknown): Promise<string[]> {
+  const names = normalizeTagNames(values);
+  if (names.length === 0) return [];
+  const definitions = await db
+    .select({ name: schema.tagDefinitions.name })
+    .from(schema.tagDefinitions);
+  const known = new Set(definitions.map((tag) => tag.name.toLowerCase()));
+  return names.filter((name) => !known.has(name.toLowerCase()));
+}
 
 // --- Outreach status summary ---
 // Ranks a lead's channel stages and maps the "best" one back to the legacy
@@ -626,6 +665,13 @@ app.post('/extension/leads', async (c) => {
     );
   }
 
+  const extensionJourneyStage = journeyStageFromLegacy({
+    status: typeof body.status === 'string' ? body.status : 'new',
+    outreachStatus:
+      typeof body.outreachStatus === 'string' ? body.outreachStatus : 'not_approached',
+  });
+  const extensionLegacy = legacyFieldsForJourney(extensionJourneyStage);
+  const extensionTags = await ensureTagDefinitions(db, body.tags, ownerId);
   const data = {
     leadNumber: await nextLeadNumber(db),
     firstName: String(body.firstName ?? '').trim() || displayName,
@@ -635,12 +681,13 @@ app.post('/extension/leads', async (c) => {
     companyName: body.companyName ?? null,
     companyDomain: body.companyDomain ?? null,
     linkedinUrl,
-    outreachStatus: body.outreachStatus ?? 'not_approached',
-    tags: body.tags ?? null,
+    outreachStatus: extensionLegacy.outreachStatus,
+    tags: extensionTags.length > 0 ? extensionTags : null,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     source: (body.source ?? 'linkedin') as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    status: (body.status ?? 'new') as any,
+    status: extensionLegacy.status as any,
+    journeyStage: extensionJourneyStage,
     notes: body.notes ?? null,
     ownerId,
     idempotencyKey,
@@ -856,6 +903,18 @@ async function generateAndSaveLeadAiAssessment(
       set: values,
     })
     .returning();
+  if (saved && lead.journeyStage === 'new') {
+    const legacy = legacyFieldsForJourney('ready_to_reach_out');
+    await db
+      .update(schema.leads)
+      .set({
+        journeyStage: 'ready_to_reach_out',
+        status: legacy.status,
+        outreachStatus: legacy.outreachStatus,
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.leads.id, lead.id));
+  }
   return saved ?? null;
 }
 
@@ -1249,6 +1308,71 @@ app.delete('/api/contacts/:id', async (c) => {
   return c.json({ success: true });
 });
 
+// --- TAGS ---
+
+app.get('/api/tags', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  if (!getRole(c) && !c.get('isSuperadmin')) return c.json({ error: 'Forbidden.' }, 403);
+
+  const tags = await db
+    .select()
+    .from(schema.tagDefinitions)
+    .orderBy(asc(schema.tagDefinitions.name));
+  return c.json({ tags });
+});
+
+app.post('/api/tags', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const role = getRole(c);
+  const isSuperadmin = c.get('isSuperadmin');
+  const userId = c.get('userId');
+  if (!isSuperadmin && role !== 'manager') {
+    return c.json({ error: 'Manager or superadmin access is required to create tags.' }, 403);
+  }
+
+  const body = await c.req.json();
+  const names = normalizeTagNames([body.name]);
+  const name = names[0];
+  if (!name) return c.json({ error: 'Enter a tag name between 1 and 60 characters.' }, 400);
+  const slug = tagSlug(name);
+  const color =
+    typeof body.color === 'string' &&
+    ['slate', 'blue', 'green', 'emerald', 'amber', 'red', 'violet', 'cyan', 'pink'].includes(
+      body.color
+    )
+      ? body.color
+      : 'slate';
+
+  const [existing] = await db
+    .select()
+    .from(schema.tagDefinitions)
+    .where(eq(schema.tagDefinitions.slug, slug))
+    .limit(1);
+  if (existing) return c.json({ tag: existing, created: false });
+
+  const [tag] = await db
+    .insert(schema.tagDefinitions)
+    .values({
+      name,
+      slug,
+      color,
+      description: typeof body.description === 'string' ? body.description.trim() || null : null,
+      createdBy: userId,
+    })
+    .returning();
+  if (!tag) return c.json({ error: 'Internal error.' }, 500);
+
+  await withAudit(db, schema.auditLog, {
+    actorUserId: userId,
+    action: 'create',
+    resourceType: 'tag_definition',
+    resourceId: tag.id,
+    after: tag,
+    app: 'crm',
+  });
+  return c.json({ tag, created: true }, 201);
+});
+
 // --- LEADS ---
 
 app.get('/api/leads', async (c) => {
@@ -1319,7 +1443,7 @@ app.get('/api/leads', async (c) => {
 
   // Get status counts (for filters)
   const statusCountsRaw = await db
-    .select({ status: schema.leads.status, count: sql<number>`count(*)` })
+    .select({ status: schema.leads.journeyStage, count: sql<number>`count(*)` })
     .from(schema.leads)
     .where(
       and(
@@ -1327,38 +1451,14 @@ app.get('/api/leads', async (c) => {
         ...(!isSuperadmin ? [eq(schema.leads.ownerId, caller.userId)] : [])
       )
     )
-    .groupBy(schema.leads.status);
+    .groupBy(schema.leads.journeyStage);
 
-  const statusCounts = { new: 0, contacted: 0, qualified: 0, disqualified: 0, converted: 0 };
+  const statusCounts = Object.fromEntries(LEAD_JOURNEY_STAGES.map((stage) => [stage, 0])) as Record<
+    LeadJourneyStage,
+    number
+  >;
   statusCountsRaw.forEach((s) => {
     statusCounts[s.status as keyof typeof statusCounts] = s.count;
-  });
-
-  // Get outreach status counts (for filters)
-  const outreachStatusCountsRaw = await db
-    .select({ outreachStatus: schema.leads.outreachStatus, count: sql<number>`count(*)` })
-    .from(schema.leads)
-    .where(
-      and(
-        isNull(schema.leads.deletedAt),
-        ...(!isSuperadmin ? [eq(schema.leads.ownerId, caller.userId)] : [])
-      )
-    )
-    .groupBy(schema.leads.outreachStatus);
-
-  const outreachStatusCounts = {
-    not_approached: 0,
-    approached: 0,
-    connection_request_sent: 0,
-    in_conversation: 0,
-    connected: 0,
-    replied: 0,
-    booked_call: 0,
-    not_interested: 0,
-    bad_fit: 0,
-  };
-  outreachStatusCountsRaw.forEach((s) => {
-    outreachStatusCounts[s.outreachStatus as keyof typeof outreachStatusCounts] = s.count;
   });
 
   // Optionally include channels for each lead (detail view)
@@ -1383,7 +1483,6 @@ app.get('/api/leads', async (c) => {
     total,
     totalPages: Math.ceil(total / pageSize),
     statusCounts,
-    outreachStatusCounts,
   });
 });
 
@@ -1397,6 +1496,27 @@ app.post('/api/leads', async (c) => {
   }
 
   const body = await c.req.json();
+  const journeyStage = isLeadJourneyStage(body.journeyStage)
+    ? body.journeyStage
+    : journeyStageFromLegacy({
+        status: body.status,
+        outreachStatus: body.outreachStatus,
+      });
+  const legacy = legacyFieldsForJourney(journeyStage);
+  const requestedTags = normalizeTagNames(body.tags);
+  if (!isSuperadmin && role !== 'manager') {
+    const unknownTags = await unknownTagNames(db, requestedTags);
+    if (unknownTags.length > 0) {
+      return c.json(
+        { error: `Members can only assign existing tags: ${unknownTags.join(', ')}` },
+        400
+      );
+    }
+  }
+  const tags =
+    isSuperadmin || role === 'manager'
+      ? await ensureTagDefinitions(db, requestedTags, caller.userId)
+      : requestedTags;
   const data = {
     leadNumber: await nextLeadNumber(db),
     firstName: body.firstName,
@@ -1406,16 +1526,17 @@ app.post('/api/leads', async (c) => {
     companyName: body.companyName ?? null,
     companyDomain: body.companyDomain ?? null,
     linkedinUrl: body.linkedinUrl ?? null,
-    outreachStatus: body.outreachStatus ?? null,
+    outreachStatus: legacy.outreachStatus,
     approachedAt: body.approachedAt ? new Date(body.approachedAt) : null,
     connectionStatus: body.connectionStatus ?? null,
     sourceSheet: body.sourceSheet ?? null,
     originalRowNumber: body.originalRowNumber ?? null,
-    tags: body.tags ?? null,
+    tags: tags.length > 0 ? tags : null,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     source: (body.source ?? 'other') as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    status: (body.status ?? 'new') as any,
+    status: legacy.status as any,
+    journeyStage,
     notes: body.notes ?? null,
     ownerId: caller.userId,
   };
@@ -1557,13 +1678,9 @@ app.get('/api/leads/export.csv', async (c) => {
     'companyName',
     'companyDomain',
     'linkedinUrl',
-    'status',
+    'journeyStage',
     'source',
-    'outreachStatus',
-    'approachedAt',
-    'connectionStatus',
-    'sourceSheet',
-    'originalRowNumber',
+    'tags',
     'notes',
     'createdAt',
     'updatedAt',
@@ -1581,13 +1698,9 @@ app.get('/api/leads/export.csv', async (c) => {
         row.companyName,
         row.companyDomain,
         row.linkedinUrl,
-        row.status,
+        row.journeyStage,
         row.source,
-        row.outreachStatus,
-        row.approachedAt ? new Date(row.approachedAt).toISOString() : '',
-        row.connectionStatus,
-        row.sourceSheet,
-        row.originalRowNumber,
+        normalizeTagNames(row.tags).join(' | '),
         row.notes,
         row.createdAt ? new Date(row.createdAt).toISOString() : '',
         row.updatedAt ? new Date(row.updatedAt).toISOString() : '',
@@ -1757,11 +1870,36 @@ app.put('/api/leads/:id', async (c) => {
   if (body.connectionStatus !== undefined) update.connectionStatus = body.connectionStatus;
   if (body.sourceSheet !== undefined) update.sourceSheet = body.sourceSheet;
   if (body.originalRowNumber !== undefined) update.originalRowNumber = body.originalRowNumber;
-  if (body.tags !== undefined) update.tags = body.tags;
+  if (body.tags !== undefined) {
+    const tags = normalizeTagNames(body.tags);
+    if (isSuperadmin || role === 'manager') {
+      await ensureTagDefinitions(db, tags, caller.userId);
+      update.tags = tags;
+    } else {
+      const definitions = await db
+        .select({ name: schema.tagDefinitions.name })
+        .from(schema.tagDefinitions);
+      const known = new Set(definitions.map((tag) => tag.name.toLowerCase()));
+      if (tags.some((tag) => !known.has(tag.toLowerCase()))) {
+        return c.json({ error: 'Members can only assign existing tags.' }, 400);
+      }
+      update.tags = tags;
+    }
+  }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   if (body.source !== undefined) update.source = body.source as any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (body.status !== undefined) update.status = body.status as any;
+  if (body.journeyStage !== undefined || body.status !== undefined) {
+    const journeyStage = isLeadJourneyStage(body.journeyStage)
+      ? body.journeyStage
+      : journeyStageFromLegacy({
+          status: body.status,
+          outreachStatus: body.outreachStatus ?? existing.outreachStatus,
+        });
+    const legacy = legacyFieldsForJourney(journeyStage);
+    update.journeyStage = journeyStage;
+    update.status = legacy.status;
+    update.outreachStatus = legacy.outreachStatus;
+  }
   if (body.notes !== undefined) update.notes = body.notes;
   if (body.ownerId !== undefined && isSuperadmin) update.ownerId = body.ownerId;
   // batchId is server-controlled; only superadmins may reassign it.
@@ -1915,18 +2053,36 @@ async function autoCreateLeadChannels(
   }
 }
 
-/** Recompute and persist leads.outreachStatus from the lead's channels. */
-async function recomputeLeadOutreachStatus(db: CrmDb, leadId: string): Promise<string> {
+/** Keep legacy outreach metadata and the authoritative journey in sync with channels. */
+async function recomputeLeadOutreachStatus(
+  db: CrmDb,
+  leadId: string
+): Promise<{ outreachStatus: string; journeyStage: LeadJourneyStage }> {
   const channels = await db
     .select({ stage: schema.leadChannels.stage })
     .from(schema.leadChannels)
     .where(eq(schema.leadChannels.leadId, leadId));
   const outreachStatus = computeOutreachSummary(channels.map((c) => ({ stage: c.stage })));
+  const [lead] = await db
+    .select({ journeyStage: schema.leads.journeyStage })
+    .from(schema.leads)
+    .where(eq(schema.leads.id, leadId))
+    .limit(1);
+  const journeyStage = mergeJourneyWithChannelStages(
+    lead?.journeyStage ?? 'new',
+    channels.map((channel) => channel.stage)
+  );
+  const legacy = legacyFieldsForJourney(journeyStage);
   await db
     .update(schema.leads)
-    .set({ outreachStatus, updatedAt: new Date() })
+    .set({
+      journeyStage,
+      status: legacy.status,
+      outreachStatus,
+      updatedAt: new Date(),
+    })
     .where(eq(schema.leads.id, leadId));
-  return outreachStatus;
+  return { outreachStatus, journeyStage };
 }
 
 app.post('/api/leads/:id/outreach-actions', async (c) => {
@@ -2044,7 +2200,7 @@ app.post('/api/leads/:id/outreach-actions', async (c) => {
   if (!updatedRow) return c.json({ error: 'Internal error' }, 500);
 
   // Recompute leads.outreachStatus from all channels
-  const outreachStatus = await recomputeLeadOutreachStatus(db, id);
+  const journey = await recomputeLeadOutreachStatus(db, id);
 
   // Activity row referencing the lead via content JSON (no leadId FK on activities)
   await db.insert(schema.activities).values({
@@ -2069,7 +2225,7 @@ app.post('/api/leads/:id/outreach-actions', async (c) => {
     app: 'crm',
   });
 
-  return c.json({ channel: updatedRow, lead: { outreachStatus } });
+  return c.json({ channel: updatedRow, lead: journey });
 });
 
 app.get('/api/leads/:id/channels', async (c) => {
@@ -2272,6 +2428,7 @@ app.post('/api/leads/bulk', async (c) => {
   const action = body.action as
     | 'delete'
     | 'update_status'
+    | 'update_journey_stage'
     | 'update_outreach_status'
     | 'update_tags'
     | 'assign_owner';
@@ -2283,9 +2440,14 @@ app.post('/api/leads/bulk', async (c) => {
     return c.json({ error: 'Maximum 500 items per bulk action.' }, 413);
   }
   if (
-    !['delete', 'update_status', 'update_outreach_status', 'update_tags', 'assign_owner'].includes(
-      action
-    )
+    ![
+      'delete',
+      'update_status',
+      'update_journey_stage',
+      'update_outreach_status',
+      'update_tags',
+      'assign_owner',
+    ].includes(action)
   ) {
     return c.json({ error: 'Invalid action.' }, 400);
   }
@@ -2363,15 +2525,23 @@ app.post('/api/leads/bulk', async (c) => {
       });
       deletedCount++;
     }
-  } else if (action === 'update_status') {
-    const status = body.status as string;
-    if (!status) return c.json({ error: "Missing 'status' field." }, 400);
+  } else if (action === 'update_status' || action === 'update_journey_stage') {
+    const requestedStage =
+      action === 'update_journey_stage'
+        ? body.journeyStage
+        : journeyStageFromLegacy({ status: body.status });
+    if (!isLeadJourneyStage(requestedStage)) {
+      return c.json({ error: 'Invalid lead journey stage.' }, 400);
+    }
+    const legacy = legacyFieldsForJourney(requestedStage);
     const now = new Date();
     for (const lead of allLeads) {
       await db
         .update(schema.leads)
         .set({
-          status: status as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+          journeyStage: requestedStage,
+          status: legacy.status,
+          outreachStatus: legacy.outreachStatus,
           updatedAt: now,
         })
         .where(eq(schema.leads.id, lead.id));
@@ -2381,7 +2551,13 @@ app.post('/api/leads/bulk', async (c) => {
         resourceType: 'lead',
         resourceId: lead.id,
         before: lead,
-        after: { ...lead, status, updatedAt: now },
+        after: {
+          ...lead,
+          journeyStage: requestedStage,
+          status: legacy.status,
+          outreachStatus: legacy.outreachStatus,
+          updatedAt: now,
+        },
         app: 'crm',
       });
       updatedCount++;
@@ -2410,8 +2586,21 @@ app.post('/api/leads/bulk', async (c) => {
       updatedCount++;
     }
   } else if (action === 'update_tags') {
-    const tags = Array.isArray(body.tags) ? (body.tags as string[]) : [];
-    const mode = body.mode === 'replace' ? 'replace' : 'merge';
+    const requestedTags = normalizeTagNames(body.tags);
+    if (!isSuperadmin && role !== 'manager') {
+      const unknownTags = await unknownTagNames(db, requestedTags);
+      if (unknownTags.length > 0) {
+        return c.json(
+          { error: `Members can only assign existing tags: ${unknownTags.join(', ')}` },
+          400
+        );
+      }
+    }
+    const tags =
+      isSuperadmin || role === 'manager'
+        ? await ensureTagDefinitions(db, requestedTags, caller.userId)
+        : requestedTags;
+    const mode = body.mode === 'replace' || body.tagMode === 'replace' ? 'replace' : 'merge';
     if (tags.length === 0) return c.json({ error: "Missing 'tags' field." }, 400);
     const now = new Date();
     for (const lead of allLeads) {
@@ -2563,6 +2752,7 @@ app.post('/api/leads/:id/convert', async (c) => {
     .set({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       status: 'converted' as any,
+      journeyStage: 'converted',
       convertedToContactId: contact.id,
       convertedToCompanyId: companyId,
       convertedAt: new Date(),
@@ -3411,7 +3601,13 @@ app.post('/api/import/leads/preview', async (c) => {
     return c.json({ error: "Missing or invalid 'csv' field." }, 400);
   }
   const batchName = typeof body.batchName === 'string' ? body.batchName : '';
-  const tags = Array.isArray(body.tags) ? (body.tags as string[]) : [];
+  const batchNumber =
+    formatBatchTag(body.batchNumber) ||
+    (/^(?:batch|set)[\s#:_-]*.+/i.test(batchName) ? formatBatchTag(batchName) : null);
+  const tags = normalizeTagNames([
+    ...(Array.isArray(body.tags) ? body.tags : []),
+    ...(batchNumber ? [batchNumber] : []),
+  ]);
 
   const parsed = parseLeadsCsv(csvText);
   if (parsed.success.length > 500) {
@@ -3481,6 +3677,7 @@ app.post('/api/import/leads/preview', async (c) => {
     allRows: enriched.slice(0, 100),
     // Echo back batch metadata for UI display (batch is not created on preview)
     batchName,
+    batchNumber,
     tags,
   });
 });
@@ -3507,14 +3704,37 @@ app.post('/api/import/leads', async (c) => {
     return c.json({ error: "Missing or invalid 'csv' field." }, 400);
   }
   const batchName = typeof body.batchName === 'string' ? body.batchName : '';
-  const batchTags = Array.isArray(body.tags) ? (body.tags as string[]) : [];
-  const assigneeId =
-    typeof body.assigneeId === 'string' && body.assigneeId ? body.assigneeId : caller.userId;
-
+  const requestedBatchTag =
+    formatBatchTag(body.batchNumber) ||
+    (/^(?:batch|set)[\s#:_-]*.+/i.test(batchName) ? formatBatchTag(batchName) : null);
   const parsed = parseLeadsCsv(csvText);
   if (parsed.success.length > 500) {
     return c.json({ error: 'CSV too large. Maximum 500 rows allowed per import.' }, 413);
   }
+  if (!isSuperadmin && role !== 'manager') {
+    const unknownTags = await unknownTagNames(db, [
+      ...(Array.isArray(body.tags) ? body.tags : []),
+      ...parsed.success.flatMap((row) => (Array.isArray(row.tags) ? row.tags : [])),
+    ]);
+    if (unknownTags.length > 0) {
+      return c.json(
+        { error: `Members can only import existing tags: ${unknownTags.join(', ')}` },
+        400
+      );
+    }
+  }
+  const userDefaultTags = await ensureTagDefinitions(
+    db,
+    Array.isArray(body.tags) ? body.tags : [],
+    caller.userId,
+    false
+  );
+  const systemBatchTags = requestedBatchTag
+    ? await ensureTagDefinitions(db, [requestedBatchTag], caller.userId, true)
+    : [];
+  const batchTags = normalizeTagNames([...userDefaultTags, ...systemBatchTags]);
+  const assigneeId =
+    typeof body.assigneeId === 'string' && body.assigneeId ? body.assigneeId : caller.userId;
 
   // Insert the import_batches row first; counts are finalized after processing.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -3522,7 +3742,7 @@ app.post('/api/import/leads', async (c) => {
   const [batch] = await db
     .insert(schema.importBatches)
     .values({
-      name: batchName || `Import ${new Date().toISOString()}`,
+      name: batchName || requestedBatchTag || `Import ${new Date().toISOString()}`,
       importedByUserId: caller.userId,
       source: batchSource,
       totalRows: parsed.success.length,
@@ -3603,8 +3823,22 @@ app.post('/api/import/leads', async (c) => {
       continue;
     }
 
-    const rowTags = Array.isArray(row.tags) ? row.tags : [];
-    const finalTags = [...batchTags, ...rowTags];
+    const rowBatchTag = formatBatchTag(row.batchNumber);
+    const rowUserTags = await ensureTagDefinitions(
+      db,
+      normalizeTagNames([...batchTags, ...(Array.isArray(row.tags) ? row.tags : [])]),
+      caller.userId,
+      false
+    );
+    const rowBatchTags = rowBatchTag
+      ? await ensureTagDefinitions(db, [rowBatchTag], caller.userId, true)
+      : [];
+    const finalTags = normalizeTagNames([...rowUserTags, ...rowBatchTags]);
+    const journeyStage = journeyStageFromLegacy({
+      status: row.status,
+      outreachStatus: row.outreachStatus,
+    });
+    const legacy = legacyFieldsForJourney(journeyStage);
     const [result] = await db
       .insert(schema.leads)
       .values({
@@ -3619,9 +3853,10 @@ app.post('/api/import/leads', async (c) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         source: (row.source ?? 'other') as any,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        status: (row.status ?? 'new') as any,
+        status: legacy.status as any,
+        journeyStage,
         notes: row.notes ?? null,
-        outreachStatus: row.outreachStatus ?? 'not_approached',
+        outreachStatus: legacy.outreachStatus,
         approachedAt: row.approachedAt ? new Date(row.approachedAt) : null,
         connectionStatus: row.connectionStatus ?? null,
         sourceSheet: row.sourceSheet ?? null,
@@ -4166,7 +4401,6 @@ async function buildCeoReportingSnapshot(db: CrmDb): Promise<CeoReportingSnapsho
     [scoreSummary],
     [linkedinSummary],
     leadStatusRows,
-    leadOutreachRows,
     leadSourceRows,
     classificationRows,
     opportunityRows,
@@ -4232,20 +4466,12 @@ async function buildCeoReportingSnapshot(db: CrmDb): Promise<CeoReportingSnapsho
       .from(schema.linkedinConversations),
     db
       .select({
-        label: schema.leads.status,
+        label: schema.leads.journeyStage,
         count: sql<number>`count(*)::int`,
       })
       .from(schema.leads)
       .where(isNull(schema.leads.deletedAt))
-      .groupBy(schema.leads.status),
-    db
-      .select({
-        label: schema.leads.outreachStatus,
-        count: sql<number>`count(*)::int`,
-      })
-      .from(schema.leads)
-      .where(isNull(schema.leads.deletedAt))
-      .groupBy(schema.leads.outreachStatus),
+      .groupBy(schema.leads.journeyStage),
     db
       .select({
         label: schema.leads.source,
@@ -4284,7 +4510,7 @@ async function buildCeoReportingSnapshot(db: CrmDb): Promise<CeoReportingSnapsho
         firstName: schema.leads.firstName,
         lastName: schema.leads.lastName,
         company: schema.leads.companyName,
-        status: schema.leads.status,
+        status: schema.leads.journeyStage,
         source: schema.leads.source,
         createdAt: schema.leads.createdAt,
       })
@@ -4349,7 +4575,6 @@ async function buildCeoReportingSnapshot(db: CrmDb): Promise<CeoReportingSnapsho
       lastLinkedinMessageAt: linkedinSummary?.lastMessageAt?.toISOString() ?? null,
     },
     leadsByStatus: reportingSeries(leadStatusRows),
-    leadsByOutreachStatus: reportingSeries(leadOutreachRows),
     leadsBySource: reportingSeries(leadSourceRows),
     leadClassifications: reportingSeries(classificationRows),
     opportunitiesByStage: opportunityRows
@@ -5605,6 +5830,30 @@ app.post('/api/leads/import/document/confirm', async (c) => {
   }
 
   // Create lead
+  const documentJourneyStage = journeyStageFromLegacy({
+    status: leadData.status,
+    outreachStatus: leadData.outreachStatus,
+  });
+  const documentLegacy = legacyFieldsForJourney(documentJourneyStage);
+  const documentBatchTag = formatBatchTag(body.batchNumber ?? leadData.batchNumber);
+  const requestedDocumentTags = normalizeTagNames(leadData.tags);
+  if (!isSuperadmin && role !== 'manager') {
+    const unknownTags = await unknownTagNames(db, requestedDocumentTags);
+    if (unknownTags.length > 0) {
+      return c.json(
+        { error: `Members can only assign existing tags: ${unknownTags.join(', ')}` },
+        400
+      );
+    }
+  }
+  const documentUserTags =
+    isSuperadmin || role === 'manager'
+      ? await ensureTagDefinitions(db, requestedDocumentTags, caller.userId)
+      : requestedDocumentTags;
+  const documentBatchTags = documentBatchTag
+    ? await ensureTagDefinitions(db, [documentBatchTag], caller.userId, true)
+    : [];
+  const documentTags = normalizeTagNames([...documentUserTags, ...documentBatchTags]);
   const [lead] = await db
     .insert(schema.leads)
     .values({
@@ -5616,7 +5865,10 @@ app.post('/api/leads/import/document/confirm', async (c) => {
       companyName: leadData.companyName ?? null,
       companyDomain: leadData.website ?? null,
       source: leadData.source ?? 'pdf_upload',
-      status: leadData.status ?? 'new',
+      status: documentLegacy.status,
+      journeyStage: documentJourneyStage,
+      outreachStatus: documentLegacy.outreachStatus,
+      tags: documentTags.length > 0 ? documentTags : null,
       notes: leadData.notes ?? null,
       ownerId: caller.userId,
     })

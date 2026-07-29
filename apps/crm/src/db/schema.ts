@@ -38,6 +38,22 @@ export const leadStatusEnum = crmSchema.enum('lead_status', [
   'converted',
 ]);
 
+export const leadJourneyStageEnum = crmSchema.enum('lead_journey_stage', [
+  'new',
+  'ready_to_reach_out',
+  'connection_sent',
+  'connected',
+  'engaged',
+  'qualified',
+  'meeting_booked',
+  'opportunity',
+  'converted',
+  'nurture',
+  'no_response',
+  'disqualified',
+  'lost',
+]);
+
 export const opportunityStageEnum = crmSchema.enum('opportunity_stage', [
   'prospecting',
   'qualification',
@@ -148,6 +164,26 @@ export const importBatches = crmSchema.table(
   ]
 );
 
+export const tagDefinitions = crmSchema.table(
+  'tag_definitions',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    name: text('name').notNull(),
+    slug: text('slug').notNull(),
+    color: text('color').default('slate').notNull(),
+    description: text('description'),
+    isSystem: boolean('is_system').default(false).notNull(),
+    // System/backfilled tags do not have a human creator. User-created tags
+    // always populate this field in the API.
+    createdBy: uuid('created_by'),
+    ...timestamps(),
+  },
+  (table) => [
+    uniqueIndex('idx_tag_definitions_slug').on(table.slug),
+    index('idx_tag_definitions_name').on(table.name),
+  ]
+);
+
 export const contacts = crmSchema.table(
   'contacts',
   {
@@ -197,6 +233,7 @@ export const leads = crmSchema.table(
     batchId: uuid('batch_id').references(() => importBatches.id, { onDelete: 'set null' }),
     source: leadSourceEnum('source').default('other').notNull(),
     status: leadStatusEnum('status').default('new').notNull(),
+    journeyStage: leadJourneyStageEnum('journey_stage').default('new').notNull(),
     notes: text('notes'),
     ownerId: uuid('owner_id').notNull(),
     convertedToContactId: uuid('converted_to_contact_id'),
@@ -211,6 +248,7 @@ export const leads = crmSchema.table(
   },
   (table) => [
     index('idx_leads_status').on(table.status),
+    index('idx_leads_journey_stage').on(table.journeyStage),
     index('idx_leads_source').on(table.source),
     index('idx_leads_owner').on(table.ownerId),
     index('idx_leads_email_lower').on(sql`lower(${table.email})`),
