@@ -111,6 +111,13 @@ let ambiguous = 0;
 let existingByLinkedIn = 0;
 let existingByName = 0;
 let existingByBoth = 0;
+const ambiguousCandidates: Array<{
+  sourceRow: number;
+  name: string;
+  linkedinUrl: string;
+  linkedinMatches: number;
+  nameMatches: number;
+}> = [];
 
 for (const candidate of candidates) {
   const linkMatches = byLinkedIn.get(canonicalLinkedIn(candidate.linkedinUrl) ?? '') ?? [];
@@ -137,6 +144,13 @@ for (const candidate of candidates) {
   if (!matchedLead || !matchedBy) {
     if (linkMatches.length > 0 || nameMatches.length > 0) {
       ambiguous += 1;
+      ambiguousCandidates.push({
+        sourceRow: candidate.sourceRow,
+        name: `${candidate.firstName} ${candidate.lastName}`,
+        linkedinUrl: candidate.linkedinUrl,
+        linkedinMatches: linkMatches.length,
+        nameMatches: nameMatches.length,
+      });
     } else {
       plannedNew.push(candidate);
     }
@@ -157,6 +171,7 @@ const summary = {
   existingByName,
   existingByBoth,
   ambiguousSkipped: ambiguous,
+  ambiguousCandidates,
   existingToTagOrEnrich: plannedUpdates.length,
   needsProfileCaptureNew: plannedNew.filter((candidate) =>
     candidate.tags.some((tag) => tag.toLowerCase() === 'needs profile capture')
