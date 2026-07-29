@@ -172,7 +172,10 @@ if (mode === 'dry-run') {
   process.exit(0);
 }
 
-const result = await db.transaction(async (tx) => {
+// neon-http intentionally has no interactive transaction support. Every write
+// below is idempotent, so a failed run can be safely retried without creating
+// duplicate leads.
+const result = await (async (tx: typeof db) => {
   for (const [name, color, description] of [
     ['Future Candidates', 'violet', 'Imported from the Future Candidates recruiting list.'],
     [
@@ -244,16 +247,24 @@ const result = await db.transaction(async (tx) => {
     .returning({ id: schema.importBatches.id });
   if (!batch) throw new Error('Could not create import batch.');
 
-  const createdLeadIds: string[] = [];
-  for (const candidate of plannedNew) {
-    const sequenceResult = await tx.execute(sql`SELECT nextval('crm.lead_number_seq') AS seq`);
+  const leadValues: Array<typeof schema.leads.$inferInsert> = [];
+  if (plannedNew.length > 0) {
+    const sequenceResult = await tx.execute(
+      sql`SELECT nextval('crm.lead_number_seq') AS seq
+          FROM generate_series(1, ${plannedNew.length}::integer)`
+    );
     const sequenceRows =
       (sequenceResult as unknown as { rows?: Array<{ seq?: string | number }> }).rows ?? [];
-    const sequence = sequenceRows[0]?.seq;
-    if (sequence === undefined) throw new Error('Lead number sequence returned no value.');
-    const [lead] = await tx
-      .insert(schema.leads)
-      .values({
+    if (sequenceRows.length !== plannedNew.length) {
+      throw new Error('Lead number sequence returned an unexpected row count.');
+    }
+    for (let index = 0; index < plannedNew.length; index += 1) {
+      const candidate = plannedNew[index];
+      const sequence = sequenceRows[index]?.seq;
+      if (!candidate || sequence === undefined) {
+        throw new Error('Lead number sequence returned no value.');
+      }
+      leadValues.push({
         leadNumber: formatLeadNumber(typeof sequence === 'string' ? BigInt(sequence) : sequence),
         firstName: candidate.firstName,
         lastName: candidate.lastName,
@@ -270,11 +281,19 @@ const result = await db.transaction(async (tx) => {
         ownerId,
         batchId: batch.id,
         idempotencyKey: `future-candidates:${canonicalLinkedIn(candidate.linkedinUrl)}`,
-      })
-      .onConflictDoNothing()
-      .returning({ id: schema.leads.id });
-    if (lead) createdLeadIds.push(lead.id);
+      });
+    }
   }
+
+  const createdLeads =
+    leadValues.length > 0
+      ? await tx
+          .insert(schema.leads)
+          .values(leadValues)
+          .onConflictDoNothing()
+          .returning({ id: schema.leads.id })
+      : [];
+  const createdLeadIds = createdLeads.map((lead) => lead.id);
 
   if (createdLeadIds.length > 0) {
     await tx.insert(schema.leadChannels).values(
@@ -310,6 +329,6 @@ const result = await db.transaction(async (tx) => {
     verifiedImported: Number(verification?.imported ?? 0),
     verifiedQueued: Number(verification?.queued ?? 0),
   };
-});
+})(db);
 
 console.log(JSON.stringify({ ...summary, ...result }));
