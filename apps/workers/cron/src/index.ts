@@ -5,6 +5,8 @@ export interface Env {
   WORKFLOW_RUNNER_URL: string;
   CRM_API_URL: string;
   WORKFLOW_RUNNER_SECRET: string;
+  CRM_SERVICE: Fetcher;
+  WORKFLOW_RUNNER_SERVICE: Fetcher;
 }
 
 const QUEUE_BATCH_SIZE = 10;
@@ -15,12 +17,14 @@ type QueueDrainResult = {
 };
 
 async function drainEndpoint(env: Env, path: string): Promise<unknown> {
-  const response = await fetch(`${env.CRM_API_URL}${path}?limit=${QUEUE_BATCH_SIZE}`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.WORKFLOW_RUNNER_SECRET}`,
-    },
-  });
+  const response = await env.CRM_SERVICE.fetch(
+    new Request(`https://crm.internal${path}?limit=${QUEUE_BATCH_SIZE}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.WORKFLOW_RUNNER_SECRET}`,
+      },
+    })
+  );
   const body = await response.text();
   if (!response.ok) {
     throw new Error(`${path} failed: ${response.status} ${body}`);
@@ -71,13 +75,15 @@ export default {
       const triggers = ['opportunity_stale', 'task_due_soon', 'outreach_stale'] as const;
       for (const trigger of triggers) {
         try {
-          const res = await fetch(`${env.WORKFLOW_RUNNER_URL}/evaluate/${trigger}`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${env.WORKFLOW_RUNNER_SECRET}`,
-            },
-          });
+          const res = await env.WORKFLOW_RUNNER_SERVICE.fetch(
+            new Request(`https://workflow-runner.internal/evaluate/${trigger}`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${env.WORKFLOW_RUNNER_SECRET}`,
+              },
+            })
+          );
           if (!res.ok) {
             console.error(`Workflow evaluation failed for ${trigger}: ${res.status}`);
           } else {

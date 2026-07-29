@@ -14,6 +14,14 @@ crons = ["0 * * * *", "* * * * *"]
 WORKFLOW_RUNNER_URL = "https://skarion-workflow-runner.skarion-talentos.workers.dev"
 CRM_API_URL = "https://skarion-crm-platform.skarion-talentos.workers.dev"
 
+[[services]]
+binding = "CRM_SERVICE"
+service = "skarion-crm-platform"
+
+[[services]]
+binding = "WORKFLOW_RUNNER_SERVICE"
+service = "skarion-workflow-runner"
+
 [env.staging.vars]
 WORKFLOW_RUNNER_URL = "https://skarion-workflow-runner-staging.skarion-talentos.workers.dev"
 CRM_API_URL = "https://skarion-crm-platform-staging.skarion-talentos.workers.dev"
