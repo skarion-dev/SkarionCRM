@@ -652,6 +652,8 @@ export interface AiModelOption {
   backingModel: string;
   label: string;
   costClass: 'low' | 'medium' | 'high';
+  inputPricePerMillion: number;
+  outputPricePerMillion: number;
 }
 
 export interface AiAgentConfig {
@@ -697,6 +699,47 @@ export function useUpdateAiConfig() {
       qc.invalidateQueries({ queryKey: ['integrations', 'status'] });
     },
   });
+}
+
+export type AiUsagePeriod = 'day' | 'week' | 'month';
+
+export interface AiUsageAggregate {
+  id: string;
+  label: string;
+  requests: number;
+  successfulRequests: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cachedInputTokens: number;
+  estimatedCostUsd: number;
+}
+
+export interface AiUsageResponse {
+  period: AiUsagePeriod;
+  label: string;
+  range: { start: string; end: string };
+  pricingUpdatedAt: string;
+  totals: AiUsageAggregate & {
+    failedRequests: number;
+    averageLatencyMs: number;
+    providerMeasuredRequests: number;
+    estimatedRequests: number;
+  };
+  series: Array<{
+    timestamp: string;
+    requests: number;
+    tokens: number;
+    estimatedCostUsd: number;
+  }>;
+  byModel: AiUsageAggregate[];
+  byAgent: AiUsageAggregate[];
+}
+
+export function useAiUsage(period: AiUsagePeriod) {
+  return useCrmQuery(['ai', 'usage', period], () =>
+    crmFetch<AiUsageResponse>(`/api/ai/usage?period=${period}`)
+  );
 }
 
 // ─── OUTREACH CHANNELS / ATTACHMENTS / IMPORT BATCHES ───

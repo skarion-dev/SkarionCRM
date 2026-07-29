@@ -12,6 +12,8 @@ export interface AiGatewayEnv {
   AI_EMBEDDING_MODEL?: string;
   /** JSON object mapping an AI agent id to a model alias. */
   AI_AGENT_MODELS?: string;
+  /** Optional server-side sink used to persist token and cost telemetry. */
+  AI_USAGE_RECORDER?: AiUsageRecorder;
 }
 
 export type AiGatewayContentPart =
@@ -22,6 +24,28 @@ export interface AiGatewayMessage {
   role: 'system' | 'user' | 'assistant';
   content: string | AiGatewayContentPart[];
 }
+
+export interface AiTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cachedInputTokens?: number;
+}
+
+export interface AiUsageRecord {
+  provider: 'vertex_proxy' | 'google_ai';
+  model: string;
+  backingModel: string;
+  agentId?: AiAgentId;
+  requestType: 'chat' | 'embedding' | 'ocr';
+  status: 'success' | 'error' | 'cancelled';
+  usage: AiTokenUsage;
+  usageSource: 'provider' | 'estimated' | 'unavailable';
+  estimatedCostUsd: number;
+  latencyMs: number;
+}
+
+export type AiUsageRecorder = (record: AiUsageRecord) => void | Promise<void>;
 
 const DEFAULT_CHAT_TIMEOUT_MS = 90_000;
 const DEFAULT_EMBEDDING_TIMEOUT_MS = 20_000;
@@ -39,62 +63,127 @@ export const AI_MODELS = [
     backingModel: 'gemini-3.1-pro-preview',
     label: 'Coding Best',
     costClass: 'high',
+    inputPricePerMillion: 2,
+    outputPricePerMillion: 12,
   },
   {
     id: 'coding-fast',
     backingModel: 'gemini-3.6-flash',
     label: 'Coding Fast',
     costClass: 'medium',
+    inputPricePerMillion: 1.5,
+    outputPricePerMillion: 7.5,
   },
   {
     id: 'coding-cheap',
     backingModel: 'gemini-3.5-flash-lite',
     label: 'Coding Cheap',
     costClass: 'low',
+    inputPricePerMillion: 0.3,
+    outputPricePerMillion: 2.5,
   },
   {
     id: 'gemini-3.1-pro-preview',
     backingModel: 'gemini-3.1-pro-preview',
     label: 'Gemini 3.1 Pro Preview',
     costClass: 'high',
+    inputPricePerMillion: 2,
+    outputPricePerMillion: 12,
   },
   {
     id: 'gemini-3.6-flash',
     backingModel: 'gemini-3.6-flash',
     label: 'Gemini 3.6 Flash',
     costClass: 'medium',
+    inputPricePerMillion: 1.5,
+    outputPricePerMillion: 7.5,
   },
   {
     id: 'gemini-3.5-flash',
     backingModel: 'gemini-3.5-flash',
     label: 'Gemini 3.5 Flash',
     costClass: 'medium',
+    inputPricePerMillion: 1.5,
+    outputPricePerMillion: 9,
   },
   {
     id: 'gemini-3.5-flash-lite',
     backingModel: 'gemini-3.5-flash-lite',
     label: 'Gemini 3.5 Flash Lite',
     costClass: 'low',
+    inputPricePerMillion: 0.3,
+    outputPricePerMillion: 2.5,
   },
   {
     id: 'gemini-2.5-pro',
     backingModel: 'gemini-2.5-pro',
     label: 'Gemini 2.5 Pro',
     costClass: 'high',
+    inputPricePerMillion: 1.25,
+    outputPricePerMillion: 10,
   },
   {
     id: 'gemini-2.5-flash',
     backingModel: 'gemini-2.5-flash',
     label: 'Gemini 2.5 Flash',
     costClass: 'medium',
+    inputPricePerMillion: 0.3,
+    outputPricePerMillion: 2.5,
   },
   {
     id: 'gemini-2.5-flash-lite',
     backingModel: 'gemini-2.5-flash-lite',
     label: 'Gemini 2.5 Flash Lite',
     costClass: 'low',
+    inputPricePerMillion: 0.1,
+    outputPricePerMillion: 0.4,
   },
 ] as const;
+
+const ADDITIONAL_MODEL_PRICING: Record<
+  string,
+  { inputPricePerMillion: number; outputPricePerMillion: number }
+> = {
+  embedding: { inputPricePerMillion: 0.15, outputPricePerMillion: 0 },
+  'gemini-embedding-001': { inputPricePerMillion: 0.15, outputPricePerMillion: 0 },
+  'gemini-1.5-flash': { inputPricePerMillion: 0.075, outputPricePerMillion: 0.3 },
+  'gemini-1.5-pro': { inputPricePerMillion: 1.25, outputPricePerMillion: 5 },
+  'text-embedding-004': { inputPricePerMillion: 0.025, outputPricePerMillion: 0 },
+};
+
+export const AI_PRICING_UPDATED_AT = '2026-07-29';
+
+export function getAiBackingModel(model: string): string {
+  return AI_MODELS.find((candidate) => candidate.id === model)?.backingModel ?? model;
+}
+
+export function getAiModelPricing(
+  model: string
+): { inputPricePerMillion: number; outputPricePerMillion: number } | null {
+  const configured = AI_MODELS.find(
+    (candidate) => candidate.id === model || candidate.backingModel === model
+  );
+  if (configured) {
+    return {
+      inputPricePerMillion: configured.inputPricePerMillion,
+      outputPricePerMillion: configured.outputPricePerMillion,
+    };
+  }
+  return ADDITIONAL_MODEL_PRICING[model] ?? null;
+}
+
+export function estimateAiCostUsd(model: string, usage: AiTokenUsage): number {
+  const pricing = getAiModelPricing(model);
+  if (!pricing) return 0;
+  const cachedInputTokens = Math.min(usage.inputTokens, usage.cachedInputTokens ?? 0);
+  const uncachedInputTokens = usage.inputTokens - cachedInputTokens;
+  return (
+    (uncachedInputTokens * pricing.inputPricePerMillion +
+      cachedInputTokens * pricing.inputPricePerMillion * 0.1 +
+      usage.outputTokens * pricing.outputPricePerMillion) /
+    1_000_000
+  );
+}
 
 export type AiAgentId =
   | 'crm-copilot'
@@ -243,12 +332,81 @@ async function fetchWithTimeout(
   }
 }
 
+function toNonNegativeInteger(value: unknown): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? Math.round(numeric) : 0;
+}
+
+function parseOpenAiUsage(value: unknown): AiTokenUsage | null {
+  if (!value || typeof value !== 'object') return null;
+  const usage = value as Record<string, unknown>;
+  const inputTokens = toNonNegativeInteger(
+    usage.prompt_tokens ?? usage.input_tokens ?? usage.promptTokenCount
+  );
+  const outputTokens = toNonNegativeInteger(
+    usage.completion_tokens ?? usage.output_tokens ?? usage.candidatesTokenCount
+  );
+  const totalTokens =
+    toNonNegativeInteger(usage.total_tokens ?? usage.totalTokenCount) || inputTokens + outputTokens;
+  if (totalTokens === 0 && inputTokens === 0 && outputTokens === 0) return null;
+  const details = (usage.prompt_tokens_details ?? usage.input_tokens_details) as
+    | Record<string, unknown>
+    | undefined;
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens,
+    cachedInputTokens: toNonNegativeInteger(
+      details?.cached_tokens ?? usage.cachedContentTokenCount
+    ),
+  };
+}
+
+function contentCharacterCount(content: AiGatewayMessage['content']): number {
+  if (typeof content === 'string') return content.length;
+  return content.reduce((total, part) => {
+    if (part.type === 'text') return total + part.text.length;
+    return total;
+  }, 0);
+}
+
+function estimateUsage(
+  messages: AiGatewayMessage[],
+  outputText = '',
+  embeddingInput = ''
+): AiTokenUsage {
+  const inputCharacters =
+    embeddingInput.length +
+    messages.reduce((total, message) => total + contentCharacterCount(message.content), 0);
+  const inputTokens = Math.ceil(inputCharacters / 4);
+  const outputTokens = Math.ceil(outputText.length / 4);
+  return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
+}
+
+async function recordGatewayUsage(
+  env: AiGatewayEnv,
+  record: Omit<AiUsageRecord, 'backingModel' | 'estimatedCostUsd'>
+): Promise<void> {
+  if (!env.AI_USAGE_RECORDER) return;
+  const completeRecord: AiUsageRecord = {
+    ...record,
+    backingModel: getAiBackingModel(record.model),
+    estimatedCostUsd: estimateAiCostUsd(record.model, record.usage),
+  };
+  try {
+    await env.AI_USAGE_RECORDER(completeRecord);
+  } catch (error) {
+    console.error('AI usage recorder failed:', error);
+  }
+}
+
 export async function gatewayChatCompletion(
   messages: AiGatewayMessage[],
   env: AiGatewayEnv,
   options: {
     model?: string;
     tier?: AiModelTier;
+    agent?: AiAgentId;
     temperature?: number;
     maxTokens?: number;
     timeoutMs?: number;
@@ -257,6 +415,7 @@ export async function gatewayChatCompletion(
   if (!hasAiGateway(env)) return null;
 
   const model = options.model || selectAiModel(env, options.tier);
+  const startedAt = Date.now();
   try {
     const response = await fetchWithTimeout(
       gatewayUrl(env, 'chat/completions'),
@@ -278,15 +437,49 @@ export async function gatewayChatCompletion(
 
     if (!response.ok) {
       console.error(`AI gateway chat error (${model}, ${response.status}):`, await response.text());
+      await recordGatewayUsage(env, {
+        provider: 'vertex_proxy',
+        model,
+        agentId: options.agent,
+        requestType: 'chat',
+        status: 'error',
+        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+        usageSource: 'unavailable',
+        latencyMs: Date.now() - startedAt,
+      });
       return null;
     }
 
     const data = (await response.json()) as {
       choices?: { message?: { content?: string } }[];
+      usage?: unknown;
     };
-    return data.choices?.[0]?.message?.content ?? null;
+    const content = data.choices?.[0]?.message?.content ?? null;
+    const providerUsage = parseOpenAiUsage(data.usage);
+    const usage = providerUsage ?? estimateUsage(messages, content ?? '');
+    await recordGatewayUsage(env, {
+      provider: 'vertex_proxy',
+      model,
+      agentId: options.agent,
+      requestType: 'chat',
+      status: 'success',
+      usage,
+      usageSource: providerUsage ? 'provider' : 'estimated',
+      latencyMs: Date.now() - startedAt,
+    });
+    return content;
   } catch (error) {
     console.error(`AI gateway chat request failed (${model}):`, error);
+    await recordGatewayUsage(env, {
+      provider: 'vertex_proxy',
+      model,
+      agentId: options.agent,
+      requestType: 'chat',
+      status: 'error',
+      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+      usageSource: 'unavailable',
+      latencyMs: Date.now() - startedAt,
+    });
     return null;
   }
 }
@@ -302,6 +495,7 @@ export async function* gatewayChatCompletionStream(
   options: {
     model?: string;
     tier?: AiModelTier;
+    agent?: AiAgentId;
     temperature?: number;
     maxTokens?: number;
     timeoutMs?: number;
@@ -310,6 +504,7 @@ export async function* gatewayChatCompletionStream(
   if (!hasAiGateway(env)) return;
 
   const model = options.model || selectAiModel(env, options.tier);
+  const startedAt = Date.now();
   let response: Response;
   try {
     response = await fetchWithTimeout(
@@ -325,6 +520,7 @@ export async function* gatewayChatCompletionStream(
           messages,
           temperature: options.temperature ?? 0.3,
           stream: true,
+          stream_options: { include_usage: true },
           ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
         }),
       },
@@ -332,6 +528,16 @@ export async function* gatewayChatCompletionStream(
     );
   } catch (error) {
     console.error(`AI gateway streaming request failed (${model}):`, error);
+    await recordGatewayUsage(env, {
+      provider: 'vertex_proxy',
+      model,
+      agentId: options.agent,
+      requestType: 'chat',
+      status: 'error',
+      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+      usageSource: 'unavailable',
+      latencyMs: Date.now() - startedAt,
+    });
     return;
   }
 
@@ -340,6 +546,16 @@ export async function* gatewayChatCompletionStream(
       `AI gateway streaming error (${model}, ${response.status}):`,
       await response.text()
     );
+    await recordGatewayUsage(env, {
+      provider: 'vertex_proxy',
+      model,
+      agentId: options.agent,
+      requestType: 'chat',
+      status: 'error',
+      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+      usageSource: 'unavailable',
+      latencyMs: Date.now() - startedAt,
+    });
     return;
   }
 
@@ -347,8 +563,20 @@ export async function* gatewayChatCompletionStream(
   if (!contentType.includes('text/event-stream')) {
     const data = (await response.json()) as {
       choices?: { message?: { content?: string } }[];
+      usage?: unknown;
     };
     const content = data.choices?.[0]?.message?.content;
+    const providerUsage = parseOpenAiUsage(data.usage);
+    await recordGatewayUsage(env, {
+      provider: 'vertex_proxy',
+      model,
+      agentId: options.agent,
+      requestType: 'chat',
+      status: 'success',
+      usage: providerUsage ?? estimateUsage(messages, content ?? ''),
+      usageSource: providerUsage ? 'provider' : 'estimated',
+      latencyMs: Date.now() - startedAt,
+    });
     if (content) yield content;
     return;
   }
@@ -358,6 +586,8 @@ export async function* gatewayChatCompletionStream(
   const decoder = new TextDecoder();
   let buffer = '';
   let completed = false;
+  let outputText = '';
+  let providerUsage: AiTokenUsage | null = null;
 
   try {
     while (true) {
@@ -374,9 +604,14 @@ export async function* gatewayChatCompletionStream(
           try {
             const data = JSON.parse(payload) as {
               choices?: { delta?: { content?: string } }[];
+              usage?: unknown;
             };
+            providerUsage = parseOpenAiUsage(data.usage) ?? providerUsage;
             const content = data.choices?.[0]?.delta?.content;
-            if (content) yield content;
+            if (content) {
+              outputText += content;
+              yield content;
+            }
           } catch {
             console.error('AI gateway returned an invalid streaming event.');
           }
@@ -391,13 +626,28 @@ export async function* gatewayChatCompletionStream(
   } finally {
     if (!completed) await reader.cancel().catch(() => undefined);
     reader.releaseLock();
+    await recordGatewayUsage(env, {
+      provider: 'vertex_proxy',
+      model,
+      agentId: options.agent,
+      requestType: 'chat',
+      status: completed ? 'success' : 'cancelled',
+      usage: providerUsage ?? estimateUsage(messages, outputText),
+      usageSource: providerUsage ? 'provider' : 'estimated',
+      latencyMs: Date.now() - startedAt,
+    });
   }
 }
 
-export async function gatewayEmbedding(text: string, env: AiGatewayEnv): Promise<number[] | null> {
+export async function gatewayEmbedding(
+  text: string,
+  env: AiGatewayEnv,
+  options: { agent?: AiAgentId; model?: string } = {}
+): Promise<number[] | null> {
   if (!hasAiGateway(env)) return null;
 
-  const model = env.AI_EMBEDDING_MODEL || DEFAULT_AI_MODELS.embedding;
+  const model = options.model || env.AI_EMBEDDING_MODEL || DEFAULT_AI_MODELS.embedding;
+  const startedAt = Date.now();
   try {
     const response = await fetchWithTimeout(
       gatewayUrl(env, 'embeddings'),
@@ -417,15 +667,47 @@ export async function gatewayEmbedding(text: string, env: AiGatewayEnv): Promise
         `AI gateway embedding error (${model}, ${response.status}):`,
         await response.text()
       );
+      await recordGatewayUsage(env, {
+        provider: 'vertex_proxy',
+        model,
+        agentId: options.agent,
+        requestType: 'embedding',
+        status: 'error',
+        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+        usageSource: 'unavailable',
+        latencyMs: Date.now() - startedAt,
+      });
       return null;
     }
 
     const data = (await response.json()) as {
       data?: { embedding?: number[] }[];
+      usage?: unknown;
     };
+    const providerUsage = parseOpenAiUsage(data.usage);
+    await recordGatewayUsage(env, {
+      provider: 'vertex_proxy',
+      model,
+      agentId: options.agent,
+      requestType: 'embedding',
+      status: 'success',
+      usage: providerUsage ?? estimateUsage([], '', text),
+      usageSource: providerUsage ? 'provider' : 'estimated',
+      latencyMs: Date.now() - startedAt,
+    });
     return data.data?.[0]?.embedding ?? null;
   } catch (error) {
     console.error(`AI gateway embedding request failed (${model}):`, error);
+    await recordGatewayUsage(env, {
+      provider: 'vertex_proxy',
+      model,
+      agentId: options.agent,
+      requestType: 'embedding',
+      status: 'error',
+      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+      usageSource: 'unavailable',
+      latencyMs: Date.now() - startedAt,
+    });
     return null;
   }
 }

@@ -111,6 +111,54 @@ describe('Vertex gateway client', () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
       model: 'coding-best',
       stream: true,
+      stream_options: { include_usage: true },
+    });
+  });
+
+  it('records provider token metadata and estimated model cost', async () => {
+    const recorder = vi.fn();
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: 'Measured response' } }],
+          usage: {
+            prompt_tokens: 1_000,
+            completion_tokens: 500,
+            total_tokens: 1_500,
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await gatewayChatCompletion(
+      [{ role: 'user', content: 'hello' }],
+      {
+        ...env,
+        AI_USAGE_RECORDER: recorder,
+      },
+      {
+        model: 'coding-best',
+        agent: 'reporting-ceo',
+      }
+    );
+
+    expect(recorder).toHaveBeenCalledOnce();
+    expect(recorder.mock.calls[0]?.[0]).toMatchObject({
+      provider: 'vertex_proxy',
+      model: 'coding-best',
+      backingModel: 'gemini-3.1-pro-preview',
+      agentId: 'reporting-ceo',
+      requestType: 'chat',
+      status: 'success',
+      usageSource: 'provider',
+      usage: {
+        inputTokens: 1_000,
+        outputTokens: 500,
+        totalTokens: 1_500,
+      },
+      estimatedCostUsd: 0.008,
     });
   });
 });

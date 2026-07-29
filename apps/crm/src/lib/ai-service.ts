@@ -7,13 +7,16 @@ import {
   gatewayChatCompletion,
   gatewayChatCompletionStream,
   gatewayEmbedding,
+  getAiBackingModel,
   hasAiGateway,
+  estimateAiCostUsd,
   selectAiAgentModel,
   selectAiModel,
   type AiAgentId,
   type AiGatewayEnv,
   type AiGatewayMessage,
   type AiModelTier,
+  type AiTokenUsage,
 } from '@skarion/ai-toolkit';
 import { and, eq } from 'drizzle-orm';
 
@@ -36,15 +39,72 @@ export function isAiConfigured(env: Env): boolean {
   return hasAiGateway(env) || Boolean(env.GOOGLE_API_KEY);
 }
 
+function estimatedTokenUsage(input: string, output = ''): AiTokenUsage {
+  const inputTokens = Math.ceil(input.length / 4);
+  const outputTokens = Math.ceil(output.length / 4);
+  return { inputTokens, outputTokens, totalTokens: inputTokens + outputTokens };
+}
+
+function googleUsageMetadata(value: unknown): AiTokenUsage | null {
+  if (!value || typeof value !== 'object') return null;
+  const usage = value as Record<string, unknown>;
+  const inputTokens = Number(usage.promptTokenCount ?? 0);
+  const outputTokens = Number(usage.candidatesTokenCount ?? 0);
+  const totalTokens = Number(usage.totalTokenCount ?? inputTokens + outputTokens);
+  if (![inputTokens, outputTokens, totalTokens].some((count) => count > 0)) return null;
+  return {
+    inputTokens: Math.max(0, Math.round(inputTokens)),
+    outputTokens: Math.max(0, Math.round(outputTokens)),
+    totalTokens: Math.max(0, Math.round(totalTokens)),
+    cachedInputTokens: Math.max(0, Math.round(Number(usage.cachedContentTokenCount ?? 0))),
+  };
+}
+
+async function recordGoogleUsage(
+  env: Env,
+  input: {
+    model: string;
+    agentId?: AiAgentId;
+    requestType: 'chat' | 'embedding' | 'ocr';
+    status: 'success' | 'error';
+    usage: AiTokenUsage;
+    usageSource: 'provider' | 'estimated' | 'unavailable';
+    startedAt: number;
+  }
+): Promise<void> {
+  if (!env.AI_USAGE_RECORDER) return;
+  try {
+    await env.AI_USAGE_RECORDER({
+      provider: 'google_ai',
+      model: input.model,
+      backingModel: getAiBackingModel(input.model),
+      agentId: input.agentId,
+      requestType: input.requestType,
+      status: input.status,
+      usage: input.usage,
+      usageSource: input.usageSource,
+      estimatedCostUsd: estimateAiCostUsd(input.model, input.usage),
+      latencyMs: Date.now() - input.startedAt,
+    });
+  } catch (error) {
+    console.error('Google AI usage recorder failed:', error);
+  }
+}
+
 // ── Embeddings ────────────────────────────────────────────────────────────
 
-export async function getEmbedding(text: string, env: Env): Promise<number[] | null> {
+export async function getEmbedding(
+  text: string,
+  env: Env,
+  agent: AiAgentId = 'rag-search'
+): Promise<number[] | null> {
   if (hasAiGateway(env)) {
-    const embedding = await gatewayEmbedding(text, env);
+    const embedding = await gatewayEmbedding(text, env, { agent });
     if (embedding) return embedding;
   }
   if (!env.GOOGLE_API_KEY) return null;
   const model = env.GOOGLE_EMBEDDING_MODEL || DEFAULT_EMBEDDING_MODEL;
+  const startedAt = Date.now();
   try {
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent?key=${env.GOOGLE_API_KEY}`,
@@ -59,12 +119,43 @@ export async function getEmbedding(text: string, env: Env): Promise<number[] | n
     );
     if (!res.ok) {
       console.error('Google embedding error:', await res.text());
+      await recordGoogleUsage(env, {
+        model,
+        agentId: agent,
+        requestType: 'embedding',
+        status: 'error',
+        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+        usageSource: 'unavailable',
+        startedAt,
+      });
       return null;
     }
-    const data = (await res.json()) as { embedding?: { values?: number[] } };
+    const data = (await res.json()) as {
+      embedding?: { values?: number[] };
+      usageMetadata?: unknown;
+    };
+    const providerUsage = googleUsageMetadata(data.usageMetadata);
+    await recordGoogleUsage(env, {
+      model,
+      agentId: agent,
+      requestType: 'embedding',
+      status: 'success',
+      usage: providerUsage ?? estimatedTokenUsage(text),
+      usageSource: providerUsage ? 'provider' : 'estimated',
+      startedAt,
+    });
     return data.embedding?.values ?? null;
   } catch (err) {
     console.error('Embedding fetch failed:', err);
+    await recordGoogleUsage(env, {
+      model,
+      agentId: agent,
+      requestType: 'embedding',
+      status: 'error',
+      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+      usageSource: 'unavailable',
+      startedAt,
+    });
     return null;
   }
 }
@@ -102,7 +193,7 @@ export async function autoEmbed(
   env: Env
 ): Promise<void> {
   if (!isAiConfigured(env)) return;
-  const embedding = await getEmbedding(content, env);
+  const embedding = await getEmbedding(content, env, 'rag-indexer');
   if (!embedding) return;
   await db
     .delete(schema.embeddings)
@@ -159,6 +250,7 @@ export async function chatCompletion(
     const fallbackModel = env.AI_MODEL_FALLBACK || selectAiModel(env, 'cheap');
     const result = await gatewayChatCompletion(gatewayMessages, env, {
       model: preferredModel,
+      agent: opts?.agent,
       temperature: opts?.temperature,
     });
     if (result) return result;
@@ -169,6 +261,7 @@ export async function chatCompletion(
       );
       const fallback = await gatewayChatCompletion(gatewayMessages, env, {
         model: fallbackModel,
+        agent: opts?.agent,
         temperature: opts?.temperature,
       });
       if (fallback) return fallback;
@@ -196,6 +289,7 @@ export async function chatCompletion(
   }
 
   async function tryModel(model: string): Promise<string | null> {
+    const startedAt = Date.now();
     try {
       const res = await fetch(
         'https://generativelanguage.googleapis.com/v1beta/models/' +
@@ -214,14 +308,52 @@ export async function chatCompletion(
       if (!res.ok) {
         const errText = await res.text();
         console.error('Google chat error (' + model + '):', errText);
+        await recordGoogleUsage(env, {
+          model,
+          agentId: opts?.agent,
+          requestType: 'chat',
+          status: 'error',
+          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+          usageSource: 'unavailable',
+          startedAt,
+        });
         return null;
       }
       const data = (await res.json()) as {
         candidates?: { content?: { parts?: { text?: string }[] } }[];
+        usageMetadata?: unknown;
       };
-      return data.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
+      const content = data.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
+      const providerUsage = googleUsageMetadata(data.usageMetadata);
+      await recordGoogleUsage(env, {
+        model,
+        agentId: opts?.agent,
+        requestType: 'chat',
+        status: 'success',
+        usage:
+          providerUsage ??
+          estimatedTokenUsage(
+            contents
+              .flatMap((entry) => entry.parts)
+              .map((part) => part.text)
+              .join('\n'),
+            content ?? ''
+          ),
+        usageSource: providerUsage ? 'provider' : 'estimated',
+        startedAt,
+      });
+      return content;
     } catch (err) {
       console.error('Chat completion failed (' + model + '):', err);
+      await recordGoogleUsage(env, {
+        model,
+        agentId: opts?.agent,
+        requestType: 'chat',
+        status: 'error',
+        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+        usageSource: 'unavailable',
+        startedAt,
+      });
       return null;
     }
   }
@@ -268,6 +400,7 @@ export async function* chatCompletionStream(
     try {
       for await (const delta of gatewayChatCompletionStream(gatewayMessages, env, {
         model: preferredModel,
+        agent: opts?.agent,
         temperature: opts?.temperature,
         maxTokens: opts?.maxTokens,
       })) {
@@ -283,6 +416,7 @@ export async function* chatCompletionStream(
       try {
         for await (const delta of gatewayChatCompletionStream(gatewayMessages, env, {
           model: fallbackModel,
+          agent: opts?.agent,
           temperature: opts?.temperature,
           maxTokens: opts?.maxTokens,
         })) {
@@ -565,11 +699,13 @@ Return ONLY the JSON object, no markdown, no explanation.`;
     const preferredModel = selectAiAgentModel(env, 'lead-intake', 'reasoning');
     text = await gatewayChatCompletion(messages, env, {
       model: preferredModel,
+      agent: 'lead-intake',
       temperature: 0.1,
     });
     if (!text) {
       text = await gatewayChatCompletion(messages, env, {
         model: env.AI_MODEL_FALLBACK || selectAiModel(env, 'cheap'),
+        agent: 'lead-intake',
         temperature: 0.1,
       });
     }
@@ -582,6 +718,7 @@ Return ONLY the JSON object, no markdown, no explanation.`;
   const fallbackModel = env.GOOGLE_FALLBACK_MODEL || DEFAULT_FALLBACK_MODEL;
 
   async function tryModel(model: string): Promise<string | null> {
+    const startedAt = Date.now();
     try {
       const res = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GOOGLE_API_KEY}`,
@@ -608,14 +745,44 @@ Return ONLY the JSON object, no markdown, no explanation.`;
       );
       if (!res.ok) {
         console.error(`Google extract error (${model}):`, await res.text());
+        await recordGoogleUsage(env, {
+          model,
+          agentId: 'lead-intake',
+          requestType: 'ocr',
+          status: 'error',
+          usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+          usageSource: 'unavailable',
+          startedAt,
+        });
         return null;
       }
       const data = (await res.json()) as {
         candidates?: { content?: { parts?: { text?: string }[] } }[];
+        usageMetadata?: unknown;
       };
-      return data.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
+      const content = data.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
+      const providerUsage = googleUsageMetadata(data.usageMetadata);
+      await recordGoogleUsage(env, {
+        model,
+        agentId: 'lead-intake',
+        requestType: 'ocr',
+        status: 'success',
+        usage: providerUsage ?? estimatedTokenUsage(prompt, content ?? ''),
+        usageSource: providerUsage ? 'provider' : 'estimated',
+        startedAt,
+      });
+      return content;
     } catch (err) {
       console.error(`File extraction failed (${model}):`, err);
+      await recordGoogleUsage(env, {
+        model,
+        agentId: 'lead-intake',
+        requestType: 'ocr',
+        status: 'error',
+        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+        usageSource: 'unavailable',
+        startedAt,
+      });
       return null;
     }
   }
@@ -665,6 +832,7 @@ export async function extractDocumentText(
       env,
       {
         model: selectAiAgentModel(env, 'document-ocr', 'reasoning'),
+        agent: 'document-ocr',
         temperature: 0.1,
       }
     );
@@ -673,6 +841,7 @@ export async function extractDocumentText(
 
   if (!env.GOOGLE_API_KEY) return null;
   const model = env.GOOGLE_MODEL || DEFAULT_FALLBACK_MODEL;
+  const startedAt = Date.now();
   try {
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GOOGLE_API_KEY}`,
@@ -690,14 +859,44 @@ export async function extractDocumentText(
     );
     if (!response.ok) {
       console.error(`Google OCR error (${model}, ${response.status}):`, await response.text());
+      await recordGoogleUsage(env, {
+        model,
+        agentId: 'document-ocr',
+        requestType: 'ocr',
+        status: 'error',
+        usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+        usageSource: 'unavailable',
+        startedAt,
+      });
       return null;
     }
     const data = (await response.json()) as {
       candidates?: { content?: { parts?: { text?: string }[] } }[];
+      usageMetadata?: unknown;
     };
-    return data.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
+    const content = data.candidates?.[0]?.content?.parts?.[0]?.text ?? null;
+    const providerUsage = googleUsageMetadata(data.usageMetadata);
+    await recordGoogleUsage(env, {
+      model,
+      agentId: 'document-ocr',
+      requestType: 'ocr',
+      status: 'success',
+      usage: providerUsage ?? estimatedTokenUsage(prompt, content ?? ''),
+      usageSource: providerUsage ? 'provider' : 'estimated',
+      startedAt,
+    });
+    return content;
   } catch (error) {
     console.error(`Google OCR request failed (${model}):`, error);
+    await recordGoogleUsage(env, {
+      model,
+      agentId: 'document-ocr',
+      requestType: 'ocr',
+      status: 'error',
+      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+      usageSource: 'unavailable',
+      startedAt,
+    });
     return null;
   }
 }

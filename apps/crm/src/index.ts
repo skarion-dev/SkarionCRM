@@ -2,11 +2,18 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { getDb, withAudit } from '@skarion/db-kit';
 import { requireAuth, requireSuperadmin, type AuthedVariables } from '@skarion/auth-client';
-import { AI_AGENTS, AI_MODELS, DEFAULT_AI_MODELS, type AiAgentId } from '@skarion/ai-toolkit';
+import {
+  AI_AGENTS,
+  AI_MODELS,
+  AI_PRICING_UPDATED_AT,
+  DEFAULT_AI_MODELS,
+  type AiAgentId,
+  type AiGatewayEnv,
+} from '@skarion/ai-toolkit';
 import { can, canList } from '@skarion/permissions';
 import { parseContactsCsv, parseCompaniesCsv, parseLeadsCsv } from '@skarion/importers';
 import * as schema from './db/schema.js';
-import { eq, and, isNull, like, sql, desc, asc, or, inArray } from 'drizzle-orm';
+import { eq, and, isNull, like, sql, desc, asc, or, inArray, gte } from 'drizzle-orm';
 import type { CrmDb } from './db/types.js';
 
 // --- Rate Limiting (per-Worker instance, in-memory) ---
@@ -107,7 +114,7 @@ export function computeOutreachSummary(channels: { stage: string }[]): string {
   }
   return STAGE_TO_OUTREACH_STATUS[bestStage] ?? 'not_approached';
 }
-interface Env {
+interface Env extends AiGatewayEnv {
   DATABASE_URL: string;
   JWT_SECRET: string;
   APP_URL: string;
@@ -599,7 +606,7 @@ async function getAiRuntimeSettings(db: CrmDb): Promise<AiRuntimeSettings> {
   return readAiRuntimeSettings(row?.settings);
 }
 
-async function getConfiguredAiEnv(db: CrmDb, env: Env): Promise<Env> {
+async function getConfiguredAiEnv(db: CrmDb, env: Env, actorUserId?: string | null): Promise<Env> {
   const settings = await getAiRuntimeSettings(db);
   const useVertex = settings.defaultProvider === 'vertex_proxy';
   return {
@@ -614,6 +621,24 @@ async function getConfiguredAiEnv(db: CrmDb, env: Env): Promise<Env> {
     AI_MODEL_FALLBACK: settings.tierModels.cheap,
     AI_EMBEDDING_MODEL: settings.tierModels.embedding,
     AI_AGENT_MODELS: JSON.stringify(settings.agentModels),
+    AI_USAGE_RECORDER: async (record) => {
+      await db.insert(schema.aiUsageEvents).values({
+        actorUserId: actorUserId ?? null,
+        provider: record.provider,
+        model: record.model,
+        backingModel: record.backingModel,
+        agentId: record.agentId ?? null,
+        requestType: record.requestType,
+        status: record.status,
+        inputTokens: record.usage.inputTokens,
+        outputTokens: record.usage.outputTokens,
+        totalTokens: record.usage.totalTokens,
+        cachedInputTokens: record.usage.cachedInputTokens ?? 0,
+        estimatedCostUsd: record.estimatedCostUsd.toFixed(8),
+        latencyMs: record.latencyMs,
+        usageSource: record.usageSource,
+      });
+    },
   };
 }
 
@@ -622,7 +647,7 @@ async function generateAndSaveLeadAiAssessment(
   lead: typeof schema.leads.$inferSelect,
   env: Env
 ) {
-  const aiEnv = await getConfiguredAiEnv(db, env);
+  const aiEnv = await getConfiguredAiEnv(db, env, lead.ownerId);
   if (!ai.isAiConfigured(aiEnv)) return null;
 
   const input: ai.LeadQualificationInput = {
@@ -3691,6 +3716,191 @@ app.get('/api/ai/config', async (c) => {
   });
 });
 
+type AiUsagePeriod = 'day' | 'week' | 'month';
+
+const AI_USAGE_PERIODS: Record<
+  AiUsagePeriod,
+  { label: string; durationMs: number; bucketMs: number }
+> = {
+  day: {
+    label: 'Last 24 hours',
+    durationMs: 24 * 60 * 60 * 1000,
+    bucketMs: 60 * 60 * 1000,
+  },
+  week: {
+    label: 'Last 7 days',
+    durationMs: 7 * 24 * 60 * 60 * 1000,
+    bucketMs: 24 * 60 * 60 * 1000,
+  },
+  month: {
+    label: 'Last 30 days',
+    durationMs: 30 * 24 * 60 * 60 * 1000,
+    bucketMs: 24 * 60 * 60 * 1000,
+  },
+};
+
+function roundedUsageCost(value: number): number {
+  return Number(value.toFixed(6));
+}
+
+app.get('/api/ai/usage', async (c) => {
+  const role = getRole(c);
+  const isSuperadmin = c.get('isSuperadmin');
+  if (!isSuperadmin && role !== 'manager') return c.json({ error: 'Forbidden.' }, 403);
+
+  const requestedPeriod = c.req.query('period');
+  const period: AiUsagePeriod =
+    requestedPeriod === 'day' || requestedPeriod === 'month' ? requestedPeriod : 'week';
+  const periodConfig = AI_USAGE_PERIODS[period];
+  const end = new Date();
+  const start = new Date(end.getTime() - periodConfig.durationMs);
+  const db = getDb(c.env, schema) as CrmDb;
+  const rows = await db
+    .select({
+      provider: schema.aiUsageEvents.provider,
+      model: schema.aiUsageEvents.model,
+      backingModel: schema.aiUsageEvents.backingModel,
+      agentId: schema.aiUsageEvents.agentId,
+      requestType: schema.aiUsageEvents.requestType,
+      status: schema.aiUsageEvents.status,
+      inputTokens: schema.aiUsageEvents.inputTokens,
+      outputTokens: schema.aiUsageEvents.outputTokens,
+      totalTokens: schema.aiUsageEvents.totalTokens,
+      cachedInputTokens: schema.aiUsageEvents.cachedInputTokens,
+      estimatedCostUsd: schema.aiUsageEvents.estimatedCostUsd,
+      latencyMs: schema.aiUsageEvents.latencyMs,
+      usageSource: schema.aiUsageEvents.usageSource,
+      createdAt: schema.aiUsageEvents.createdAt,
+    })
+    .from(schema.aiUsageEvents)
+    .where(gte(schema.aiUsageEvents.createdAt, start))
+    .orderBy(asc(schema.aiUsageEvents.createdAt));
+
+  type UsageAggregate = {
+    id: string;
+    label: string;
+    requests: number;
+    successfulRequests: number;
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    cachedInputTokens: number;
+    estimatedCostUsd: number;
+  };
+
+  const makeAggregate = (id: string, label: string): UsageAggregate => ({
+    id,
+    label,
+    requests: 0,
+    successfulRequests: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    cachedInputTokens: 0,
+    estimatedCostUsd: 0,
+  });
+  const total = makeAggregate('total', periodConfig.label);
+  let failedRequests = 0;
+  let latencyTotal = 0;
+  let latencySamples = 0;
+  let providerMeasuredRequests = 0;
+  const byModel = new Map<string, UsageAggregate>();
+  const byAgent = new Map<string, UsageAggregate>();
+  const series = new Map<
+    number,
+    { timestamp: string; requests: number; tokens: number; estimatedCostUsd: number }
+  >();
+
+  for (
+    let bucket = Math.floor(start.getTime() / periodConfig.bucketMs) * periodConfig.bucketMs;
+    bucket <= end.getTime();
+    bucket += periodConfig.bucketMs
+  ) {
+    series.set(bucket, {
+      timestamp: new Date(bucket).toISOString(),
+      requests: 0,
+      tokens: 0,
+      estimatedCostUsd: 0,
+    });
+  }
+
+  const addRow = (aggregate: UsageAggregate, row: (typeof rows)[number], cost: number) => {
+    aggregate.requests += 1;
+    if (row.status === 'success') aggregate.successfulRequests += 1;
+    aggregate.inputTokens += row.inputTokens;
+    aggregate.outputTokens += row.outputTokens;
+    aggregate.totalTokens += row.totalTokens;
+    aggregate.cachedInputTokens += row.cachedInputTokens;
+    aggregate.estimatedCostUsd += cost;
+  };
+
+  for (const row of rows) {
+    const cost = Number(row.estimatedCostUsd);
+    addRow(total, row, cost);
+    if (row.status !== 'success') failedRequests += 1;
+    if (row.latencyMs > 0) {
+      latencyTotal += row.latencyMs;
+      latencySamples += 1;
+    }
+    if (row.usageSource === 'provider') providerMeasuredRequests += 1;
+
+    const modelId = row.backingModel || row.model;
+    const modelOption =
+      AI_MODELS.find((candidate) => candidate.id === modelId) ??
+      AI_MODELS.find((candidate) => candidate.backingModel === modelId);
+    const modelAggregate =
+      byModel.get(modelId) ?? makeAggregate(modelId, modelOption?.label ?? modelId);
+    addRow(modelAggregate, row, cost);
+    byModel.set(modelId, modelAggregate);
+
+    const agentId = row.agentId || 'unattributed';
+    const agent = AI_AGENTS.find((candidate) => candidate.id === row.agentId);
+    const agentAggregate =
+      byAgent.get(agentId) ??
+      makeAggregate(agentId, agent?.name ?? (row.agentId || 'Unattributed / historical'));
+    addRow(agentAggregate, row, cost);
+    byAgent.set(agentId, agentAggregate);
+
+    const bucket =
+      Math.floor(row.createdAt.getTime() / periodConfig.bucketMs) * periodConfig.bucketMs;
+    const point = series.get(bucket);
+    if (point) {
+      point.requests += 1;
+      point.tokens += row.totalTokens;
+      point.estimatedCostUsd += cost;
+    }
+  }
+
+  const finishAggregate = (aggregate: UsageAggregate) => ({
+    ...aggregate,
+    estimatedCostUsd: roundedUsageCost(aggregate.estimatedCostUsd),
+  });
+
+  return c.json({
+    period,
+    label: periodConfig.label,
+    range: { start: start.toISOString(), end: end.toISOString() },
+    pricingUpdatedAt: AI_PRICING_UPDATED_AT,
+    totals: {
+      ...finishAggregate(total),
+      failedRequests,
+      averageLatencyMs: latencySamples ? Math.round(latencyTotal / latencySamples) : 0,
+      providerMeasuredRequests,
+      estimatedRequests: Math.max(0, rows.length - providerMeasuredRequests),
+    },
+    series: Array.from(series.values()).map((point) => ({
+      ...point,
+      estimatedCostUsd: roundedUsageCost(point.estimatedCostUsd),
+    })),
+    byModel: Array.from(byModel.values())
+      .map(finishAggregate)
+      .sort((left, right) => right.estimatedCostUsd - left.estimatedCostUsd),
+    byAgent: Array.from(byAgent.values())
+      .map(finishAggregate)
+      .sort((left, right) => right.estimatedCostUsd - left.estimatedCostUsd),
+  });
+});
+
 app.put('/api/ai/config', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const role = getRole(c);
@@ -3989,8 +4199,8 @@ app.get('/api/chat/history', async (c) => {
 
 app.post('/api/chat', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
-  const aiEnv = await getConfiguredAiEnv(db, c.env);
   const userId = c.get('userId');
+  const aiEnv = await getConfiguredAiEnv(db, c.env, userId);
   const isSuperadmin = c.get('isSuperadmin') ?? false;
   const role = c.get('apps')?.crm ?? 'member';
 
@@ -4160,7 +4370,7 @@ app.post('/api/ceo-chat', async (c) => {
   }
 
   const db = getDb(c.env, schema) as CrmDb;
-  const aiEnv = await getConfiguredAiEnv(db, c.env);
+  const aiEnv = await getConfiguredAiEnv(db, c.env, userId);
   if (!ai.isAiConfigured(aiEnv)) return c.json({ error: ai.AI_NOT_CONFIGURED_MSG }, 503);
 
   const [snapshot, recentHistoryRows] = await Promise.all([

@@ -603,6 +603,39 @@ export const chatMessages = crmSchema.table(
 );
 
 // ─────────────────────────────────────────────────────────
+// ai_usage_events (token, reliability, and cost telemetry)
+// ─────────────────────────────────────────────────────────
+export const aiUsageEvents = crmSchema.table(
+  'ai_usage_events',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    actorUserId: uuid('actor_user_id'),
+    provider: text('provider').notNull(),
+    model: text('model').notNull(),
+    backingModel: text('backing_model').notNull(),
+    agentId: text('agent_id'),
+    requestType: text('request_type').notNull(),
+    status: text('status').notNull(),
+    inputTokens: integer('input_tokens').default(0).notNull(),
+    outputTokens: integer('output_tokens').default(0).notNull(),
+    totalTokens: integer('total_tokens').default(0).notNull(),
+    cachedInputTokens: integer('cached_input_tokens').default(0).notNull(),
+    estimatedCostUsd: decimal('estimated_cost_usd', { precision: 16, scale: 8 })
+      .default('0')
+      .notNull(),
+    latencyMs: integer('latency_ms').default(0).notNull(),
+    usageSource: text('usage_source').default('unavailable').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('idx_ai_usage_created').on(table.createdAt),
+    index('idx_ai_usage_agent_created').on(table.agentId, table.createdAt),
+    index('idx_ai_usage_model_created').on(table.backingModel, table.createdAt),
+    index('idx_ai_usage_provider_created').on(table.provider, table.createdAt),
+  ]
+);
+
+// ─────────────────────────────────────────────────────────
 // notifications
 // ─────────────────────────────────────────────────────────
 export const notifications = crmSchema.table(
@@ -628,6 +661,7 @@ export const notifications = crmSchema.table(
 
 export const notificationsRelations = relations(notifications, () => ({}));
 export const chatMessagesRelations = relations(chatMessages, () => ({}));
+export const aiUsageEventsRelations = relations(aiUsageEvents, () => ({}));
 
 // ─────────────────────────────────────────────────────────
 // document_imports (conversion tracking for PDF/DOCX/etc imports)

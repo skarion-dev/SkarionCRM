@@ -7,11 +7,14 @@ import {
   useUpdateWorkflowRule,
   useDeleteWorkflowRule,
   useAiConfig,
+  useAiUsage,
   useUpdateAiConfig,
   useExtensionApiKeys,
   useCreateExtensionApiKey,
   useRevokeExtensionApiKey,
   type AiRuntimeSettings,
+  type AiUsagePeriod,
+  type AiUsageResponse,
 } from '../hooks/use-api.js';
 import { CRM_API_URL } from '../api.js';
 import {
@@ -36,6 +39,10 @@ import {
   Save,
   Zap,
   Copy,
+  Activity,
+  Coins,
+  Gauge,
+  BarChart3,
 } from 'lucide-react';
 import { cn } from '../lib/utils.js';
 
@@ -543,10 +550,228 @@ function ExtensionKeysPanel({ defaultEmail }: { defaultEmail: string }) {
   );
 }
 
+function formatTokenCount(value: number): string {
+  return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(
+    value
+  );
+}
+
+function formatEstimatedUsd(value: number): string {
+  if (value === 0) return '$0.00';
+  if (value < 0.01) return `$${value.toFixed(6)}`;
+  return `$${value.toFixed(value < 1 ? 4 : 2)}`;
+}
+
+function AiUsageDashboard({
+  data,
+  period,
+  onPeriodChange,
+  isLoading,
+  hasError,
+}: {
+  data?: AiUsageResponse;
+  period: AiUsagePeriod;
+  onPeriodChange: (period: AiUsagePeriod) => void;
+  isLoading: boolean;
+  hasError: boolean;
+}) {
+  const maxSeriesTokens = Math.max(1, ...(data?.series.map((point) => point.tokens) ?? [1]));
+  const periodOptions: Array<{ id: AiUsagePeriod; label: string }> = [
+    { id: 'day', label: 'Daily' },
+    { id: 'week', label: 'Weekly' },
+    { id: 'month', label: 'Monthly' },
+  ];
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-6">
+      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+        <div>
+          <h2 className="font-semibold flex items-center gap-2">
+            <BarChart3 size={18} className="text-emerald-600" /> Token &amp; Cost Analytics
+          </h2>
+          <p className="text-sm text-slate-500 mt-1">
+            Rolling usage totals from every CRM agent and model.
+          </p>
+        </div>
+        <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-1 self-start">
+          {periodOptions.map((option) => (
+            <button
+              key={option.id}
+              type="button"
+              onClick={() => onPeriodChange(option.id)}
+              className={cn(
+                'px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
+                period === option.id
+                  ? 'bg-white text-blue-700 shadow-sm'
+                  : 'text-slate-500 hover:text-slate-700'
+              )}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {hasError ? (
+        <div className="mt-5 rounded-lg bg-red-50 border border-red-100 px-4 py-3 text-sm text-red-700">
+          Usage analytics could not be loaded.
+        </div>
+      ) : isLoading || !data ? (
+        <div className="h-48 flex items-center justify-center">
+          <Loader2 className="animate-spin text-slate-400" />
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-5">
+            {[
+              {
+                label: 'Estimated cost',
+                value: formatEstimatedUsd(data.totals.estimatedCostUsd),
+                detail: data.label,
+                icon: Coins,
+                tone: 'text-emerald-700 bg-emerald-50',
+              },
+              {
+                label: 'Total tokens',
+                value: formatTokenCount(data.totals.totalTokens),
+                detail: `${formatTokenCount(data.totals.inputTokens)} in · ${formatTokenCount(data.totals.outputTokens)} out`,
+                icon: Activity,
+                tone: 'text-blue-700 bg-blue-50',
+              },
+              {
+                label: 'AI requests',
+                value: data.totals.requests.toLocaleString(),
+                detail: `${data.totals.failedRequests} failed`,
+                icon: Bot,
+                tone: 'text-violet-700 bg-violet-50',
+              },
+              {
+                label: 'Average latency',
+                value:
+                  data.totals.averageLatencyMs >= 1000
+                    ? `${(data.totals.averageLatencyMs / 1000).toFixed(1)}s`
+                    : `${data.totals.averageLatencyMs}ms`,
+                detail: `${data.totals.providerMeasuredRequests} exact token reports`,
+                icon: Gauge,
+                tone: 'text-amber-700 bg-amber-50',
+              },
+            ].map((card) => {
+              const Icon = card.icon;
+              return (
+                <div key={card.label} className="rounded-lg border border-slate-200 p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-slate-500">{card.label}</span>
+                    <span className={cn('rounded-md p-1.5', card.tone)}>
+                      <Icon size={15} />
+                    </span>
+                  </div>
+                  <div className="text-xl font-semibold text-slate-900 mt-3">{card.value}</div>
+                  <div className="text-[11px] text-slate-400 mt-1">{card.detail}</div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="mt-5 rounded-lg border border-slate-200 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <div className="text-sm font-medium text-slate-800">Token trend</div>
+                <div className="text-xs text-slate-400">
+                  {period === 'day' ? 'Hourly' : 'Daily'} token volume
+                </div>
+              </div>
+              <div className="text-xs text-slate-500">{data.label}</div>
+            </div>
+            <div className="h-36 flex items-end gap-1">
+              {data.series.map((point) => (
+                <div
+                  key={point.timestamp}
+                  className="group relative flex-1 min-w-0 flex items-end h-full"
+                  title={`${new Date(point.timestamp).toLocaleString()}: ${point.tokens.toLocaleString()} tokens · ${formatEstimatedUsd(point.estimatedCostUsd)}`}
+                >
+                  <div
+                    className={cn(
+                      'w-full rounded-t-sm transition-colors',
+                      point.tokens ? 'bg-blue-500 group-hover:bg-blue-600' : 'bg-slate-100'
+                    )}
+                    style={{
+                      height: point.tokens
+                        ? `${Math.max(5, (point.tokens / maxSeriesTokens) * 100)}%`
+                        : '3px',
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-between text-[10px] text-slate-400 mt-2">
+              <span>{new Date(data.range.start).toLocaleString()}</span>
+              <span>{new Date(data.range.end).toLocaleString()}</span>
+            </div>
+          </div>
+
+          {data.totals.requests === 0 ? (
+            <div className="mt-5 rounded-lg border border-dashed border-slate-300 px-4 py-8 text-center">
+              <Bot size={24} className="mx-auto text-slate-300" />
+              <div className="text-sm font-medium text-slate-600 mt-2">No tracked AI calls yet</div>
+              <div className="text-xs text-slate-400 mt-1">
+                New agent calls will appear here automatically.
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-5">
+              {[
+                { title: 'Cost by model', rows: data.byModel },
+                { title: 'Usage by agent', rows: data.byAgent },
+              ].map((section) => (
+                <div
+                  key={section.title}
+                  className="rounded-lg border border-slate-200 overflow-hidden"
+                >
+                  <div className="px-4 py-3 bg-slate-50 text-sm font-medium text-slate-700">
+                    {section.title}
+                  </div>
+                  <div className="divide-y divide-slate-100">
+                    {section.rows.slice(0, 8).map((row) => (
+                      <div
+                        key={row.id}
+                        className="grid grid-cols-[1fr_auto] gap-3 px-4 py-3 items-center"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-sm text-slate-700 truncate" title={row.label}>
+                            {row.label}
+                          </div>
+                          <div className="text-[11px] text-slate-400">
+                            {row.requests} requests · {formatTokenCount(row.totalTokens)} tokens
+                          </div>
+                        </div>
+                        <div className="text-sm font-medium text-slate-800">
+                          {formatEstimatedUsd(row.estimatedCostUsd)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <p className="text-[11px] text-slate-400 mt-4">
+            Costs are estimates based on configured model list prices as of {data.pricingUpdatedAt}.
+            Provider token metadata is used when available; streaming or legacy calls without
+            metadata use a character-based token estimate.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
 function AiControlPanel() {
   const { data, isLoading, error } = useAiConfig();
   const updateConfig = useUpdateAiConfig();
   const [settings, setSettings] = useState<AiRuntimeSettings | null>(null);
+  const [usagePeriod, setUsagePeriod] = useState<AiUsagePeriod>('week');
+  const usageQuery = useAiUsage(usagePeriod);
 
   useEffect(() => {
     if (data) setSettings(data.settings);
@@ -584,6 +809,14 @@ function AiControlPanel() {
 
   return (
     <div className="space-y-5">
+      <AiUsageDashboard
+        data={usageQuery.data}
+        period={usagePeriod}
+        onPeriodChange={setUsagePeriod}
+        isLoading={usageQuery.isLoading}
+        hasError={Boolean(usageQuery.error)}
+      />
+
       <div className="bg-white border border-slate-200 rounded-lg p-6">
         <div className="flex items-start justify-between gap-4 mb-5">
           <div>
