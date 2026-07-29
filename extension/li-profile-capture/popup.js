@@ -17,11 +17,11 @@ let crmSettings = { crmUrl: DEFAULT_CRM_URL, apiKey: '' };
 let leadTags = [];
 
 const statCount = document.getElementById('statCount');
-const statToday = document.getElementById('statToday');
+const statSent = document.getElementById('statSent');
 const searchInput = document.getElementById('searchInput');
 const profileList = document.getElementById('profileList');
 const detail = document.getElementById('detail');
-const btnExport = document.getElementById('btnExport');
+const btnReviewSend = document.getElementById('btnReviewSend');
 const btnClear = document.getElementById('btnClear');
 const btnCapture = document.getElementById('btnCaptureNow');
 
@@ -136,12 +136,6 @@ function timeAgo(iso) {
   return `${Math.floor(h / 24)}d ago`;
 }
 
-function todayCount(profiles) {
-  const today = new Date().toDateString();
-  return Object.values(profiles).filter((p) => new Date(p.capturedAt).toDateString() === today)
-    .length;
-}
-
 function render(filter = '') {
   const q = filter.toLowerCase();
   const sorted = Object.values(allProfiles)
@@ -153,8 +147,8 @@ function render(filter = '') {
     );
 
   statCount.textContent = Object.keys(allProfiles).length;
-  statToday.textContent = todayCount(allProfiles);
-  btnExport.disabled = Object.keys(allProfiles).length === 0;
+  statSent.textContent = Object.values(allProfiles).filter((p) => p.crmStatus === 'sent').length;
+  btnReviewSend.disabled = Object.keys(allProfiles).length === 0;
 
   if (sorted.length === 0) {
     profileList.style.display = 'none';
@@ -171,6 +165,9 @@ function render(filter = '') {
         <div class="profile-name">${esc(p.name)}</div>
         <div class="profile-sub">${esc(p.headline || p.location || '—')}</div>
         <div class="profile-time">${esc(p.location || '')} · ${timeAgo(p.capturedAt)}</div>
+      </div>
+      <div class="profile-crm-status ${p.crmStatus === 'sent' ? 'sent' : 'pending'}">
+        ${p.crmStatus === 'sent' ? '✓ Sent to CRM' : 'Not sent'}
       </div>
     </div>
   `
@@ -203,6 +200,11 @@ function showDetail(id) {
     <div class="dheadline">${esc(p.headline || '')}</div>
     ${p.location ? `<div class="dheadline" style="color:#888">📍 ${esc(p.location)}</div>` : ''}
     ${p.connections ? `<div class="dheadline" style="color:#888">🔗 ${esc(p.connections)} connections</div>` : ''}
+    ${
+      p.crmStatus === 'sent'
+        ? `<a class="crm-sync-banner" href="${esc(p.crmRecordUrl || DEFAULT_CRM_WEB_URL)}" target="_blank">✓ Sent to CRM ${timeAgo(p.crmSentAt)} · Open record</a>`
+        : '<div class="crm-sync-banner pending">Not sent to CRM yet</div>'
+    }
     ${sections
       .map(
         (s) => `
@@ -218,7 +220,9 @@ function showDetail(id) {
     <div class="tier-row">
       ${QUALITY_TIERS.map((t) => `<button class="tier-btn" data-tier="${esc(t)}">${esc(t)}</button>`).join('')}
     </div>
-    <button class="send-crm-btn" id="btnOpenLeadForm">Send to CRM (no tier)</button>
+    <button class="send-crm-btn" id="btnOpenLeadForm">
+      ${p.crmStatus === 'sent' ? 'Review / resend to CRM' : 'Review & send to CRM'}
+    </button>
   `;
 
   detail.querySelectorAll('.tier-btn').forEach((btn) => {
@@ -332,6 +336,35 @@ btnCopyAiNote.addEventListener('click', async () => {
 
 function recordLink(entityType, id) {
   return `${DEFAULT_CRM_WEB_URL}/${entityType === 'contact' ? 'contacts' : 'leads'}/${id}`;
+}
+
+function markProfileSent(result) {
+  const profileId = leadForm.dataset.profileId;
+  const profile = allProfiles[profileId];
+  const entityType = result.entityType || (result.contact ? 'contact' : 'lead');
+  const record = result.contact || result.lead;
+  if (!profile || !record?.id) return null;
+
+  profile.crmStatus = 'sent';
+  profile.crmSentAt = new Date().toISOString();
+  profile.crmRecordId = record.id;
+  profile.crmEntityType = entityType;
+  profile.crmRecordUrl = recordLink(entityType, record.id);
+  allProfiles[profileId] = profile;
+  chrome.storage.local.set({ profiles: allProfiles });
+  render(searchInput.value);
+  return profile.crmRecordUrl;
+}
+
+function showCrmConfirmation(message, url) {
+  lfStatusLine.textContent = `${message} `;
+  if (url) {
+    const link = document.createElement('a');
+    link.href = url;
+    link.target = '_blank';
+    link.textContent = 'Open in CRM';
+    lfStatusLine.appendChild(link);
+  }
 }
 
 function showDupeBanner(html) {
@@ -460,6 +493,7 @@ btnSendLead.addEventListener('click', async () => {
       throw new Error(`${res.status} ${body}`);
     }
     const result = await res.json();
+    const crmRecordUrl = markProfileSent(result);
 
     if (result.duplicate) {
       const entityType = result.entityType || 'lead';
@@ -468,14 +502,20 @@ btnSendLead.addEventListener('click', async () => {
         `Already existed as ${entityType === 'contact' ? 'a contact' : 'a lead'} — nothing new was created. ` +
           `<a href="${recordLink(entityType, record.id)}" target="_blank">Open existing ${entityType}</a>`
       );
-      lfStatusLine.textContent = result.replayed
-        ? 'Same send as before — no duplicate created.'
-        : 'Already exists in CRM.';
+      showCrmConfirmation(
+        result.replayed
+          ? 'Confirmed in CRM—same send as before, no duplicate created. ✓'
+          : 'Confirmed: already exists in CRM. ✓',
+        crmRecordUrl
+      );
       showAiAssessment(result.aiAssessment);
     } else {
-      lfStatusLine.textContent = result.aiAssessment
-        ? 'Sent to CRM and qualified ✓'
-        : 'Sent to CRM ✓ — AI assessment was unavailable';
+      showCrmConfirmation(
+        result.aiAssessment
+          ? 'Sent to CRM and qualified ✓'
+          : 'Sent to CRM ✓—AI assessment was unavailable',
+        crmRecordUrl
+      );
       showAiAssessment(result.aiAssessment);
     }
     lfStatusLine.className = 'status-line';
@@ -563,84 +603,16 @@ btnClear.addEventListener('click', () => {
   chrome.action.setBadgeText({ text: '0' });
 });
 
-// A cell value starting with =, +, -, or @ is interpreted as a formula by
-// Excel/Sheets on open — a scraped headline or About section starting with
-// one of those (accidentally, or from a maliciously-crafted profile) would
-// otherwise execute as a formula for whoever opens the export.
-function sanitizeCell(v) {
-  if (typeof v !== 'string') return v;
-  return /^[=+\-@]/.test(v) ? `'${v}` : v;
-}
-
-// Export
-btnExport.addEventListener('click', () => {
+btnReviewSend.addEventListener('click', () => {
   const profiles = Object.values(allProfiles).sort(
     (a, b) => new Date(b.capturedAt) - new Date(a.capturedAt)
   );
-  if (!profiles.length) return;
+  const profile =
+    (selectedId && allProfiles[selectedId]) ||
+    profiles.find((candidate) => candidate.crmStatus !== 'sent') ||
+    profiles[0];
+  if (!profile) return;
 
-  const headers = [
-    '#',
-    'Name',
-    'Headline',
-    'Location',
-    'Connections',
-    'Current Company',
-    'About',
-    'Experience',
-    'Education',
-    'Skills',
-    'Certifications',
-    'Profile URL',
-    'Captured At',
-  ];
-  const rows = profiles.map((p, i) => [
-    i + 1,
-    sanitizeCell(p.name),
-    sanitizeCell(p.headline),
-    sanitizeCell(p.location),
-    p.connections,
-    sanitizeCell(p.currentCompanies),
-    sanitizeCell(p.about),
-    sanitizeCell(p.experience),
-    sanitizeCell(p.education),
-    sanitizeCell(p.skills),
-    sanitizeCell(p.certifications),
-    sanitizeCell(p.profileUrl),
-    p.capturedAt,
-  ]);
-
-  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
-  ws['!cols'] = [
-    { wch: 4 },
-    { wch: 26 },
-    { wch: 40 },
-    { wch: 22 },
-    { wch: 12 },
-    { wch: 24 },
-    { wch: 50 },
-    { wch: 60 },
-    { wch: 40 },
-    { wch: 40 },
-    { wch: 40 },
-    { wch: 55 },
-    { wch: 22 },
-  ];
-
-  // Style header row
-  const range = XLSX.utils.decode_range(ws['!ref']);
-  for (let C = range.s.c; C <= range.e.c; C++) {
-    const cell = ws[XLSX.utils.encode_cell({ r: 0, c: C })];
-    if (cell)
-      cell.s = {
-        font: { bold: true, color: { rgb: 'FFFFFF' } },
-        fill: { fgColor: { rgb: '0A66C2' } },
-        alignment: { horizontal: 'center' },
-      };
-  }
-
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Profiles');
-  const date = new Date().toISOString().slice(0, 10);
-  XLSX.writeFile(wb, `linkedin-profiles-${date}-${profiles.length}.xlsx`);
+  showDetail(profile.profileId);
+  openLeadForm(profile);
 });

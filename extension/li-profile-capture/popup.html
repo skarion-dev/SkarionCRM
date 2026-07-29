@@ -221,6 +221,22 @@
         color: #aaa;
         margin-top: 2px;
       }
+      .profile-crm-status {
+        flex-shrink: 0;
+        border-radius: 999px;
+        padding: 3px 7px;
+        font-size: 9px;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+      .profile-crm-status.pending {
+        background: #f1f5f9;
+        color: #64748b;
+      }
+      .profile-crm-status.sent {
+        background: #dcfce7;
+        color: #166534;
+      }
 
       /* Detail panel */
       .detail {
@@ -285,6 +301,21 @@
       }
       .detail .send-crm-btn:hover {
         background: #fafafa;
+      }
+      .crm-sync-banner {
+        display: block;
+        margin: 8px 0;
+        border-radius: 6px;
+        padding: 8px 10px;
+        background: #dcfce7;
+        color: #166534;
+        font-size: 11px;
+        font-weight: 700;
+        text-decoration: none;
+      }
+      .crm-sync-banner.pending {
+        background: #f1f5f9;
+        color: #475569;
       }
 
       /* One-click lead-quality tiers — tag + send in a single click */
@@ -435,13 +466,6 @@
         opacity: 0.4;
         cursor: not-allowed;
       }
-      .btn-export {
-        background: #057642;
-        color: white;
-      }
-      .btn-export:hover:not(:disabled) {
-        background: #046034;
-      }
       .btn-clear {
         background: white;
         color: #888;
@@ -508,8 +532,8 @@
           <div class="l">Profiles saved</div>
         </div>
         <div class="stat green">
-          <div class="n" id="statToday">0</div>
-          <div class="l">Captured today</div>
+          <div class="n" id="statSent">0</div>
+          <div class="l">Sent to CRM</div>
         </div>
       </div>
 
@@ -638,14 +662,17 @@
       </div>
 
       <div class="btn-row">
-        <button class="btn btn-export" id="btnExport" disabled>📥 Export to Excel</button>
+        <button class="btn btn-capture" id="btnReviewSend" disabled>
+          Review &amp; Send to CRM
+        </button>
         <button class="btn btn-clear" id="btnClear">✕ Clear</button>
       </div>
 
-      <p class="tip">Profiles are auto-captured 3s after you open any linkedin.com/in/* page</p>
+      <p class="tip">
+        “Captured” means saved locally. Only profiles marked “Sent to CRM” reached Skarion.
+      </p>
     </div>
 
-    <script src="xlsx.full.min.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

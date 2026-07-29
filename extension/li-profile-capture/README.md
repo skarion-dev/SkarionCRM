@@ -1,9 +1,8 @@
 # LinkedIn Profile Capture (Chrome extension)
 
 Auto-captures every LinkedIn profile you visit (name, headline, location,
-about, experience, education, skills, certifications) and lets you export
-the batch to Excel or send an individual profile straight into the Skarion
-CRM as a lead.
+about, experience, education, skills, certifications) and sends reviewed
+profiles straight into Skarion CRM as leads.
 
 ## Install (unpacked, for internal team use — not published to the Chrome Web Store)
 
@@ -22,9 +21,12 @@ CRM as a lead.
 - Browsing `linkedin.com/in/*` auto-captures the profile ~3s after the page
   settles (it scrolls through the page first so lazy-loaded sections like
   Experience actually render before scraping).
-- Click the extension icon to see everything captured so far, search it,
-  export the whole batch to `.xlsx`, or open a captured profile and send it
-  to the CRM.
+- Click the extension icon to see everything captured so far. **Captured**
+  means saved locally in Chrome; it has not reached CRM until the profile
+  displays the green **Sent to CRM** badge.
+- Click a profile or **Review & Send to CRM**, review the form, then press
+  **Send to CRM**. The extension only marks the profile as sent after the
+  CRM server confirms the record and provides an **Open in CRM** link.
 - **Lead quality tiers**: on a captured profile's detail view, one click on
   a tier button (Excellent Fit / Good Fit / Future Fit / Indian / Worth
   Trying) pre-fills the lead form with that tier as a tag and opens it for
