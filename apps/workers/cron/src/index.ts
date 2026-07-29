@@ -7,13 +7,61 @@ export interface Env {
   WORKFLOW_RUNNER_SECRET: string;
 }
 
+const QUEUE_BATCH_SIZE = 10;
+
+type QueueDrainResult = {
+  profileCleanup: unknown;
+  leadScoring: unknown;
+};
+
+async function drainEndpoint(env: Env, path: string): Promise<unknown> {
+  const response = await fetch(`${env.CRM_API_URL}${path}?limit=${QUEUE_BATCH_SIZE}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.WORKFLOW_RUNNER_SECRET}`,
+    },
+  });
+  const body = await response.text();
+  if (!response.ok) {
+    throw new Error(`${path} failed: ${response.status} ${body}`);
+  }
+  return body ? JSON.parse(body) : {};
+}
+
+async function drainAiQueues(env: Env): Promise<QueueDrainResult> {
+  // Cleanup runs first because the separate scoring agent consumes the
+  // structured profile. Pending Prospect Review rows are prioritized by CRM.
+  const profileCleanup = await drainEndpoint(env, '/internal/lead-profile-queue/drain');
+  const leadScoring = await drainEndpoint(env, '/internal/lead-score-queue/drain');
+  return { profileCleanup, leadScoring };
+}
+
 export default {
-  async fetch(request: Request, _env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === '/health') {
       return new Response(JSON.stringify({ status: 'ok', service: 'skarion-cron' }), {
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
       });
+    }
+    if (url.pathname === '/run-now' && request.method === 'POST') {
+      if (
+        !env.WORKFLOW_RUNNER_SECRET ||
+        request.headers.get('Authorization') !== `Bearer ${env.WORKFLOW_RUNNER_SECRET}`
+      ) {
+        return Response.json({ error: 'Unauthorized.' }, { status: 401 });
+      }
+      try {
+        return Response.json({ ok: true, ...(await drainAiQueues(env)) });
+      } catch (error) {
+        return Response.json(
+          {
+            ok: false,
+            error: error instanceof Error ? error.message : 'Queue drain failed.',
+          },
+          { status: 502 }
+        );
+      }
     }
     return new Response('Not found', { status: 404 });
   },
@@ -43,35 +91,9 @@ export default {
     }
 
     try {
-      const response = await fetch(`${env.CRM_API_URL}/internal/lead-profile-queue/drain?limit=5`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${env.WORKFLOW_RUNNER_SECRET}`,
-        },
-      });
-      if (!response.ok) {
-        console.error(`Profile cleanup queue failed: ${response.status} ${await response.text()}`);
-      } else {
-        console.log('Profile cleanup queue:', JSON.stringify(await response.json()));
-      }
+      console.log('CRM AI queues:', JSON.stringify(await drainAiQueues(env)));
     } catch (error) {
-      console.error('Error draining profile cleanup queue:', error);
-    }
-
-    try {
-      const response = await fetch(`${env.CRM_API_URL}/internal/lead-score-queue/drain?limit=5`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${env.WORKFLOW_RUNNER_SECRET}`,
-        },
-      });
-      if (!response.ok) {
-        console.error(`Lead scoring queue failed: ${response.status} ${await response.text()}`);
-      } else {
-        console.log('Lead scoring queue:', JSON.stringify(await response.json()));
-      }
-    } catch (error) {
-      console.error('Error draining lead scoring queue:', error);
+      console.error('Error draining CRM AI queues:', error);
     }
   },
 };

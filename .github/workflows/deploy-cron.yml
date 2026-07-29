@@ -43,3 +43,12 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WORKFLOW_RUNNER_SECRET: ${{ secrets.WORKFLOW_RUNNER_SECRET }}
+
+      - name: Verify CRM queue authentication and start a drain
+        run: |
+          curl --fail-with-body --max-time 120 \
+            --request POST \
+            --header "Authorization: Bearer $WORKFLOW_RUNNER_SECRET" \
+            https://skarion-cron.skarion-talentos.workers.dev/run-now
+        env:
+          WORKFLOW_RUNNER_SECRET: ${{ secrets.WORKFLOW_RUNNER_SECRET }}

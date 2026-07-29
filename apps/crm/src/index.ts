@@ -25,6 +25,7 @@ import {
   desc,
   asc,
   or,
+  ne,
   inArray,
   gte,
   lte,
@@ -1783,8 +1784,8 @@ app.post('/internal/lead-score-queue/drain', async (c) => {
     return c.json({ error: 'Unauthorized.' }, 401);
   }
 
-  const requestedLimit = Number(c.req.query('limit') ?? 5);
-  const limit = Math.min(5, Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : 5));
+  const requestedLimit = Number(c.req.query('limit') ?? 10);
+  const limit = Math.min(10, Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : 10));
   const db = getDb(c.env, schema) as CrmDb;
   const result = await drainLeadScoreQueue(db, c.env, limit);
   return c.json(result);
@@ -1797,8 +1798,8 @@ app.post('/internal/lead-profile-queue/drain', async (c) => {
     return c.json({ error: 'Unauthorized.' }, 401);
   }
 
-  const requestedLimit = Number(c.req.query('limit') ?? 5);
-  const limit = Math.min(5, Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : 5));
+  const requestedLimit = Number(c.req.query('limit') ?? 10);
+  const limit = Math.min(10, Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : 10));
   const db = getDb(c.env, schema) as CrmDb;
   return c.json(await drainLeadProfileQueue(db, c.env, limit));
 });
@@ -2079,6 +2080,21 @@ async function generateAndSaveLeadScore(
 
 async function drainLeadProfileQueue(db: CrmDb, env: Env, limit: number) {
   const now = new Date();
+  await db.update(schema.leadProfileJobs).set({
+    status: 'completed',
+    completedAt: now,
+    lockedAt: null,
+    lastError: 'Cleanup cancelled because the lead was deleted or rejected.',
+    updatedAt: now,
+  }).where(sql`
+      ${schema.leadProfileJobs.status} in ('pending', 'processing', 'failed')
+      and exists (
+        select 1
+        from "crm"."leads" stale_lead
+        where stale_lead."id" = ${schema.leadProfileJobs.leadId}
+          and (stale_lead."deleted_at" is not null or stale_lead."review_state" = 'rejected')
+      )
+    `);
   await db
     .update(schema.leadProfileJobs)
     .set({
@@ -2096,15 +2112,32 @@ async function drainLeadProfileQueue(db: CrmDb, env: Env, limit: number) {
     );
 
   const jobs = await db
-    .select()
+    .select({
+      id: schema.leadProfileJobs.id,
+      leadId: schema.leadProfileJobs.leadId,
+      status: schema.leadProfileJobs.status,
+      attempts: schema.leadProfileJobs.attempts,
+      nextAttemptAt: schema.leadProfileJobs.nextAttemptAt,
+      lockedAt: schema.leadProfileJobs.lockedAt,
+      completedAt: schema.leadProfileJobs.completedAt,
+      lastError: schema.leadProfileJobs.lastError,
+      createdAt: schema.leadProfileJobs.createdAt,
+      updatedAt: schema.leadProfileJobs.updatedAt,
+    })
     .from(schema.leadProfileJobs)
+    .innerJoin(schema.leads, eq(schema.leadProfileJobs.leadId, schema.leads.id))
     .where(
       and(
         inArray(schema.leadProfileJobs.status, ['pending', 'failed']),
-        lte(schema.leadProfileJobs.nextAttemptAt, now)
+        lte(schema.leadProfileJobs.nextAttemptAt, now),
+        isNull(schema.leads.deletedAt),
+        ne(schema.leads.reviewState, 'rejected')
       )
     )
-    .orderBy(asc(schema.leadProfileJobs.nextAttemptAt))
+    .orderBy(
+      sql`case when ${schema.leads.reviewState} = 'pending' then 0 else 1 end`,
+      asc(schema.leadProfileJobs.nextAttemptAt)
+    )
     .limit(limit);
 
   const result = { claimed: 0, normalized: 0, skipped: 0, failed: 0 };
@@ -2190,6 +2223,21 @@ async function drainLeadProfileQueue(db: CrmDb, env: Env, limit: number) {
 
 async function drainLeadScoreQueue(db: CrmDb, env: Env, limit: number) {
   const now = new Date();
+  await db.update(schema.leadScoreJobs).set({
+    status: 'completed',
+    completedAt: now,
+    lockedAt: null,
+    lastError: 'Scoring cancelled because the lead was deleted or rejected.',
+    updatedAt: now,
+  }).where(sql`
+      ${schema.leadScoreJobs.status} in ('pending', 'processing', 'failed')
+      and exists (
+        select 1
+        from "crm"."leads" stale_lead
+        where stale_lead."id" = ${schema.leadScoreJobs.leadId}
+          and (stale_lead."deleted_at" is not null or stale_lead."review_state" = 'rejected')
+      )
+    `);
   await db
     .update(schema.leadScoreJobs)
     .set({
@@ -2207,15 +2255,32 @@ async function drainLeadScoreQueue(db: CrmDb, env: Env, limit: number) {
     );
 
   const jobs = await db
-    .select()
+    .select({
+      id: schema.leadScoreJobs.id,
+      leadId: schema.leadScoreJobs.leadId,
+      status: schema.leadScoreJobs.status,
+      attempts: schema.leadScoreJobs.attempts,
+      nextAttemptAt: schema.leadScoreJobs.nextAttemptAt,
+      lockedAt: schema.leadScoreJobs.lockedAt,
+      completedAt: schema.leadScoreJobs.completedAt,
+      lastError: schema.leadScoreJobs.lastError,
+      createdAt: schema.leadScoreJobs.createdAt,
+      updatedAt: schema.leadScoreJobs.updatedAt,
+    })
     .from(schema.leadScoreJobs)
+    .innerJoin(schema.leads, eq(schema.leadScoreJobs.leadId, schema.leads.id))
     .where(
       and(
         inArray(schema.leadScoreJobs.status, ['pending', 'failed']),
-        lte(schema.leadScoreJobs.nextAttemptAt, now)
+        lte(schema.leadScoreJobs.nextAttemptAt, now),
+        isNull(schema.leads.deletedAt),
+        ne(schema.leads.reviewState, 'rejected')
       )
     )
-    .orderBy(asc(schema.leadScoreJobs.nextAttemptAt))
+    .orderBy(
+      sql`case when ${schema.leads.reviewState} = 'pending' then 0 else 1 end`,
+      asc(schema.leadScoreJobs.nextAttemptAt)
+    )
     .limit(limit);
 
   const result = { claimed: 0, scored: 0, deferred: 0, skipped: 0, failed: 0 };
@@ -2845,7 +2910,8 @@ app.get('/api/prospects/profile-cleanup-status', async (c) => {
     eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
     isNull(schema.leads.deletedAt)
   );
-  const [summaryRows, queue] = await Promise.all([
+  const pendingProspect = and(activeLead, eq(schema.leads.reviewState, 'pending'));
+  const [summaryRows, allCrmActiveRows, queue] = await Promise.all([
     db
       .select({
         total: sql<number>`count(*)`,
@@ -2872,7 +2938,16 @@ app.get('/api/prospects/profile-cleanup-status', async (c) => {
       })
       .from(schema.leadProfileJobs)
       .innerJoin(schema.leads, eq(schema.leadProfileJobs.leadId, schema.leads.id))
-      .where(activeLead),
+      .where(pendingProspect),
+    db
+      .select({
+        active: sql<number>`count(*) filter (
+          where ${schema.leadProfileJobs.status} in ('pending', 'processing', 'failed')
+        )`,
+      })
+      .from(schema.leadProfileJobs)
+      .innerJoin(schema.leads, eq(schema.leadProfileJobs.leadId, schema.leads.id))
+      .where(and(activeLead, ne(schema.leads.reviewState, 'rejected'))),
     db
       .select({
         id: schema.leadProfileJobs.id,
@@ -2891,7 +2966,10 @@ app.get('/api/prospects/profile-cleanup-status', async (c) => {
       .from(schema.leadProfileJobs)
       .innerJoin(schema.leads, eq(schema.leadProfileJobs.leadId, schema.leads.id))
       .where(
-        and(activeLead, inArray(schema.leadProfileJobs.status, ['processing', 'pending', 'failed']))
+        and(
+          pendingProspect,
+          inArray(schema.leadProfileJobs.status, ['processing', 'pending', 'failed'])
+        )
       )
       .orderBy(
         sql`case ${schema.leadProfileJobs.status}
@@ -2911,8 +2989,9 @@ app.get('/api/prospects/profile-cleanup-status', async (c) => {
   const retrying = Number(row?.retrying ?? 0);
   const completed = Number(row?.completed ?? 0);
   const active = waiting + processing + retrying;
-  const cadenceMinutes = 5;
-  const batchSize = 5;
+  const allCrmActive = Number(allCrmActiveRows[0]?.active ?? 0);
+  const cadenceMinutes = 1;
+  const batchSize = 10;
   const now = Date.now();
   const nextScheduledRunAt = new Date(
     Math.ceil(now / (cadenceMinutes * 60_000)) * cadenceMinutes * 60_000
@@ -2931,6 +3010,7 @@ app.get('/api/prospects/profile-cleanup-status', async (c) => {
       oldestQueuedAt: row?.oldestQueuedAt ?? null,
       latestCompletedAt: row?.latestCompletedAt ?? null,
       estimatedMinutes: active ? Math.ceil(active / batchSize) * cadenceMinutes : 0,
+      otherCrmActive: Math.max(0, allCrmActive - active),
     },
     queue,
     cadence: {

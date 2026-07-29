@@ -399,7 +399,8 @@ export default function ProspectReviewPage() {
                 </span>
               </div>
               <p className="mt-1 text-xs text-slate-500">
-                Structures captured profile data before the separate Lead Scoring Agent runs.
+                Structures pending Prospect Review profiles before the separate Lead Scoring Agent
+                runs.
               </p>
             </div>
           </div>
@@ -419,7 +420,7 @@ export default function ProspectReviewPage() {
           <div>
             <div className="mb-2 flex items-end justify-between text-sm">
               <span className="font-medium text-slate-700">
-                {cleanup?.active ?? 0} profiles remaining
+                {cleanup?.active ?? 0} pending prospects remaining
               </span>
               <span className="text-xs tabular-nums text-slate-500">
                 {cleanup?.progressPercent ?? 0}% of all queued cleanup complete
@@ -448,9 +449,11 @@ export default function ProspectReviewPage() {
               ))}
             </div>
             <p className="mt-3 text-xs text-slate-400">
-              Processes up to {cleanupStatus?.cadence.batchSize ?? 5} profiles every{' '}
-              {cleanupStatus?.cadence.cadenceMinutes ?? 5} minutes. Failed jobs stay visible and
+              Processes up to {cleanupStatus?.cadence.batchSize ?? 10} profiles every{' '}
+              {cleanupStatus?.cadence.cadenceMinutes ?? 1} minute. Failed jobs stay visible and
               retry with backoff.
+              {(cleanup?.otherCrmActive ?? 0) > 0 &&
+                ` ${cleanup?.otherCrmActive} accepted CRM leads are queued separately and do not inflate this Prospect Review count.`}
             </p>
           </div>
 

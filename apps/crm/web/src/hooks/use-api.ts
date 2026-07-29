@@ -231,6 +231,7 @@ export interface ProfileCleanupStatus {
     oldestQueuedAt: string | null;
     latestCompletedAt: string | null;
     estimatedMinutes: number;
+    otherCrmActive: number;
   };
   queue: Array<{
     id: string;
