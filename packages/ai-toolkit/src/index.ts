@@ -223,13 +223,13 @@ export const AI_AGENTS: ReadonlyArray<{
     id: 'lead-intake',
     name: 'Lead Intake Agent',
     description: 'Extracts structured lead data from PDFs, resumes, and pasted text.',
-    tier: 'reasoning',
+    tier: 'fast',
   },
   {
     id: 'document-ocr',
     name: 'Document OCR Agent',
     description: 'Reads scanned PDFs and images.',
-    tier: 'reasoning',
+    tier: 'cheap',
   },
   {
     id: 'linkedin-connection-writer',
@@ -242,13 +242,13 @@ export const AI_AGENTS: ReadonlyArray<{
     id: 'outreach-writer',
     name: 'Outreach Writer',
     description: 'Drafts email, LinkedIn, and SMS outreach.',
-    tier: 'fast',
+    tier: 'cheap',
   },
   {
     id: 'lead-scorer',
     name: 'Lead Scoring Agent',
     description: 'Scores lead quality and returns structured reasoning.',
-    tier: 'reasoning',
+    tier: 'fast',
   },
   {
     id: 'next-best-action',

@@ -456,12 +456,17 @@ export async function chatCompletionSingle(
 export async function extractStructured<T>(
   prompt: string,
   env: Env,
-  opts?: { temperature?: number; systemInstruction?: string; agent?: AiAgentId }
+  opts?: {
+    temperature?: number;
+    systemInstruction?: string;
+    agent?: AiAgentId;
+    tier?: AiModelTier;
+  }
 ): Promise<T | null> {
   const text = await chatCompletionSingle(prompt, env, {
     ...opts,
     temperature: opts?.temperature ?? 0.1,
-    tier: 'reasoning',
+    tier: opts?.tier ?? 'fast',
     agent: opts?.agent,
   });
   if (!text) return null;
@@ -543,7 +548,7 @@ Do not include any markdown formatting. Output plain text only. Include a clear 
 
   return chatCompletionSingle(prompt, env, {
     temperature: 0.4,
-    tier: 'fast',
+    tier: 'cheap',
     agent: 'outreach-writer',
   });
 }
@@ -621,7 +626,10 @@ ${rawText.substring(0, 12000)}
 
 Return ONLY the JSON object, no markdown, no explanation.`;
 
-  return extractStructured<ExtractedLeadDraft>(prompt, env, { agent: 'lead-intake' });
+  return extractStructured<ExtractedLeadDraft>(prompt, env, {
+    agent: 'lead-intake',
+    tier: 'fast',
+  });
 }
 
 function uint8ArrayToBase64(arr: Uint8Array): string {
@@ -696,7 +704,7 @@ Return ONLY the JSON object, no markdown, no explanation.`;
         ],
       },
     ];
-    const preferredModel = selectAiAgentModel(env, 'lead-intake', 'reasoning');
+    const preferredModel = selectAiAgentModel(env, 'lead-intake', 'fast');
     text = await gatewayChatCompletion(messages, env, {
       model: preferredModel,
       agent: 'lead-intake',
@@ -831,7 +839,7 @@ export async function extractDocumentText(
       ],
       env,
       {
-        model: selectAiAgentModel(env, 'document-ocr', 'reasoning'),
+        model: selectAiAgentModel(env, 'document-ocr', 'cheap'),
         agent: 'document-ocr',
         temperature: 0.1,
       }
@@ -1196,6 +1204,7 @@ questions that resolve the highest-impact missing information.`;
 
   const assessment = await extractStructured<LeadQualificationAssessment>(prompt, env, {
     agent: 'lead-scorer',
+    tier: 'fast',
   });
   if (!assessment) return null;
 

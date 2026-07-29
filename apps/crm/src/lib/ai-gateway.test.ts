@@ -4,7 +4,7 @@ import {
   gatewayChatCompletionStream,
   gatewayEmbedding,
 } from '@skarion/ai-toolkit';
-import { chatCompletionSingle } from './ai-service.js';
+import { chatCompletionSingle, draftOutreach, extractStructured } from './ai-service.js';
 
 const env = {
   AI_GATEWAY_BASE_URL: 'https://vertex-proxy.example/v1/',
@@ -74,6 +74,54 @@ describe('Vertex gateway client', () => {
       model: string;
     };
     expect(fallbackBody.model).toBe('coding-cheap');
+  });
+
+  it('routes structured extraction to fast and routine outreach to cheap', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ choices: [{ message: { content: '{"ok":true}' } }] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ choices: [{ message: { content: 'Hello there' } }] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      extractStructured<{ ok: boolean }>('Return JSON', env, { agent: 'lead-scorer' })
+    ).resolves.toEqual({ ok: true });
+    await expect(
+      draftOutreach(
+        {
+          leadType: 'client',
+          leadSource: 'linkedin',
+          firstName: 'Sam',
+          lastName: 'Lee',
+          companyName: 'Example',
+          title: 'Director',
+          notes: null,
+          pdfSummary: null,
+          tone: 'short',
+          channel: 'linkedin',
+        },
+        env
+      )
+    ).resolves.toBe('Hello there');
+
+    const extractionBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as {
+      model: string;
+    };
+    const outreachBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as {
+      model: string;
+    };
+    expect(extractionBody.model).toBe('coding-fast');
+    expect(outreachBody.model).toBe('coding-cheap');
   });
 
   it('parses OpenAI-compatible streaming deltas', async () => {

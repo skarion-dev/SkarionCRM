@@ -6,7 +6,17 @@ describe('AI model routing', () => {
     expect(selectAiModel({}, 'cheap')).toBe('coding-cheap');
     expect(AI_AGENTS.find((agent) => agent.id === 'lead-summarizer')?.tier).toBe('cheap');
     expect(AI_AGENTS.find((agent) => agent.id === 'next-best-action')?.tier).toBe('cheap');
+    expect(AI_AGENTS.find((agent) => agent.id === 'document-ocr')?.tier).toBe('cheap');
+    expect(AI_AGENTS.find((agent) => agent.id === 'outreach-writer')?.tier).toBe('cheap');
+  });
+
+  it('reserves the reasoning tier for executive analysis', () => {
+    expect(AI_AGENTS.find((agent) => agent.id === 'lead-intake')?.tier).toBe('fast');
+    expect(AI_AGENTS.find((agent) => agent.id === 'lead-scorer')?.tier).toBe('fast');
     expect(AI_AGENTS.find((agent) => agent.id === 'reporting-ceo')?.tier).toBe('reasoning');
+    expect(
+      AI_AGENTS.filter((agent) => agent.tier === 'reasoning').map((agent) => agent.id)
+    ).toEqual(['reporting-ceo']);
   });
 
   it('honors per-agent model overrides', () => {
