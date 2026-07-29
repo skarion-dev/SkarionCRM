@@ -46,6 +46,19 @@ jobs:
 
       - name: Verify CRM queue authentication and start a drain
         run: |
+          for attempt in $(seq 1 20); do
+            status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              --request POST \
+              https://skarion-cron.skarion-talentos.workers.dev/run-now)"
+            if [ "$status" = "401" ]; then
+              break
+            fi
+            if [ "$attempt" = "20" ]; then
+              echo "The newly deployed /run-now endpoint did not become ready (last HTTP $status)."
+              exit 1
+            fi
+            sleep 2
+          done
           curl --fail-with-body --max-time 120 \
             --request POST \
             --header "Authorization: Bearer $WORKFLOW_RUNNER_SECRET" \
