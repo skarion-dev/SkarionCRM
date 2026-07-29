@@ -30,7 +30,6 @@ import {
   ArrowRight,
 } from 'lucide-react';
 
-
 interface SpecialMessage {
   id: string;
   role: 'assistant';
@@ -105,9 +104,12 @@ export default function AiWidget() {
 
   const handleDraftOutreach = () => {
     if (!lead) return;
-    outreachMutation.mutate({ tone: 'professional', channel: 'email' }, {
-      onSuccess: (data) => addSpecialMessage('Outreach Draft', data.draft),
-    });
+    outreachMutation.mutate(
+      { tone: 'professional', channel: 'email' },
+      {
+        onSuccess: (data) => addSpecialMessage('Outreach Draft', data.draft),
+      }
+    );
   };
 
   const handleScore = () => {
@@ -127,19 +129,64 @@ export default function AiWidget() {
   const quickPrompts = [
     ...(lead
       ? [
-          { label: 'Summarize this lead', icon: FileText, action: handleSummarize, loading: summarizeMutation.isPending },
-          { label: 'Draft outreach', icon: Zap, action: handleDraftOutreach, loading: outreachMutation.isPending },
-          { label: 'Score lead', icon: BarChart3, action: handleScore, loading: scoreMutation.isPending },
-          { label: 'Suggest next action', icon: ArrowRight, action: handleSuggest, loading: suggestMutation.isPending },
+          {
+            label: 'Summarize this lead',
+            icon: FileText,
+            action: handleSummarize,
+            loading: summarizeMutation.isPending,
+          },
+          {
+            label: 'Draft outreach',
+            icon: Zap,
+            action: handleDraftOutreach,
+            loading: outreachMutation.isPending,
+          },
+          {
+            label: 'Score lead',
+            icon: BarChart3,
+            action: handleScore,
+            loading: scoreMutation.isPending,
+          },
+          {
+            label: 'Suggest next action',
+            icon: ArrowRight,
+            action: handleSuggest,
+            loading: suggestMutation.isPending,
+          },
         ]
       : []),
     ...(company
-      ? [{ label: `About ${company.name}`, icon: Building2, action: () => { setInput(`Tell me about company ${company.name}`); }, loading: false }]
+      ? [
+          {
+            label: `About ${company.name}`,
+            icon: Building2,
+            action: () => {
+              setInput(`Tell me about company ${company.name}`);
+            },
+            loading: false,
+          },
+        ]
       : []),
     ...(contact
-      ? [{ label: `About ${contact.firstName} ${contact.lastName}`, icon: Contact, action: () => { setInput(`Tell me about contact ${contact.firstName} ${contact.lastName}`); }, loading: false }]
+      ? [
+          {
+            label: `About ${contact.firstName} ${contact.lastName}`,
+            icon: Contact,
+            action: () => {
+              setInput(`Tell me about contact ${contact.firstName} ${contact.lastName}`);
+            },
+            loading: false,
+          },
+        ]
       : []),
-    { label: 'General CRM help', icon: Bot, action: () => { setInput('How can I help you today?'); }, loading: false },
+    {
+      label: 'General CRM help',
+      icon: Bot,
+      action: () => {
+        setInput('What can you help me with in this CRM?');
+      },
+      loading: false,
+    },
   ];
 
   const handleCopy = (text: string, id: string) => {
@@ -148,12 +195,10 @@ export default function AiWidget() {
     setTimeout(() => setCopiedId((prev) => (prev === id ? null : prev)), 2000);
   };
 
-  const allMessages: Array<
-    | (typeof messages)[number]
-    | SpecialMessage
-  > = [...messages, ...specialMessages].sort(
-    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-  );
+  const allMessages: Array<(typeof messages)[number] | SpecialMessage> = [
+    ...messages,
+    ...specialMessages,
+  ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
   const isLoading =
     sendMutation.isPending ||
@@ -161,6 +206,19 @@ export default function AiWidget() {
     outreachMutation.isPending ||
     scoreMutation.isPending ||
     suggestMutation.isPending;
+  const requestError = [
+    sendMutation.error,
+    summarizeMutation.error,
+    outreachMutation.error,
+    scoreMutation.error,
+    suggestMutation.error,
+  ].find(Boolean);
+  const requestErrorMessage =
+    requestError instanceof Error
+      ? requestError.message
+      : requestError
+        ? 'The AI assistant could not complete that request.'
+        : null;
 
   return (
     <>
@@ -186,7 +244,7 @@ export default function AiWidget() {
               </div>
               <div>
                 <div className="font-medium text-sm">AI Assistant</div>
-                <div className="text-xs text-slate-500">Powered by Gemini</div>
+                <div className="text-xs text-slate-500">Powered by Vertex AI</div>
               </div>
             </div>
             <div className="flex items-center gap-1">
@@ -260,7 +318,9 @@ export default function AiWidget() {
               <div className="text-center text-slate-400 py-8">
                 <Bot size={32} className="mx-auto mb-2 text-blue-400" />
                 <p className="text-sm font-medium">How can I help?</p>
-                <p className="text-xs mt-1">Ask about leads, contacts, companies, or opportunities.</p>
+                <p className="text-xs mt-1">
+                  Ask about leads, contacts, companies, or opportunities.
+                </p>
               </div>
             )}
 
@@ -273,9 +333,7 @@ export default function AiWidget() {
                 >
                   <div
                     className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${
-                      msg.role === 'user'
-                        ? 'bg-blue-600 text-white'
-                        : 'bg-slate-100 text-slate-600'
+                      msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600'
                     }`}
                   >
                     {msg.role === 'user' ? <User size={14} /> : <Bot size={14} />}
@@ -320,6 +378,12 @@ export default function AiWidget() {
                 <div className="bg-slate-100 rounded-lg px-3 py-2 text-sm text-slate-500">
                   <Loader2 size={14} className="animate-spin" />
                 </div>
+              </div>
+            )}
+
+            {requestErrorMessage && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                {requestErrorMessage}
               </div>
             )}
 

@@ -16,7 +16,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings=0",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx ../../packages/db-kit/scripts/migrate-cli.ts --folder=./drizzle"
+    "db:migrate": "tsx ../../packages/db-kit/scripts/migrate-cli.ts --folder=./drizzle",
+    "backfill:outreach": "tsx src/scripts/backfillOutreachFromLinkedInExport.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260620.1",

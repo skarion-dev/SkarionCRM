@@ -8,6 +8,7 @@ import { getDb, withAudit } from '@skarion/db-kit';
 import * as schema from '@skarion/crm/db/schema';
 import { eq, and, isNull, gte, lte, sql } from 'drizzle-orm';
 import type { CrmDb } from '@skarion/crm/db/types';
+import { evaluateOutreachSequence } from './lib/outreachSequence.js';
 
 interface Env {
   DATABASE_URL: string;
@@ -53,7 +54,15 @@ app.post('/evaluate/:trigger', async (c) => {
     } else if (trigger === 'task_due_soon') {
       executed = await evaluateTaskDueSoon(db, rule);
     } else if (trigger === 'outreach_stale') {
-      executed = await evaluateOutreachStale(db, rule);
+      // New multi-step, any-channel shape lives in evaluateOutreachSequence;
+      // rules created before that existed (or via the old single-channel UI
+      // form) have no `actions.kind` at all and keep using the original
+      // single-step evaluateOutreachStale below.
+      const actions = rule.actions as { kind?: string };
+      executed =
+        actions.kind === 'sequence_followup'
+          ? await evaluateOutreachSequence(db, rule)
+          : await evaluateOutreachStale(db, rule);
     }
     results.push({ ruleId: rule.id, ruleName: rule.name, executed });
   }

@@ -762,12 +762,31 @@ function AiControlPanel() {
 
 const CHANNELS = ['linkedin', 'instagram', 'facebook', 'whatsapp', 'email', 'phone'] as const;
 
+const DEFAULT_SEQUENCE_STEPS = [
+  {
+    afterDays: '7',
+    title:
+      'Soft bump — check in with {{lead.first_name}} {{lead.last_name}} ({{channel}}, step {{step}})',
+  },
+  {
+    afterDays: '14',
+    title:
+      'Value-add follow-up for {{lead.first_name}} {{lead.last_name}} ({{channel}}, step {{step}})',
+  },
+  {
+    afterDays: '21',
+    title:
+      'Final follow-up (breakup) for {{lead.first_name}} {{lead.last_name}} ({{channel}}, step {{step}})',
+  },
+];
+
 function WorkflowRulesPanel() {
   const { data: rules, isLoading } = useWorkflowRules();
   const createMut = useCreateWorkflowRule();
   const updateMut = useUpdateWorkflowRule();
   const deleteMut = useDeleteWorkflowRule();
   const [showCreate, setShowCreate] = useState(false);
+  const [ruleType, setRuleType] = useState<'escalate' | 'sequence'>('sequence');
   const [form, setForm] = useState({
     name: '',
     channel: 'linkedin',
@@ -775,6 +794,8 @@ function WorkflowRulesPanel() {
     waitDays: '7',
     nextChannel: 'email',
   });
+  const [sequenceChannel, setSequenceChannel] = useState<'all' | (typeof CHANNELS)[number]>('all');
+  const [steps, setSteps] = useState(DEFAULT_SEQUENCE_STEPS.map((s) => ({ ...s })));
 
   if (isLoading) {
     return (
@@ -786,7 +807,43 @@ function WorkflowRulesPanel() {
 
   const staleRules = (rules ?? []).filter((r) => r.trigger === 'outreach_stale');
 
+  const resetForm = () => {
+    setForm({
+      name: '',
+      channel: 'linkedin',
+      afterAttempts: '2',
+      waitDays: '7',
+      nextChannel: 'email',
+    });
+    setSequenceChannel('all');
+    setSteps(DEFAULT_SEQUENCE_STEPS.map((s) => ({ ...s })));
+  };
+
   const handleCreate = () => {
+    if (ruleType === 'sequence') {
+      createMut.mutate(
+        {
+          name:
+            form.name ||
+            `${sequenceChannel === 'all' ? 'All channels' : sequenceChannel} — ${steps.length}-step sequence`,
+          trigger: 'outreach_stale',
+          conditions: {
+            channel: sequenceChannel === 'all' ? null : sequenceChannel,
+            steps: steps.map((s) => ({ afterDays: Number(s.afterDays) || 1, title: s.title })),
+          },
+          actions: { kind: 'sequence_followup' },
+          enabled: true,
+        },
+        {
+          onSuccess: () => {
+            setShowCreate(false);
+            resetForm();
+          },
+        }
+      );
+      return;
+    }
+
     createMut.mutate(
       {
         name: form.name || `${form.channel} → ${form.nextChannel}`,
@@ -807,13 +864,7 @@ function WorkflowRulesPanel() {
       {
         onSuccess: () => {
           setShowCreate(false);
-          setForm({
-            name: '',
-            channel: 'linkedin',
-            afterAttempts: '2',
-            waitDays: '7',
-            nextChannel: 'email',
-          });
+          resetForm();
         },
       }
     );
@@ -834,77 +885,188 @@ function WorkflowRulesPanel() {
           </button>
         </div>
         <p className="text-sm text-slate-500 mb-4">
-          When a channel goes stale (N attempts with no reply for D days), auto-create a follow-up
-          task for the next channel in the sequence.
+          Auto-create an unassigned follow-up task — anyone on the team can claim it from the Tasks
+          board — when a lead goes quiet. Either escalate once to the next channel, or run a
+          multi-step cadence (e.g. day 7 / 14 / 21) on the same channel(s).
         </p>
 
         {showCreate && (
           <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 mb-4 space-y-3">
             <h3 className="font-medium text-sm">New Outreach Stale Rule</h3>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-              <label className="text-xs text-slate-500 col-span-2 md:col-span-3">
-                Name
-                <input
-                  type="text"
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  placeholder="e.g. LinkedIn → Email"
-                  className="mt-0.5 border border-slate-200 rounded px-2 py-1 text-sm w-full"
-                />
-              </label>
-              <label className="text-xs text-slate-500">
-                Channel
-                <select
-                  value={form.channel}
-                  onChange={(e) => setForm({ ...form, channel: e.target.value })}
-                  className="mt-0.5 border border-slate-200 rounded px-2 py-1 text-sm w-full"
-                >
-                  {CHANNELS.map((ch) => (
-                    <option key={ch} value={ch}>
-                      {ch}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="text-xs text-slate-500">
-                After attempts
-                <input
-                  type="number"
-                  min={1}
-                  value={form.afterAttempts}
-                  onChange={(e) => setForm({ ...form, afterAttempts: e.target.value })}
-                  className="mt-0.5 border border-slate-200 rounded px-2 py-1 text-sm w-full"
-                />
-              </label>
-              <label className="text-xs text-slate-500">
-                Wait days
-                <input
-                  type="number"
-                  min={1}
-                  value={form.waitDays}
-                  onChange={(e) => setForm({ ...form, waitDays: e.target.value })}
-                  className="mt-0.5 border border-slate-200 rounded px-2 py-1 text-sm w-full"
-                />
-              </label>
-              <label className="text-xs text-slate-500">
-                Escalate to
-                <select
-                  value={form.nextChannel}
-                  onChange={(e) => setForm({ ...form, nextChannel: e.target.value })}
-                  className="mt-0.5 border border-slate-200 rounded px-2 py-1 text-sm w-full"
-                >
-                  {CHANNELS.map((ch) => (
-                    <option key={ch} value={ch}>
-                      {ch}
-                    </option>
-                  ))}
-                </select>
-              </label>
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => setRuleType('sequence')}
+                className={cn(
+                  'px-3 py-1 rounded-md text-xs font-medium border',
+                  ruleType === 'sequence'
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-white border-slate-200 text-slate-600'
+                )}
+              >
+                Multi-step sequence
+              </button>
+              <button
+                onClick={() => setRuleType('escalate')}
+                className={cn(
+                  'px-3 py-1 rounded-md text-xs font-medium border',
+                  ruleType === 'escalate'
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-white border-slate-200 text-slate-600'
+                )}
+              >
+                Escalate to next channel
+              </button>
             </div>
+
+            <label className="text-xs text-slate-500 block">
+              Name (optional)
+              <input
+                type="text"
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                placeholder={
+                  ruleType === 'sequence' ? 'e.g. Cold-lead 3-step nudge' : 'e.g. LinkedIn → Email'
+                }
+                className="mt-0.5 border border-slate-200 rounded px-2 py-1 text-sm w-full"
+              />
+            </label>
+
+            {ruleType === 'sequence' ? (
+              <>
+                <label className="text-xs text-slate-500 block">
+                  Channel
+                  <select
+                    value={sequenceChannel}
+                    onChange={(e) => setSequenceChannel(e.target.value as typeof sequenceChannel)}
+                    className="mt-0.5 border border-slate-200 rounded px-2 py-1 text-sm w-full max-w-xs"
+                  >
+                    <option value="all">All channels</option>
+                    {CHANNELS.map((ch) => (
+                      <option key={ch} value={ch}>
+                        {ch}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div className="space-y-2">
+                  <div className="text-xs text-slate-500">Steps (fire in order, one task each)</div>
+                  {steps.map((step, i) => (
+                    <div
+                      key={i}
+                      className="flex gap-2 items-start bg-white border border-slate-200 rounded p-2"
+                    >
+                      <label className="text-xs text-slate-500 w-24 shrink-0">
+                        After (days)
+                        <input
+                          type="number"
+                          min={1}
+                          value={step.afterDays}
+                          onChange={(e) => {
+                            const next = [...steps];
+                            next[i] = { ...step, afterDays: e.target.value };
+                            setSteps(next);
+                          }}
+                          className="mt-0.5 border border-slate-200 rounded px-2 py-1 text-sm w-full"
+                        />
+                      </label>
+                      <label className="text-xs text-slate-500 flex-1">
+                        Task title (supports {'{{lead.first_name}}'}, {'{{lead.last_name}}'},{' '}
+                        {'{{channel}}'}, {'{{step}}'})
+                        <input
+                          type="text"
+                          value={step.title}
+                          onChange={(e) => {
+                            const next = [...steps];
+                            next[i] = { ...step, title: e.target.value };
+                            setSteps(next);
+                          }}
+                          className="mt-0.5 border border-slate-200 rounded px-2 py-1 text-sm w-full"
+                        />
+                      </label>
+                      <button
+                        onClick={() => setSteps(steps.filter((_, si) => si !== i))}
+                        className="mt-4 text-slate-400 hover:text-red-500 p-1"
+                        title="Remove step"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    onClick={() =>
+                      setSteps([
+                        ...steps,
+                        {
+                          afterDays: '7',
+                          title: 'Follow up with {{lead.first_name}} {{lead.last_name}}',
+                        },
+                      ])
+                    }
+                    className="flex items-center gap-1 text-xs text-blue-600 hover:underline"
+                  >
+                    <Plus size={12} /> Add step
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                <label className="text-xs text-slate-500">
+                  Channel
+                  <select
+                    value={form.channel}
+                    onChange={(e) => setForm({ ...form, channel: e.target.value })}
+                    className="mt-0.5 border border-slate-200 rounded px-2 py-1 text-sm w-full"
+                  >
+                    {CHANNELS.map((ch) => (
+                      <option key={ch} value={ch}>
+                        {ch}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-xs text-slate-500">
+                  After attempts
+                  <input
+                    type="number"
+                    min={1}
+                    value={form.afterAttempts}
+                    onChange={(e) => setForm({ ...form, afterAttempts: e.target.value })}
+                    className="mt-0.5 border border-slate-200 rounded px-2 py-1 text-sm w-full"
+                  />
+                </label>
+                <label className="text-xs text-slate-500">
+                  Wait days
+                  <input
+                    type="number"
+                    min={1}
+                    value={form.waitDays}
+                    onChange={(e) => setForm({ ...form, waitDays: e.target.value })}
+                    className="mt-0.5 border border-slate-200 rounded px-2 py-1 text-sm w-full"
+                  />
+                </label>
+                <label className="text-xs text-slate-500">
+                  Escalate to
+                  <select
+                    value={form.nextChannel}
+                    onChange={(e) => setForm({ ...form, nextChannel: e.target.value })}
+                    className="mt-0.5 border border-slate-200 rounded px-2 py-1 text-sm w-full"
+                  >
+                    {CHANNELS.map((ch) => (
+                      <option key={ch} value={ch}>
+                        {ch}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            )}
+
             <div className="flex gap-2">
               <button
                 onClick={handleCreate}
-                disabled={createMut.isPending}
+                disabled={createMut.isPending || (ruleType === 'sequence' && steps.length === 0)}
                 className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50"
               >
                 {createMut.isPending ? <Loader2 size={14} className="animate-spin" /> : 'Create'}
@@ -931,8 +1093,18 @@ function WorkflowRulesPanel() {
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium">{rule.name}</div>
                 <div className="text-xs text-slate-500">
-                  {rule.conditions.channel} · {rule.conditions.afterAttempts} attempts ·{' '}
-                  {rule.conditions.waitDays}d → escalate to {rule.conditions.nextChannel}
+                  {rule.actions.kind === 'sequence_followup' ? (
+                    <>
+                      {rule.conditions.channel ?? 'all channels'} ·{' '}
+                      {(rule.conditions.steps ?? []).length}-step sequence (
+                      {(rule.conditions.steps ?? []).map((s) => `${s.afterDays}d`).join(' → ')})
+                    </>
+                  ) : (
+                    <>
+                      {rule.conditions.channel} · {rule.conditions.afterAttempts} attempts ·{' '}
+                      {rule.conditions.waitDays}d → escalate to {rule.conditions.nextChannel}
+                    </>
+                  )}
                 </div>
               </div>
               <button

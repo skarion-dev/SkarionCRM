@@ -23,6 +23,9 @@ export interface AiGatewayMessage {
   content: string | AiGatewayContentPart[];
 }
 
+const DEFAULT_CHAT_TIMEOUT_MS = 90_000;
+const DEFAULT_EMBEDDING_TIMEOUT_MS = 20_000;
+
 export const DEFAULT_AI_MODELS = {
   reasoning: 'coding-best',
   fast: 'coding-fast',
@@ -218,6 +221,20 @@ function gatewayUrl(env: AiGatewayEnv, path: string): string {
   return `${env.AI_GATEWAY_BASE_URL!.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
 }
 
+async function fetchWithTimeout(
+  input: string,
+  init: RequestInit,
+  timeoutMs: number
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export async function gatewayChatCompletion(
   messages: AiGatewayMessage[],
   env: AiGatewayEnv,
@@ -226,25 +243,30 @@ export async function gatewayChatCompletion(
     tier?: AiModelTier;
     temperature?: number;
     maxTokens?: number;
+    timeoutMs?: number;
   } = {}
 ): Promise<string | null> {
   if (!hasAiGateway(env)) return null;
 
   const model = options.model || selectAiModel(env, options.tier);
   try {
-    const response = await fetch(gatewayUrl(env, 'chat/completions'), {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${env.AI_GATEWAY_API_KEY}`,
-        'Content-Type': 'application/json',
+    const response = await fetchWithTimeout(
+      gatewayUrl(env, 'chat/completions'),
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${env.AI_GATEWAY_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature: options.temperature ?? 0.3,
+          ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
+        }),
       },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature: options.temperature ?? 0.3,
-        ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
-      }),
-    });
+      options.timeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS
+    );
 
     if (!response.ok) {
       console.error(`AI gateway chat error (${model}, ${response.status}):`, await response.text());
@@ -266,14 +288,18 @@ export async function gatewayEmbedding(text: string, env: AiGatewayEnv): Promise
 
   const model = env.AI_EMBEDDING_MODEL || DEFAULT_AI_MODELS.embedding;
   try {
-    const response = await fetch(gatewayUrl(env, 'embeddings'), {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${env.AI_GATEWAY_API_KEY}`,
-        'Content-Type': 'application/json',
+    const response = await fetchWithTimeout(
+      gatewayUrl(env, 'embeddings'),
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${env.AI_GATEWAY_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ model, input: text }),
       },
-      body: JSON.stringify({ model, input: text }),
-    });
+      DEFAULT_EMBEDDING_TIMEOUT_MS
+    );
 
     if (!response.ok) {
       console.error(

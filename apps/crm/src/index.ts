@@ -44,6 +44,8 @@ import {
   isRealEmail,
   findExactMatch,
 } from './lib/leadDedup.js';
+import { nextLeadNumber } from './lib/leadNumber.js';
+import { buildLeadConditions, parseCommaList, resolveLeadSortColumn } from './lib/leadFilters.js';
 
 // --- Outreach status summary ---
 // Ranks a lead's channel stages and maps the "best" one back to the legacy
@@ -455,6 +457,7 @@ app.post('/extension/leads', async (c) => {
   }
 
   const data = {
+    leadNumber: await nextLeadNumber(db),
     firstName: String(body.firstName ?? '').trim() || displayName,
     lastName: String(body.lastName ?? '').trim(),
     email,
@@ -1064,54 +1067,45 @@ app.get('/api/leads', async (c) => {
   // Parse query params
   const page = Math.max(1, parseInt(c.req.query('page') || '1', 10));
   const pageSize = Math.min(500, Math.max(1, parseInt(c.req.query('pageSize') || '50', 10)));
-  const { status, source, search, owner, outreachStatus, batchId, tag, include } = c.req.query();
+  const {
+    status,
+    source,
+    search,
+    owner,
+    outreachStatus,
+    batchId,
+    tag,
+    include,
+    statuses,
+    outreachStatuses,
+    owners,
+    tags,
+    createdFrom,
+    createdTo,
+  } = c.req.query();
   const sortBy = c.req.query('sortBy') || 'createdAt';
   const sortOrder = c.req.query('sortOrder') || 'desc';
 
-  const conditions = [isNull(schema.leads.deletedAt)];
+  const conditions = buildLeadConditions({
+    isSuperadmin,
+    ownerId: caller.userId,
+    status,
+    statuses: parseCommaList(statuses),
+    source,
+    search,
+    owner,
+    owners: parseCommaList(owners),
+    outreachStatus,
+    outreachStatuses: parseCommaList(outreachStatuses),
+    batchId,
+    tag,
+    tags: parseCommaList(tags),
+    createdFrom,
+    createdTo,
+  });
 
-  if (!isSuperadmin) {
-    conditions.push(eq(schema.leads.ownerId, caller.userId));
-  }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (status) conditions.push(eq(schema.leads.status, status as any));
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  if (source) conditions.push(eq(schema.leads.source, source as any));
-  if (owner) conditions.push(eq(schema.leads.ownerId, owner));
-  if (outreachStatus) conditions.push(eq(schema.leads.outreachStatus, outreachStatus));
-  if (batchId) conditions.push(eq(schema.leads.batchId, batchId));
-  if (tag) conditions.push(sql`${schema.leads.tags} @> ${JSON.stringify([tag])}::jsonb`);
-
-  // Search across name, email, company, linkedinUrl, leadNumber
-  if (search) {
-    const searchLower = search.toLowerCase();
-    conditions.push(
-      or(
-        like(sql`lower(${schema.leads.email})`, `%${searchLower}%`),
-        like(sql`lower(${schema.leads.firstName})`, `%${searchLower}%`),
-        like(sql`lower(${schema.leads.lastName})`, `%${searchLower}%`),
-        like(sql`lower(${schema.leads.companyName})`, `%${searchLower}%`),
-        like(sql`lower(${schema.leads.linkedinUrl})`, `%${searchLower}%`),
-        like(sql`lower(${schema.leads.leadNumber})`, `%${searchLower}%`)
-      )!
-    );
-  }
-
-  // Build orderBy dynamically
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const validSortColumns: Record<string, any> = {
-    createdAt: schema.leads.createdAt,
-    updatedAt: schema.leads.updatedAt,
-    firstName: schema.leads.firstName,
-    lastName: schema.leads.lastName,
-    email: schema.leads.email,
-    companyName: schema.leads.companyName,
-    status: schema.leads.status,
-    outreachStatus: schema.leads.outreachStatus,
-    leadNumber: schema.leads.leadNumber,
-  };
-  const sortColumn = validSortColumns[sortBy] || schema.leads.createdAt;
-  const orderByClause = sortOrder === 'asc' ? asc(sortColumn) : desc(sortColumn);
+  const orderByClause =
+    sortOrder === 'asc' ? asc(resolveLeadSortColumn(sortBy)) : desc(resolveLeadSortColumn(sortBy));
 
   // Get total count
   const countResult = await db
@@ -1210,6 +1204,7 @@ app.post('/api/leads', async (c) => {
 
   const body = await c.req.json();
   const data = {
+    leadNumber: await nextLeadNumber(db),
     firstName: body.firstName,
     lastName: body.lastName,
     email: body.email,
@@ -1306,34 +1301,52 @@ app.get('/api/leads/export.csv', async (c) => {
   const caller = { userId: c.get('userId'), isSuperadmin };
   if (!role) return c.json({ error: 'Forbidden.' }, 403);
 
-  const { status, source, search, outreachStatus } = c.req.query();
+  const {
+    status,
+    source,
+    search,
+    outreachStatus,
+    owner,
+    batchId,
+    tag,
+    statuses,
+    outreachStatuses,
+    owners,
+    tags,
+    createdFrom,
+    createdTo,
+  } = c.req.query();
+  const sortBy = c.req.query('sortBy');
+  const sortOrder = c.req.query('sortOrder') || 'desc';
 
-  const conditions = [isNull(schema.leads.deletedAt)];
-  if (!isSuperadmin) conditions.push(eq(schema.leads.ownerId, caller.userId));
-  if (status) conditions.push(eq(schema.leads.status, status as any)); // eslint-disable-line @typescript-eslint/no-explicit-any
-  if (source) conditions.push(eq(schema.leads.source, source as any)); // eslint-disable-line @typescript-eslint/no-explicit-any
-  if (outreachStatus) conditions.push(eq(schema.leads.outreachStatus, outreachStatus));
-
-  if (search) {
-    const searchLower = search.toLowerCase();
-    conditions.push(
-      or(
-        like(sql`lower(${schema.leads.email})`, `%${searchLower}%`),
-        like(sql`lower(${schema.leads.firstName})`, `%${searchLower}%`),
-        like(sql`lower(${schema.leads.lastName})`, `%${searchLower}%`),
-        like(sql`lower(${schema.leads.companyName})`, `%${searchLower}%`),
-        like(sql`lower(${schema.leads.linkedinUrl})`, `%${searchLower}%`)
-      )!
-    );
-  }
+  const conditions = buildLeadConditions({
+    isSuperadmin,
+    ownerId: caller.userId,
+    status,
+    statuses: parseCommaList(statuses),
+    source,
+    search,
+    owner,
+    owners: parseCommaList(owners),
+    outreachStatus,
+    outreachStatuses: parseCommaList(outreachStatuses),
+    batchId,
+    tag,
+    tags: parseCommaList(tags),
+    createdFrom,
+    createdTo,
+  });
+  const orderByClause =
+    sortOrder === 'asc' ? asc(resolveLeadSortColumn(sortBy)) : desc(resolveLeadSortColumn(sortBy));
 
   const rows = await db
     .select()
     .from(schema.leads)
     .where(and(...conditions))
-    .orderBy(desc(schema.leads.createdAt));
+    .orderBy(orderByClause);
 
   const headers = [
+    'leadNumber',
     'firstName',
     'lastName',
     'email',
@@ -1357,6 +1370,7 @@ app.get('/api/leads/export.csv', async (c) => {
   for (const row of rows) {
     csv +=
       [
+        row.leadNumber,
         row.firstName,
         row.lastName,
         row.email,
@@ -1387,11 +1401,107 @@ app.get('/api/leads/export.csv', async (c) => {
     action: 'export',
     resourceType: 'leads',
     resourceId: 'bulk',
-    after: { count: rows.length, filters: { status, source, search, outreachStatus } },
+    after: {
+      count: rows.length,
+      filters: {
+        status,
+        statuses,
+        source,
+        search,
+        owner,
+        owners,
+        outreachStatus,
+        outreachStatuses,
+        batchId,
+        tag,
+        tags,
+        createdFrom,
+        createdTo,
+      },
+    },
     app: 'crm',
   });
 
   return c.body(csv);
+});
+
+// ─────────────────────────────────────────────────────────
+// SAVED SEARCHES — own-only (no superadmin override, matches the brief's
+// own call for simplicity here). Registered before /api/leads/:id so
+// "saved-searches" is never swallowed as a lead id.
+// ─────────────────────────────────────────────────────────
+
+app.get('/api/leads/saved-searches', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const role = getRole(c);
+  const caller = { userId: c.get('userId') };
+  if (!role) return c.json({ error: 'Forbidden.' }, 403);
+
+  const rows = await db
+    .select()
+    .from(schema.leadSavedSearches)
+    .where(eq(schema.leadSavedSearches.ownerId, caller.userId))
+    .orderBy(desc(schema.leadSavedSearches.updatedAt));
+
+  return c.json({ savedSearches: rows });
+});
+
+app.post('/api/leads/saved-searches', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const role = getRole(c);
+  const caller = { userId: c.get('userId') };
+  if (!role) return c.json({ error: 'Forbidden.' }, 403);
+
+  const body = await c.req.json();
+  if (!body.name || typeof body.name !== 'string' || !body.name.trim()) {
+    return c.json({ error: 'name is required.' }, 400);
+  }
+  if (body.filters === undefined) {
+    return c.json({ error: 'filters is required.' }, 400);
+  }
+
+  try {
+    const [result] = await db
+      .insert(schema.leadSavedSearches)
+      .values({
+        ownerId: caller.userId,
+        name: body.name.trim(),
+        filters: body.filters,
+        sortBy: body.sortBy ?? null,
+        sortOrder: body.sortOrder ?? null,
+      })
+      .returning();
+    return c.json({ savedSearch: result }, 201);
+  } catch (err) {
+    const code =
+      (err as { cause?: { code?: string }; code?: string })?.cause?.code ??
+      (err as { code?: string })?.code;
+    if (code === '23505') {
+      return c.json({ error: `A saved search named "${body.name.trim()}" already exists.` }, 409);
+    }
+    throw err;
+  }
+});
+
+app.delete('/api/leads/saved-searches/:id', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const role = getRole(c);
+  const id = c.req.param('id');
+  const caller = { userId: c.get('userId') };
+  if (!role) return c.json({ error: 'Forbidden.' }, 403);
+
+  const [existing] = await db
+    .select()
+    .from(schema.leadSavedSearches)
+    .where(
+      and(eq(schema.leadSavedSearches.id, id), eq(schema.leadSavedSearches.ownerId, caller.userId))
+    );
+  // 404 rather than 403 for a search owned by someone else — don't confirm
+  // whether it exists at all.
+  if (!existing) return c.json({ error: 'Not found.' }, 404);
+
+  await db.delete(schema.leadSavedSearches).where(eq(schema.leadSavedSearches.id, id));
+  return c.json({ success: true });
 });
 
 app.get('/api/leads/:id', async (c) => {
@@ -2655,17 +2765,25 @@ app.get('/api/tasks', async (c) => {
   const caller = { userId: c.get('userId'), managedUserIds: undefined, isSuperadmin };
   if (!role) return c.json({ error: 'Forbidden.' }, 403);
 
-  const { assigneeId, contactId, companyId, opportunityId, completed, priority } = c.req.query();
+  const { assigneeId, contactId, companyId, opportunityId, completed, priority, type, unassigned } =
+    c.req.query();
   const conditions = [isNull(schema.tasks.deletedAt)];
 
+  // Unclaimed tasks (assigneeId null) are visible to everyone with role
+  // access — that's the open-claim pool the task board is built on. A
+  // non-superadmin otherwise only sees their own assigned tasks.
   if (!isSuperadmin) {
-    conditions.push(eq(schema.tasks.assigneeId, caller.userId));
+    conditions.push(
+      or(eq(schema.tasks.assigneeId, caller.userId), isNull(schema.tasks.assigneeId))!
+    );
   }
+  if (unassigned === 'true') conditions.push(isNull(schema.tasks.assigneeId));
   if (assigneeId) conditions.push(eq(schema.tasks.assigneeId, assigneeId));
   if (contactId) conditions.push(eq(schema.tasks.contactId, contactId));
   if (companyId) conditions.push(eq(schema.tasks.companyId, companyId));
   if (opportunityId) conditions.push(eq(schema.tasks.opportunityId, opportunityId));
   if (priority) conditions.push(eq(schema.tasks.priority, priority));
+  if (type) conditions.push(eq(schema.tasks.type, type));
   if (completed === 'true') conditions.push(sql`${schema.tasks.completedAt} IS NOT NULL`);
   if (completed === 'false') conditions.push(sql`${schema.tasks.completedAt} IS NULL`);
 
@@ -2712,7 +2830,7 @@ app.post('/api/tasks', async (c) => {
   });
 
   // Email notification on task assignment
-  if (result.assigneeId !== caller.userId) {
+  if (result.assigneeId && result.assigneeId !== caller.userId) {
     sendEmail(
       c.env,
       result.assigneeId,
@@ -2736,7 +2854,11 @@ app.get('/api/tasks/:id', async (c) => {
     .from(schema.tasks)
     .where(and(eq(schema.tasks.id, id), isNull(schema.tasks.deletedAt)));
   if (!row) return c.json({ error: 'Not found.' }, 404);
-  if (!can(isSuperadmin, role, 'view', { ownerId: row.assigneeId }, caller)) {
+  // An unclaimed task (assigneeId null) is visible to anyone with role
+  // access — visibility of the open-claim pool is the point of the board.
+  const canViewTask =
+    row.assigneeId === null || can(isSuperadmin, role, 'view', { ownerId: row.assigneeId }, caller);
+  if (!canViewTask) {
     return c.json({ error: 'Forbidden.' }, 403);
   }
 
@@ -2755,7 +2877,9 @@ app.put('/api/tasks/:id', async (c) => {
     .from(schema.tasks)
     .where(and(eq(schema.tasks.id, id), isNull(schema.tasks.deletedAt)));
   if (!existing) return c.json({ error: 'Not found.' }, 404);
-  if (!can(isSuperadmin, role, 'edit', { ownerId: existing.assigneeId }, caller)) {
+  // Unassigned tasks (ownerId '') aren't editable until claimed — a
+  // teammate claims first (PUT /api/tasks/:id/claim), then edits normally.
+  if (!can(isSuperadmin, role, 'edit', { ownerId: existing.assigneeId ?? '' }, caller)) {
     return c.json({ error: 'Forbidden.' }, 403);
   }
 
@@ -2802,7 +2926,9 @@ app.put('/api/tasks/:id/complete', async (c) => {
     .from(schema.tasks)
     .where(and(eq(schema.tasks.id, id), isNull(schema.tasks.deletedAt)));
   if (!existing) return c.json({ error: 'Not found.' }, 404);
-  if (!can(isSuperadmin, role, 'edit', { ownerId: existing.assigneeId }, caller)) {
+  // Unassigned tasks (ownerId '') aren't editable until claimed — a
+  // teammate claims first (PUT /api/tasks/:id/claim), then edits normally.
+  if (!can(isSuperadmin, role, 'edit', { ownerId: existing.assigneeId ?? '' }, caller)) {
     return c.json({ error: 'Forbidden.' }, 403);
   }
 
@@ -2842,7 +2968,9 @@ app.put('/api/tasks/:id/reopen', async (c) => {
     .from(schema.tasks)
     .where(and(eq(schema.tasks.id, id), isNull(schema.tasks.deletedAt)));
   if (!existing) return c.json({ error: 'Not found.' }, 404);
-  if (!can(isSuperadmin, role, 'edit', { ownerId: existing.assigneeId }, caller)) {
+  // Unassigned tasks (ownerId '') aren't editable until claimed — a
+  // teammate claims first (PUT /api/tasks/:id/claim), then edits normally.
+  if (!can(isSuperadmin, role, 'edit', { ownerId: existing.assigneeId ?? '' }, caller)) {
     return c.json({ error: 'Forbidden.' }, 403);
   }
 
@@ -2870,6 +2998,49 @@ app.put('/api/tasks/:id/reopen', async (c) => {
   return c.json({ task: result });
 });
 
+// Self-claim an unassigned task off the open-claim board. Any role with
+// access to the app may claim — there's no owner yet, so the usual
+// ownerId-based `can()` check doesn't apply. 409 if someone else claimed it
+// first (a plain UPDATE ... WHERE assignee_id IS NULL makes this atomic —
+// no separate read-then-write race).
+app.put('/api/tasks/:id/claim', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const id = c.req.param('id');
+  const role = getRole(c);
+  const caller = { userId: c.get('userId') };
+  if (!role) return c.json({ error: 'Forbidden.' }, 403);
+
+  const [existing] = await db
+    .select()
+    .from(schema.tasks)
+    .where(and(eq(schema.tasks.id, id), isNull(schema.tasks.deletedAt)));
+  if (!existing) return c.json({ error: 'Not found.' }, 404);
+
+  const [result] = await db
+    .update(schema.tasks)
+    .set({ assigneeId: caller.userId, updatedAt: new Date() })
+    .where(
+      and(eq(schema.tasks.id, id), isNull(schema.tasks.deletedAt), isNull(schema.tasks.assigneeId))
+    )
+    .returning();
+
+  if (!result) {
+    return c.json({ error: 'Already claimed by someone else.' }, 409);
+  }
+
+  await withAudit(db, schema.auditLog, {
+    actorUserId: caller.userId,
+    action: 'claim',
+    resourceType: 'task',
+    resourceId: id,
+    before: existing,
+    after: result,
+    app: 'crm',
+  });
+
+  return c.json({ task: result });
+});
+
 app.delete('/api/tasks/:id', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const id = c.req.param('id');
@@ -2882,7 +3053,7 @@ app.delete('/api/tasks/:id', async (c) => {
     .from(schema.tasks)
     .where(and(eq(schema.tasks.id, id), isNull(schema.tasks.deletedAt)));
   if (!existing) return c.json({ error: 'Not found.' }, 404);
-  if (!can(isSuperadmin, role, 'delete', { ownerId: existing.assigneeId }, caller)) {
+  if (!can(isSuperadmin, role, 'delete', { ownerId: existing.assigneeId ?? '' }, caller)) {
     return c.json({ error: 'Forbidden.' }, 403);
   }
 
@@ -3234,6 +3405,7 @@ app.post('/api/import/leads', async (c) => {
     const [result] = await db
       .insert(schema.leads)
       .values({
+        leadNumber: await nextLeadNumber(db),
         firstName: row.firstName,
         lastName: row.lastName,
         email: row.email,
@@ -3607,13 +3779,24 @@ app.post('/api/chat', async (c) => {
   const message = body.message?.trim();
   if (!message) return c.json({ error: 'Message is required.' }, 400);
 
-  // 1. Embed the user's question
-  const queryEmbedding = await ai.getEmbedding(message, aiEnv);
+  // Retrieval and conversation history are independent, so run them together.
+  // A chat turn now remembers the prior six exchanges instead of treating every
+  // message as a brand-new conversation.
+  const [queryEmbedding, allEmbeddings, recentHistoryRows] = await Promise.all([
+    ai.getEmbedding(message, aiEnv),
+    db.select().from(schema.embeddings),
+    db
+      .select({
+        role: schema.chatMessages.role,
+        content: schema.chatMessages.content,
+      })
+      .from(schema.chatMessages)
+      .where(eq(schema.chatMessages.userId, userId))
+      .orderBy(desc(schema.chatMessages.createdAt))
+      .limit(12),
+  ]);
 
-  // 2. Retrieve all candidate embeddings
-  const allEmbeddings = await db.select().from(schema.embeddings);
-
-  // 3. Score by similarity and filter by permission using canList()
+  // Score by similarity and filter by permission using canList().
   const scored = allEmbeddings
     .map((e) => ({
       ...e,
@@ -3626,29 +3809,46 @@ app.post('/api/chat', async (c) => {
     .sort((a, b) => b.score - a.score)
     .slice(0, 5);
 
-  // 4. Build context prompt
+  // Build a permission-filtered context block for only this turn.
   const context = scored
     .map((e, i) => `\n[${i + 1}] ${e.resourceType} ${e.resourceId}:\n${e.content}`)
     .join('');
-  const prompt = `Context:${context}\n\nUser question: ${message}`;
+  const prompt = `Relevant CRM context:${
+    context || '\nNo matching CRM records were found.'
+  }\n\nCurrent question: ${message}`;
 
-  // 5. Persist user message
+  // Persist the user message before generation so a failed turn is still
+  // visible and can be retried.
   await db.insert(schema.chatMessages).values({
     userId,
     role: 'user',
     content: message,
   });
 
-  // 6. Call LLM
-  let answer = await ai.chatCompletionSingle(prompt, aiEnv, {
+  const conversation: ai.ChatMessage[] = recentHistoryRows
+    .reverse()
+    .filter((row) => row.role === 'user' || row.role === 'assistant')
+    .map((row) => ({
+      role: row.role === 'assistant' ? 'model' : 'user',
+      text: row.content,
+    }));
+  conversation.push({ role: 'user', text: prompt });
+
+  const answer = await ai.chatCompletion(conversation, aiEnv, {
     tier: 'fast',
     agent: 'crm-copilot',
+    systemInstruction: `You are Skarion CRM Copilot. Answer the user's current
+question directly and concisely. Use the supplied CRM context when it is
+relevant, and never invent CRM records or facts. If the requested CRM fact is
+not in the context, say that you could not find it. You may answer general CRM
+usage questions from your own knowledge. Do not claim that you changed or sent
+anything unless the application explicitly confirms that action.`,
   });
   if (!answer) {
-    answer = ai.AI_NOT_CONFIGURED_MSG;
+    return c.json({ error: 'The AI assistant is temporarily unavailable. Please try again.' }, 503);
   }
 
-  // 7. Persist assistant response
+  // Persist the assistant response.
   const contextIds = scored.map((e) => ({
     resourceType: e.resourceType,
     resourceId: e.resourceId,
@@ -4148,6 +4348,7 @@ app.post('/api/leads/import/document/confirm', async (c) => {
   const [lead] = await db
     .insert(schema.leads)
     .values({
+      leadNumber: await nextLeadNumber(db),
       firstName: leadData.firstName,
       lastName: leadData.lastName,
       email: leadData.email.toLowerCase(),

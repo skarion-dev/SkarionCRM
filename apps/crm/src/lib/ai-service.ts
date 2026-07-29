@@ -69,17 +69,21 @@ export async function getEmbedding(text: string, env: Env): Promise<number[] | n
 }
 
 export function cosineSimilarity(a: number[], b: number[]): number {
+  const length = Math.min(a.length, b.length);
+  if (length === 0) return 0;
   let dot = 0,
     na = 0,
     nb = 0;
-  for (let i = 0; i < a.length; i++) {
+  for (let i = 0; i < length; i++) {
     const ai = a[i]!;
     const bi = b[i]!;
+    if (!Number.isFinite(ai) || !Number.isFinite(bi)) return 0;
     dot += ai * bi;
     na += ai * ai;
     nb += bi * bi;
   }
-  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+  const denominator = Math.sqrt(na) * Math.sqrt(nb);
+  return denominator > 0 ? dot / denominator : 0;
 }
 
 // ── Auto-embedding (RAG pipeline) ───────────────────────────────────────────

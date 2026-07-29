@@ -9,6 +9,12 @@ export default function ChatPage() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const messages = history?.messages ?? [];
+  const sendError =
+    sendMutation.error instanceof Error
+      ? sendMutation.error.message
+      : sendMutation.isError
+        ? 'The AI assistant could not answer. Please try again.'
+        : null;
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -42,7 +48,9 @@ export default function ChatPage() {
           <div className="text-center text-slate-400 py-12">
             <Bot size={40} className="mx-auto mb-3" />
             <p className="text-lg font-medium">No messages yet</p>
-            <p className="text-sm">Ask a question about your leads, contacts, companies, or opportunities.</p>
+            <p className="text-sm">
+              Ask a question about your leads, contacts, companies, or opportunities.
+            </p>
           </div>
         )}
 
@@ -53,18 +61,14 @@ export default function ChatPage() {
           >
             <div
               className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
-                msg.role === 'user'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-slate-100 text-slate-600'
+                msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600'
               }`}
             >
               {msg.role === 'user' ? <User size={16} /> : <Bot size={16} />}
             </div>
             <div
               className={`max-w-[80%] rounded-lg px-4 py-2 text-sm ${
-                msg.role === 'user'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-slate-100 text-slate-800'
+                msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-800'
               }`}
             >
               <div className="whitespace-pre-wrap">{msg.content}</div>
@@ -80,6 +84,12 @@ export default function ChatPage() {
             <div className="bg-slate-100 rounded-lg px-4 py-2 text-sm text-slate-500">
               <Loader2 size={16} className="animate-spin" />
             </div>
+          </div>
+        )}
+
+        {sendError && (
+          <div className="mx-auto max-w-xl rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {sendError}
           </div>
         )}
 

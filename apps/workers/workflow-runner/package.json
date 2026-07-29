@@ -7,7 +7,7 @@
   "scripts": {
     "build": "echo \"(stub) no build yet for @skarion/worker-workflow-runner\"",
     "dev": "echo \"(stub) no dev yet for @skarion/worker-workflow-runner\"",
-    "test": "echo \"(stub) no tests yet for @skarion/worker-workflow-runner\"",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings=0"
   },
@@ -20,6 +20,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260620.1",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.7"
   }
 }

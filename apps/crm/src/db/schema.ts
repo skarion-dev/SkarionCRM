@@ -273,6 +273,11 @@ export const leadChannels = crmSchema.table(
     lastAttemptAt: timestamp('last_attempt_at', { withTimezone: true }),
     nextFollowupAt: timestamp('next_followup_at', { withTimezone: true }),
     sequence: integer('sequence').default(1).notNull(),
+    // Which step of a multi-step outreach_stale sequence (see
+    // evaluateOutreachSequence) has already fired for this channel — 0
+    // means none yet. Keeps step 2 from re-firing step 1 and keeps a
+    // completed step from permanently blocking the next one.
+    followupStage: integer('followup_stage').default(0).notNull(),
     ownerId: uuid('owner_id').notNull(),
     ...timestamps(),
   },
@@ -366,7 +371,9 @@ export const tasks = crmSchema.table(
     description: text('description'),
     type: text('type'),
     dueDate: timestamp('due_date', { withTimezone: true }),
-    assigneeId: uuid('assignee_id').notNull(),
+    // Nullable: an unassigned task sits in the open-claim pool on the task
+    // board until a teammate picks it up.
+    assigneeId: uuid('assignee_id'),
     contactId: uuid('contact_id').references(() => contacts.id, { onDelete: 'set null' }),
     companyId: uuid('company_id').references(() => companies.id, { onDelete: 'set null' }),
     opportunityId: uuid('opportunity_id').references(() => opportunities.id, {
@@ -438,6 +445,28 @@ export const workflowRules = crmSchema.table(
   (table) => [
     index('idx_workflow_rules_trigger').on(table.trigger),
     index('idx_workflow_rules_enabled').on(table.enabled),
+  ]
+);
+
+// ─────────────────────────────────────────────────────────
+// lead_saved_searches
+// ─────────────────────────────────────────────────────────
+export const leadSavedSearches = crmSchema.table(
+  'lead_saved_searches',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    // Own-only — a saved search is a personal shortcut, same scoping as the
+    // leads a non-superadmin can see in the first place.
+    ownerId: uuid('owner_id').notNull(),
+    name: text('name').notNull(),
+    filters: jsonb('filters').notNull(), // serialized LeadFilters shape
+    sortBy: text('sort_by'),
+    sortOrder: text('sort_order'),
+    ...timestamps(),
+  },
+  (table) => [
+    index('idx_lead_saved_searches_owner').on(table.ownerId),
+    uniqueIndex('idx_lead_saved_searches_owner_name').on(table.ownerId, table.name),
   ]
 );
 

@@ -421,7 +421,7 @@ export interface Lead {
   id: string;
   firstName: string;
   lastName: string;
-  email: string;
+  email: string | null;
   phone: string | null;
   companyName: string | null;
   companyDomain: string | null;
@@ -493,7 +493,8 @@ export interface Task {
   title: string;
   description: string | null;
   dueDate: string | null;
-  assigneeId: string;
+  // null = unassigned, sitting in the open-claim pool on the task board.
+  assigneeId: string | null;
   contactId: string | null;
   companyId: string | null;
   opportunityId: string | null;
@@ -652,10 +653,13 @@ export interface WorkflowRule {
   name: string;
   trigger: 'lead_created' | 'opportunity_stale' | 'task_due_soon' | 'outreach_stale';
   conditions: {
-    channel?: string;
+    channel?: string | null;
     afterAttempts?: number;
     waitDays?: number;
     nextChannel?: string;
+    // Multi-step sequence rules (actions.kind === 'sequence_followup') use
+    // this instead of afterAttempts/waitDays/nextChannel.
+    steps?: { afterDays: number; title: string; priority?: string }[];
     [key: string]: unknown;
   };
   actions: { kind?: string; taskTitle?: string; taskPriority?: string; [key: string]: unknown };
