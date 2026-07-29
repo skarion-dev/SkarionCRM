@@ -1,0 +1,52 @@
+name: Import Curated Leads
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Preview duplicates or perform the import
+        required: true
+        type: choice
+        options:
+          - dry-run
+          - import
+      batch_name:
+        description: Import batch name
+        required: true
+        default: Future Candidates
+        type: string
+      owner_id:
+        description: CRM owner UUID
+        required: true
+        default: a77b7dc2-efab-478e-960b-3080e9d9b167
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: import-curated-leads
+  cancel-in-progress: false
+
+jobs:
+  import:
+    name: ${{ inputs.mode }} curated leads
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Validate import script
+        run: pnpm --filter @skarion/crm typecheck
+      - name: Preview or import curated leads
+        run: pnpm --filter @skarion/crm exec tsx src/scripts/importCuratedLeads.ts
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          CURATED_LEADS_PAYLOAD_B64: ${{ secrets.CURATED_LEADS_PAYLOAD_B64 }}
+          CURATED_LEADS_MODE: ${{ inputs.mode }}
+          CURATED_LEADS_BATCH_NAME: ${{ inputs.batch_name }}
+          CURATED_LEADS_OWNER_ID: ${{ inputs.owner_id }}
