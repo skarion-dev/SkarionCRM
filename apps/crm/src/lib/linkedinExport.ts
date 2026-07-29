@@ -254,7 +254,7 @@ export function summarizeLinkedInConversations(
       lastMessageAt: last.sentAt,
       lastMessageFromUs: last.outbound,
       outboundCount: parsed.filter((row) => row.outbound).length,
-      messages: parsed.slice(-500).map((row) => row.message),
+      messages: parsed.map((row) => row.message),
     });
   }
 
