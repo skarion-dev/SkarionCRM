@@ -70,12 +70,14 @@ export function useDashboard() {
 }
 
 export function useActivities(filters: {
+  leadId?: string;
   contactId?: string;
   companyId?: string;
   opportunityId?: string;
   type?: string;
 }) {
   const qs = new URLSearchParams();
+  if (filters.leadId) qs.append('leadId', filters.leadId);
   if (filters.contactId) qs.append('contactId', filters.contactId);
   if (filters.companyId) qs.append('companyId', filters.companyId);
   if (filters.opportunityId) qs.append('opportunityId', filters.opportunityId);

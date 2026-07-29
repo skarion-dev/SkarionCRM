@@ -903,7 +903,7 @@ export default function LeadDetail() {
       {/* Activity Timeline */}
       <div className="bg-white border border-slate-200 rounded-lg p-6">
         <ActivityTimeline
-          filters={{ contactId: lead.id }}
+          filters={{ leadId: lead.id }}
           entityName={`${lead.firstName} ${lead.lastName}`}
           onAddActivity={(type) => setActivityType(type)}
         />
@@ -918,7 +918,7 @@ export default function LeadDetail() {
           open={!!activityType}
           onClose={() => setActivityType(null)}
           type={activityType}
-          filters={{ contactId: lead.id }}
+          filters={{ leadId: lead.id }}
           entityName={`${lead.firstName} ${lead.lastName}`}
         />
       )}

@@ -1,7 +1,12 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { getDb, withAudit } from '@skarion/db-kit';
-import { requireAuth, requireSuperadmin, type AuthedVariables } from '@skarion/auth-client';
+import {
+  platformSecurity,
+  requireAuth,
+  requireSuperadmin,
+  type AuthedVariables,
+} from '@skarion/auth-client';
 import { can } from '@skarion/permissions';
 import * as schema from './db/schema.js';
 import { eq, and, isNull, like, sql, desc, asc, or } from 'drizzle-orm';
@@ -54,7 +59,8 @@ function isAllowedOrigin(origin: string, appUrl: string, allowedOriginsEnv?: str
   ]);
   if (knownCloudflareOrigins.has(origin)) return true;
   if (origin.startsWith('http://localhost:')) return true;
-  if (origin.startsWith('chrome-extension://') || origin.startsWith('moz-extension://')) return true;
+  if (origin.startsWith('chrome-extension://') || origin.startsWith('moz-extension://'))
+    return true;
   if (allowedOriginsEnv) {
     const origins = allowedOriginsEnv.split(',').map((o) => o.trim());
     if (origins.includes(origin)) return true;
@@ -64,10 +70,12 @@ function isAllowedOrigin(origin: string, appUrl: string, allowedOriginsEnv?: str
 
 const app = new Hono<{ Bindings: Env; Variables: AuthedVariables }>();
 
+app.use('*', platformSecurity());
 app.use(
   '*',
   cors({
-    origin: (origin, c) => (isAllowedOrigin(origin, c.env.APP_URL, c.env.ALLOWED_ORIGINS) ? origin : ''),
+    origin: (origin, c) =>
+      isAllowedOrigin(origin, c.env.APP_URL, c.env.ALLOWED_ORIGINS) ? origin : '',
     credentials: true,
   })
 );

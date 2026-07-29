@@ -3,7 +3,7 @@ import { getDb } from '@skarion/db-kit';
 import * as schema from '@skarion/crm/db/schema';
 import type { CrmDb } from '@skarion/crm/db/types';
 import { gatewayEmbedding, hasAiGateway, type AiGatewayEnv } from '@skarion/ai-toolkit';
-import { eq, and, isNull } from 'drizzle-orm';
+import { eq, and, isNull, or, gt, asc, getTableColumns } from 'drizzle-orm';
 
 interface Env extends AiGatewayEnv {
   DATABASE_URL: string;
@@ -106,22 +106,37 @@ async function processTable(
   idField: string,
   ownerField: string
 ) {
-  // Select records that either have no embedding or have been updated since their last embedding
-  const rows = await db.select().from(table).where(isNull(table.deletedAt)).limit(50); // batch size per run
+  // Select only records that have never been embedded or changed after their
+  // last embedding. The old query repeatedly selected the same first 50 rows,
+  // leaving every later record permanently invisible to RAG.
+  const rows = await db
+    .select({ record: getTableColumns(table) })
+    .from(table)
+    .leftJoin(
+      schema.embeddings,
+      and(
+        eq(schema.embeddings.resourceType, type),
+        eq(schema.embeddings.resourceId, table[idField])
+      )
+    )
+    .where(
+      and(
+        table.deletedAt ? isNull(table.deletedAt) : undefined,
+        or(isNull(schema.embeddings.id), gt(table.updatedAt, schema.embeddings.updatedAt))
+      )
+    )
+    .orderBy(asc(table.updatedAt), asc(table[idField]))
+    .limit(50);
 
   let processed = 0;
-  for (const row of rows) {
+  for (const result of rows) {
+    const row = result.record as Record<string, unknown>;
+    const ownerId = row[ownerField];
+    if (typeof ownerId !== 'string' || !ownerId) continue;
     const text = recordToText(type, row as Record<string, unknown>);
     const embedding = await fetchEmbedding(text, env);
     if (!embedding) continue;
-    await upsertEmbedding(
-      db,
-      type,
-      row[idField] as string,
-      text,
-      embedding,
-      row[ownerField] as string
-    );
+    await upsertEmbedding(db, type, row[idField] as string, text, embedding, ownerId);
     processed++;
   }
   return processed;

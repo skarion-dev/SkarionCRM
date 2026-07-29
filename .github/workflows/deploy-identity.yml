@@ -24,8 +24,12 @@ on:
   workflow_dispatch:
 
 jobs:
+  quality:
+    uses: ./.github/workflows/reusable-quality.yml
+
   migrate:
     name: Run identity schema migrations
+    needs: quality
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -92,7 +96,12 @@ jobs:
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
       - name: Set RESEND_API_KEY secret
         working-directory: apps/identity
-        run: printf '%s' "$RESEND_API_KEY" | wrangler secret put RESEND_API_KEY
+        run: |
+          if [ -n "$RESEND_API_KEY" ]; then
+            printf '%s' "$RESEND_API_KEY" | wrangler secret put RESEND_API_KEY
+          else
+            echo "RESEND_API_KEY is not present in GitHub Actions; preserving the existing Worker secret"
+          fi
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -125,6 +134,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
   deploy-login:
     name: Deploy public login Pages site
+    needs: quality
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -170,6 +180,7 @@ jobs:
 
   deploy-admin:
     name: Deploy identity admin Pages site
+    needs: quality
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

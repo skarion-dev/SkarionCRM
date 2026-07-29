@@ -668,6 +668,7 @@ export const activities = crmSchema.table(
     type: activityTypeEnum('type').notNull(),
     subject: text('subject').notNull(),
     content: text('content'),
+    leadId: uuid('lead_id').references(() => leads.id, { onDelete: 'cascade' }),
     contactId: uuid('contact_id').references(() => contacts.id, { onDelete: 'cascade' }),
     companyId: uuid('company_id').references(() => companies.id, { onDelete: 'cascade' }),
     opportunityId: uuid('opportunity_id').references(() => opportunities.id, {
@@ -678,6 +679,7 @@ export const activities = crmSchema.table(
     ...timestamps(),
   },
   (table) => [
+    index('idx_activities_lead').on(table.leadId),
     index('idx_activities_contact').on(table.contactId),
     index('idx_activities_company').on(table.companyId),
     index('idx_activities_opportunity').on(table.opportunityId),
@@ -834,6 +836,7 @@ export const leadsRelations = relations(leads, ({ one, many }) => ({
   }),
   batch: one(importBatches, { fields: [leads.batchId], references: [importBatches.id] }),
   channels: many(leadChannels),
+  activities: many(activities),
   linkedinConversations: many(linkedinConversations),
   attachments: many(leadAttachments),
   aiAssessment: one(leadAiAssessments, {
@@ -873,6 +876,7 @@ export const opportunitiesRelations = relations(opportunities, ({ one, many }) =
 }));
 
 export const activitiesRelations = relations(activities, ({ one }) => ({
+  lead: one(leads, { fields: [activities.leadId], references: [leads.id] }),
   contact: one(contacts, { fields: [activities.contactId], references: [contacts.id] }),
   company: one(companies, { fields: [activities.companyId], references: [companies.id] }),
   opportunity: one(opportunities, {

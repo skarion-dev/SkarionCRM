@@ -7,11 +7,17 @@ interface ActivityFormProps {
   open: boolean;
   onClose: () => void;
   type: ActivityType;
-  filters: { contactId?: string; companyId?: string; opportunityId?: string };
+  filters: { leadId?: string; contactId?: string; companyId?: string; opportunityId?: string };
   entityName: string;
 }
 
-export default function ActivityForm({ open, onClose, type, filters, entityName }: ActivityFormProps) {
+export default function ActivityForm({
+  open,
+  onClose,
+  type,
+  filters,
+  entityName,
+}: ActivityFormProps) {
   const create = useCreateActivity();
   const [subject, setSubject] = useState('');
   const [content, setContent] = useState('');
@@ -66,10 +72,18 @@ export default function ActivityForm({ open, onClose, type, filters, entityName 
           />
         </div>
         <div className="flex justify-end gap-2 pt-2">
-          <button type="button" onClick={onClose} className="px-3 py-2 rounded-md text-sm border border-slate-200 hover:bg-slate-50">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-3 py-2 rounded-md text-sm border border-slate-200 hover:bg-slate-50"
+          >
             Cancel
           </button>
-          <button type="submit" disabled={isPending} className="px-3 py-2 rounded-md text-sm bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
+          <button
+            type="submit"
+            disabled={isPending}
+            className="px-3 py-2 rounded-md text-sm bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+          >
             {isPending ? 'Saving...' : 'Log'}
           </button>
         </div>

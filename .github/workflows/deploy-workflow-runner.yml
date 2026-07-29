@@ -16,7 +16,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  quality:
+    uses: ./.github/workflows/reusable-quality.yml
+
   deploy:
+    needs: quality
     name: Deploy workflow-runner Worker
     runs-on: ubuntu-latest
     steps:

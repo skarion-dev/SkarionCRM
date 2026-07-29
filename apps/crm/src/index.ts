@@ -1,7 +1,12 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { getDb, withAudit } from '@skarion/db-kit';
-import { requireAuth, requireSuperadmin, type AuthedVariables } from '@skarion/auth-client';
+import {
+  platformSecurity,
+  requireAuth,
+  requireSuperadmin,
+  type AuthedVariables,
+} from '@skarion/auth-client';
 import {
   AI_AGENTS,
   AI_MODELS,
@@ -21,6 +26,7 @@ import {
   isNull,
   isNotNull,
   like,
+  ilike,
   sql,
   desc,
   asc,
@@ -1197,6 +1203,7 @@ function isAllowedOrigin(origin: string, appUrl: string, allowedOriginsEnv?: str
 
 const app = new Hono<{ Bindings: Env; Variables: AuthedVariables }>();
 
+app.use('*', platformSecurity());
 app.use(
   '*',
   cors({
@@ -4828,12 +4835,13 @@ app.post('/api/leads/:id/outreach-actions', async (c) => {
   // Recompute leads.outreachStatus from all channels
   const journey = await recomputeLeadOutreachStatus(db, id);
 
-  // Activity row referencing the lead via content JSON (no leadId FK on activities)
+  // Keep the outreach event on the lead's first-class activity timeline.
   await db.insert(schema.activities).values({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     type: (CHANNEL_ACTIVITY_TYPE[channel] ?? 'note') as any,
     subject,
-    content: JSON.stringify({ leadId: id }),
+    content: null,
+    leadId: id,
     contactId: null,
     companyId: null,
     opportunityId: null,
@@ -5099,9 +5107,8 @@ app.post('/api/leads/bulk', async (c) => {
     return c.json({ error: `Rate limit exceeded. Try again in ${rl.retryAfter} seconds.` }, 429);
   }
 
-  // Verify all leads exist and caller has permission
-  // Safe approach: fetch all accessible non-deleted leads, then filter by ID in JS
-  const accessConditions = [isNull(schema.leads.deletedAt)];
+  // Verify only the requested leads exist and are accessible.
+  const accessConditions = [isNull(schema.leads.deletedAt), inArray(schema.leads.id, ids)];
   if (!isSuperadmin) {
     accessConditions.push(eq(schema.leads.ownerId, caller.userId));
   }
@@ -5109,7 +5116,7 @@ app.post('/api/leads/bulk', async (c) => {
     .select()
     .from(schema.leads)
     .where(and(...accessConditions));
-  const allLeads = allAccessibleLeads.filter((l) => ids.includes(l.id));
+  const allLeads = allAccessibleLeads;
 
   if (allLeads.length === 0) {
     return c.json({ error: 'No leads found.' }, 404);
@@ -5669,10 +5676,21 @@ app.get('/api/activities', async (c) => {
   const caller = { userId: c.get('userId'), isSuperadmin };
   if (!role) return c.json({ error: 'Forbidden.' }, 403);
 
-  const { contactId, companyId, opportunityId, type } = c.req.query();
+  const { leadId, contactId, companyId, opportunityId, type } = c.req.query();
   const conditions: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any
 
   // If a specific parent resource is provided, verify the caller can access it
+  if (leadId) {
+    const [lead] = await db
+      .select()
+      .from(schema.leads)
+      .where(and(eq(schema.leads.id, leadId), isNull(schema.leads.deletedAt)));
+    if (!lead) return c.json({ error: 'Not found.' }, 404);
+    if (!can(isSuperadmin, role, 'view', { ownerId: lead.ownerId }, caller)) {
+      return c.json({ error: 'Forbidden.' }, 403);
+    }
+    conditions.push(eq(schema.activities.leadId, leadId));
+  }
   if (companyId) {
     const [company] = await db
       .select()
@@ -5712,7 +5730,9 @@ app.get('/api/activities', async (c) => {
 
   if (conditions.length === 0) {
     return c.json(
-      { error: 'Provide at least one filter: contactId, companyId, opportunityId, or type.' },
+      {
+        error: 'Provide at least one filter: leadId, contactId, companyId, opportunityId, or type.',
+      },
       400
     );
   }
@@ -5737,11 +5757,60 @@ app.post('/api/activities', async (c) => {
   }
 
   const body = await c.req.json();
+  const parentChecks: Array<Promise<{ ownerId: string } | undefined>> = [];
+  if (body.leadId) {
+    parentChecks.push(
+      db.query.leads.findFirst({
+        columns: { ownerId: true },
+        where: and(eq(schema.leads.id, body.leadId), isNull(schema.leads.deletedAt)),
+      })
+    );
+  }
+  if (body.contactId) {
+    parentChecks.push(
+      db.query.contacts.findFirst({
+        columns: { ownerId: true },
+        where: and(eq(schema.contacts.id, body.contactId), isNull(schema.contacts.deletedAt)),
+      })
+    );
+  }
+  if (body.companyId) {
+    parentChecks.push(
+      db.query.companies.findFirst({
+        columns: { ownerId: true },
+        where: and(eq(schema.companies.id, body.companyId), isNull(schema.companies.deletedAt)),
+      })
+    );
+  }
+  if (body.opportunityId) {
+    parentChecks.push(
+      db.query.opportunities.findFirst({
+        columns: { ownerId: true },
+        where: and(
+          eq(schema.opportunities.id, body.opportunityId),
+          isNull(schema.opportunities.deletedAt)
+        ),
+      })
+    );
+  }
+  if (parentChecks.length === 0) {
+    return c.json({ error: 'An activity must belong to a CRM record.' }, 400);
+  }
+  const parents = await Promise.all(parentChecks);
+  if (
+    parents.some(
+      (parent) => !parent || !can(isSuperadmin, role, 'edit', { ownerId: parent.ownerId }, caller)
+    )
+  ) {
+    return c.json({ error: 'Parent record not found or forbidden.' }, 403);
+  }
+
   const data = {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     type: body.type as any,
     subject: body.subject,
     content: body.content ?? null,
+    leadId: body.leadId ?? null,
     contactId: body.contactId ?? null,
     companyId: body.companyId ?? null,
     opportunityId: body.opportunityId ?? null,
@@ -5796,9 +5865,8 @@ app.put('/api/activities/:id', async (c) => {
   if (body.type !== undefined) update.type = body.type as any;
   if (body.subject !== undefined) update.subject = body.subject;
   if (body.content !== undefined) update.content = body.content;
-  if (body.contactId !== undefined) update.contactId = body.contactId;
-  if (body.companyId !== undefined) update.companyId = body.companyId;
-  if (body.opportunityId !== undefined) update.opportunityId = body.opportunityId;
+  // Parent relations are immutable. Moving an activity between records through
+  // a generic edit endpoint risks bypassing the destination record's ownership.
   if (body.happenedAt !== undefined) update.happenedAt = new Date(body.happenedAt);
   update.updatedAt = new Date();
 
@@ -6277,6 +6345,134 @@ app.post('/api/import/contacts', async (c) => {
   return c.json({ imported: created.length, errors: parsed.errors, duplicates: parsed.duplicates });
 });
 
+type ImportDedupCandidate = {
+  email?: string | null;
+  linkedinUrl?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  companyName?: string | null;
+};
+
+async function findLeadImportConflicts(
+  db: CrmDb,
+  candidates: ImportDedupCandidate[]
+): Promise<string[][]> {
+  const emails = [
+    ...new Set(
+      candidates
+        .map((row) => row.email?.trim().toLowerCase())
+        .filter(
+          (email): email is string => Boolean(email) && !email!.includes('@placeholder.skarion')
+        )
+    ),
+  ];
+  const linkedinUrls = [
+    ...new Set(
+      candidates
+        .map((row) => row.linkedinUrl?.trim().toLowerCase().replace(/\/+$/, ''))
+        .filter((url): url is string => Boolean(url))
+    ),
+  ];
+  const firstNames = [
+    ...new Set(
+      candidates
+        .map((row) => row.firstName?.trim().toLowerCase())
+        .filter((value): value is string => Boolean(value))
+    ),
+  ];
+  const lastNames = [
+    ...new Set(
+      candidates
+        .map((row) => row.lastName?.trim().toLowerCase())
+        .filter((value): value is string => Boolean(value))
+    ),
+  ];
+  const companyNames = [
+    ...new Set(
+      candidates
+        .map((row) => row.companyName?.trim().toLowerCase())
+        .filter((value): value is string => Boolean(value))
+    ),
+  ];
+
+  const [emailRows, linkedinRows, nameRows] = await Promise.all([
+    emails.length === 0
+      ? Promise.resolve([])
+      : db
+          .select({ email: schema.leads.email })
+          .from(schema.leads)
+          .where(
+            and(
+              inArray(sql<string>`lower(${schema.leads.email})`, emails),
+              isNull(schema.leads.deletedAt)
+            )
+          ),
+    linkedinUrls.length === 0
+      ? Promise.resolve([])
+      : db
+          .select({ linkedinUrl: schema.leads.linkedinUrl })
+          .from(schema.leads)
+          .where(
+            and(
+              inArray(sql<string>`lower(${schema.leads.linkedinUrl})`, linkedinUrls),
+              isNull(schema.leads.deletedAt)
+            )
+          ),
+    firstNames.length === 0 || lastNames.length === 0 || companyNames.length === 0
+      ? Promise.resolve([])
+      : db
+          .select({
+            firstName: schema.leads.firstName,
+            lastName: schema.leads.lastName,
+            companyName: schema.leads.companyName,
+          })
+          .from(schema.leads)
+          .where(
+            and(
+              inArray(sql<string>`lower(${schema.leads.firstName})`, firstNames),
+              inArray(sql<string>`lower(${schema.leads.lastName})`, lastNames),
+              inArray(sql<string>`lower(${schema.leads.companyName})`, companyNames),
+              isNull(schema.leads.deletedAt)
+            )
+          ),
+  ]);
+
+  const existingEmails = new Set(
+    emailRows.map((row) => row.email?.trim().toLowerCase()).filter(Boolean)
+  );
+  const existingLinkedinUrls = new Set(
+    linkedinRows
+      .map((row) => row.linkedinUrl?.trim().toLowerCase().replace(/\/+$/, ''))
+      .filter(Boolean)
+  );
+  const existingNames = new Set(
+    nameRows.map(
+      (row) =>
+        `${row.firstName.trim().toLowerCase()}\u0000${row.lastName.trim().toLowerCase()}\u0000${row.companyName?.trim().toLowerCase() ?? ''}`
+    )
+  );
+
+  return candidates.map((row) => {
+    const conflicts: string[] = [];
+    const email = row.email?.trim().toLowerCase();
+    const linkedinUrl = row.linkedinUrl?.trim().toLowerCase().replace(/\/+$/, '');
+    const nameKey =
+      row.firstName && row.lastName && row.companyName
+        ? `${row.firstName.trim().toLowerCase()}\u0000${row.lastName.trim().toLowerCase()}\u0000${row.companyName.trim().toLowerCase()}`
+        : null;
+    if (email && !email.includes('@placeholder.skarion') && existingEmails.has(email)) {
+      conflicts.push('email exists');
+    }
+    if (linkedinUrl && existingLinkedinUrls.has(linkedinUrl)) {
+      conflicts.push('linkedin exists');
+    }
+    if (nameKey && existingNames.has(nameKey)) {
+      conflicts.push('name+company exists');
+    }
+    return conflicts;
+  });
+}
+
 app.post('/api/import/leads/preview', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const role = getRole(c);
@@ -6311,55 +6507,14 @@ app.post('/api/import/leads/preview', async (c) => {
   if (parsed.success.length > 500) {
     return c.json({ error: 'CSV too large. Maximum 500 rows allowed per import.' }, 413);
   }
-  // Check DB for existing duplicates (email, LinkedIn URL, and name+company)
-  const enriched = await Promise.all(
-    parsed.success.map(async (row) => {
-      const conflicts: string[] = [];
-      if (row.email && !row.email.includes('@placeholder.skarion')) {
-        const existing = await db
-          .select({ id: schema.leads.id })
-          .from(schema.leads)
-          .where(
-            and(
-              eq(sql`lower(${schema.leads.email})`, row.email.toLowerCase()),
-              isNull(schema.leads.deletedAt)
-            )
-          )
-          .limit(1);
-        if (existing.length > 0) conflicts.push('email exists');
-      }
-      if (row.linkedinUrl) {
-        const normalizedLi = row.linkedinUrl.toLowerCase().replace(/\/+$/, '');
-        const existingLi = await db
-          .select({ id: schema.leads.id })
-          .from(schema.leads)
-          .where(
-            and(
-              eq(sql`lower(${schema.leads.linkedinUrl})`, normalizedLi),
-              isNull(schema.leads.deletedAt)
-            )
-          )
-          .limit(1);
-        if (existingLi.length > 0) conflicts.push('linkedin exists');
-      }
-      if (row.firstName && row.lastName && row.companyName) {
-        const existingName = await db
-          .select({ id: schema.leads.id })
-          .from(schema.leads)
-          .where(
-            and(
-              eq(sql`lower(${schema.leads.firstName})`, row.firstName.toLowerCase()),
-              eq(sql`lower(${schema.leads.lastName})`, row.lastName.toLowerCase()),
-              eq(sql`lower(${schema.leads.companyName})`, row.companyName.toLowerCase()),
-              isNull(schema.leads.deletedAt)
-            )
-          )
-          .limit(1);
-        if (existingName.length > 0) conflicts.push('name+company exists');
-      }
-      return { ...row, conflicts, canImport: conflicts.length === 0 };
-    })
-  );
+  // Resolve all duplicate dimensions in three bounded queries instead of
+  // issuing up to three database requests for every CSV row.
+  const conflicts = await findLeadImportConflicts(db, parsed.success);
+  const enriched = parsed.success.map((row, index) => ({
+    ...row,
+    conflicts: conflicts[index] ?? [],
+    canImport: (conflicts[index]?.length ?? 0) === 0,
+  }));
 
   const dbDuplicates = enriched.filter((r) => !r.canImport).length;
   const importable = enriched.filter((r) => r.canImport);
@@ -6453,67 +6608,24 @@ app.post('/api/import/leads', async (c) => {
 
   const created: (typeof schema.leads.$inferInsert)[] = [];
   const dbDuplicates: { row: number; reason: string }[] = [];
-  for (const row of parsed.success) {
-    // 1. Dedup by email (skip placeholders)
-    const [emailDup, linkedinDup, nameCompanyDup] = await Promise.all([
-      row.email && !row.email.includes('@placeholder.skarion')
-        ? db
-            .select({ id: schema.leads.id })
-            .from(schema.leads)
-            .where(
-              and(
-                eq(sql`lower(${schema.leads.email})`, row.email.toLowerCase()),
-                isNull(schema.leads.deletedAt)
-              )
-            )
-            .limit(1)
-        : Promise.resolve([]),
-      row.linkedinUrl
-        ? db
-            .select({ id: schema.leads.id })
-            .from(schema.leads)
-            .where(
-              and(
-                eq(
-                  sql`lower(${schema.leads.linkedinUrl})`,
-                  row.linkedinUrl.toLowerCase().replace(/\/+$/, '')
-                ),
-                isNull(schema.leads.deletedAt)
-              )
-            )
-            .limit(1)
-        : Promise.resolve([]),
-      row.firstName && row.lastName && row.companyName
-        ? db
-            .select({ id: schema.leads.id })
-            .from(schema.leads)
-            .where(
-              and(
-                eq(sql`lower(${schema.leads.firstName})`, row.firstName.toLowerCase()),
-                eq(sql`lower(${schema.leads.lastName})`, row.lastName.toLowerCase()),
-                eq(sql`lower(${schema.leads.companyName})`, row.companyName.toLowerCase()),
-                isNull(schema.leads.deletedAt)
-              )
-            )
-            .limit(1)
-        : Promise.resolve([]),
-    ]);
-
-    if (emailDup.length > 0) {
+  const importConflicts = await findLeadImportConflicts(db, parsed.success);
+  for (const [rowIndex, row] of parsed.success.entries()) {
+    const rowConflicts = importConflicts[rowIndex] ?? [];
+    if (rowConflicts.includes('email exists')) {
       dbDuplicates.push({
         row: row.originalRowNumber ?? 0,
         reason: `Email already exists: ${row.email}`,
       });
       continue;
     }
-    if (linkedinDup.length > 0) {
+    if (rowConflicts.includes('linkedin exists')) {
       dbDuplicates.push({
         row: row.originalRowNumber ?? 0,
         reason: `LinkedIn already exists: ${row.linkedinUrl}`,
       });
       continue;
     }
-    if (nameCompanyDup.length > 0) {
+    if (rowConflicts.includes('name+company exists')) {
       dbDuplicates.push({
         row: row.originalRowNumber ?? 0,
         reason: `Name + company already exists: ${row.firstName} ${row.lastName} @ ${row.companyName}`,
@@ -6644,8 +6756,7 @@ app.post('/api/workflow-rules', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const role = getRole(c);
   const isSuperadmin = c.get('isSuperadmin');
-  const caller = { userId: c.get('userId'), isSuperadmin };
-  if (!can(isSuperadmin, role, 'create', { ownerId: caller.userId }, caller)) {
+  if (!isSuperadmin && role !== 'manager') {
     return c.json({ error: 'Forbidden.' }, 403);
   }
 
@@ -6668,14 +6779,13 @@ app.put('/api/workflow-rules/:id', async (c) => {
   const id = c.req.param('id');
   const role = getRole(c);
   const isSuperadmin = c.get('isSuperadmin');
-  const caller = { userId: c.get('userId'), isSuperadmin };
 
   const [existing] = await db
     .select()
     .from(schema.workflowRules)
     .where(eq(schema.workflowRules.id, id));
   if (!existing) return c.json({ error: 'Not found.' }, 404);
-  if (!can(isSuperadmin, role, 'edit', { ownerId: caller.userId }, caller)) {
+  if (!isSuperadmin && role !== 'manager') {
     return c.json({ error: 'Forbidden.' }, 403);
   }
 
@@ -6702,14 +6812,13 @@ app.delete('/api/workflow-rules/:id', async (c) => {
   const id = c.req.param('id');
   const role = getRole(c);
   const isSuperadmin = c.get('isSuperadmin');
-  const caller = { userId: c.get('userId'), isSuperadmin };
 
   const [existing] = await db
     .select()
     .from(schema.workflowRules)
     .where(eq(schema.workflowRules.id, id));
   if (!existing) return c.json({ error: 'Not found.' }, 404);
-  if (!can(isSuperadmin, role, 'delete', { ownerId: caller.userId }, caller)) {
+  if (!isSuperadmin && role !== 'manager') {
     return c.json({ error: 'Forbidden.' }, 403);
   }
 
@@ -7365,13 +7474,34 @@ app.post('/api/chat', async (c) => {
   const body = await c.req.json();
   const message = body.message?.trim();
   if (!message) return c.json({ error: 'Message is required.' }, 400);
+  const searchTerms = [
+    ...new Set(
+      (message.toLowerCase().match(/[a-z0-9@._-]{3,}/g) ?? [])
+        .map((term: string) => term.replace(/[%_\\]/g, '').slice(0, 64))
+        .filter(Boolean)
+    ),
+  ].slice(0, 8);
+  const embeddingConditions = [];
+  if (!isSuperadmin && role === 'member') {
+    embeddingConditions.push(eq(schema.embeddings.ownerId, userId));
+  }
+  if (searchTerms.length > 0) {
+    embeddingConditions.push(
+      or(...searchTerms.map((term) => ilike(schema.embeddings.content, `%${term}%`)))
+    );
+  }
 
   // Retrieval and conversation history are independent, so run them together.
   // A chat turn now remembers the prior six exchanges instead of treating every
   // message as a brand-new conversation.
   const [queryEmbedding, allEmbeddings, recentHistoryRows] = await Promise.all([
     ai.getEmbedding(message, aiEnv),
-    db.select().from(schema.embeddings),
+    db
+      .select()
+      .from(schema.embeddings)
+      .where(embeddingConditions.length > 0 ? and(...embeddingConditions) : undefined)
+      .orderBy(desc(schema.embeddings.updatedAt))
+      .limit(500),
     db
       .select({
         role: schema.chatMessages.role,
@@ -8659,7 +8789,7 @@ function extractTextFromPdf(bytes: Uint8Array): string {
   } catch {
     /* ignore */
   }
-  if (!text) text = String.fromCharCode(...bytes);
+  if (!text) text = new TextDecoder('latin1').decode(bytes);
 
   // Extract text from common PDF patterns
   const textMatches: string[] = [];
@@ -8697,7 +8827,7 @@ function extractTextFromPlainText(bytes: Uint8Array): string {
   try {
     return decoder.decode(bytes);
   } catch {
-    return String.fromCharCode(...bytes);
+    return new TextDecoder('latin1').decode(bytes);
   }
 }
 
@@ -8776,11 +8906,14 @@ function mergeExtractionResults(
 app.get('/api/search', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const role = getRole(c);
+  const isSuperadmin = c.get('isSuperadmin');
+  const userId = c.get('userId');
   if (!role) return c.json({ error: 'Forbidden.' }, 403);
 
   const q = c.req.query('q');
   if (!q || q.length < 2) return c.json({ results: [] });
-  const query = `%${q}%`;
+  const query = `%${q.toLowerCase()}%`;
+  const ownOnly = !isSuperadmin && role === 'member';
 
   const [leads, companies, contacts, opportunities] = await Promise.all([
     db
@@ -8790,6 +8923,7 @@ app.get('/api/search', async (c) => {
         and(
           isNull(schema.leads.deletedAt),
           eq(schema.leads.reviewState, 'accepted'),
+          ownOnly ? eq(schema.leads.ownerId, userId) : undefined,
           or(
             like(sql`LOWER(${schema.leads.firstName})`, query),
             like(sql`LOWER(${schema.leads.lastName})`, query),
@@ -8805,6 +8939,7 @@ app.get('/api/search', async (c) => {
       .where(
         and(
           isNull(schema.companies.deletedAt),
+          ownOnly ? eq(schema.companies.ownerId, userId) : undefined,
           or(
             like(sql`LOWER(${schema.companies.name})`, query),
             like(sql`LOWER(${schema.companies.domain})`, query)
@@ -8818,6 +8953,7 @@ app.get('/api/search', async (c) => {
       .where(
         and(
           isNull(schema.contacts.deletedAt),
+          ownOnly ? eq(schema.contacts.ownerId, userId) : undefined,
           or(
             like(sql`LOWER(${schema.contacts.firstName})`, query),
             like(sql`LOWER(${schema.contacts.lastName})`, query),
@@ -8832,6 +8968,7 @@ app.get('/api/search', async (c) => {
       .where(
         and(
           isNull(schema.opportunities.deletedAt),
+          ownOnly ? eq(schema.opportunities.ownerId, userId) : undefined,
           or(
             like(sql`LOWER(${schema.opportunities.name})`, query),
             like(sql`LOWER(${schema.opportunities.notes})`, query)
@@ -8926,10 +9063,14 @@ app.get('/api/integrations/status', async (c) => {
 
 app.post('/api/ocr', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
+  if (!getRole(c)) return c.json({ error: 'Forbidden.' }, 403);
   const env = await getConfiguredAiEnv(db, c.env);
   const body = await c.req.parseBody();
   const file = body['file'] as File;
   if (!file) return c.json({ error: 'No file uploaded' }, 400);
+  if (file.size > 10 * 1024 * 1024) {
+    return c.json({ error: 'File too large. Max 10MB.' }, 413);
+  }
   if (!ai.isAiConfigured(env)) return c.json({ error: 'AI not configured' }, 503);
 
   try {

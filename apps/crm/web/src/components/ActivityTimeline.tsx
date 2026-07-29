@@ -25,12 +25,16 @@ const typeColors = {
 };
 
 interface ActivityTimelineProps {
-  filters: { contactId?: string; companyId?: string; opportunityId?: string };
+  filters: { leadId?: string; contactId?: string; companyId?: string; opportunityId?: string };
   entityName: string;
   onAddActivity?: (type: Activity['type']) => void;
 }
 
-export default function ActivityTimeline({ filters, entityName, onAddActivity }: ActivityTimelineProps) {
+export default function ActivityTimeline({
+  filters,
+  entityName,
+  onAddActivity,
+}: ActivityTimelineProps) {
   const { data, isLoading } = useActivities(filters);
   const activities = data?.activities ?? [];
 
@@ -46,7 +50,10 @@ export default function ActivityTimeline({ filters, entityName, onAddActivity }:
               <button
                 key={t}
                 onClick={() => onAddActivity(t)}
-                className={cn('flex items-center gap-1 px-2 py-1 rounded text-xs border hover:opacity-80', typeColors[t])}
+                className={cn(
+                  'flex items-center gap-1 px-2 py-1 rounded text-xs border hover:opacity-80',
+                  typeColors[t]
+                )}
               >
                 <Plus size={12} /> {typeLabels[t]}
               </button>
@@ -66,7 +73,12 @@ export default function ActivityTimeline({ filters, entityName, onAddActivity }:
             const color = typeColors[a.type] ?? typeColors.note;
             return (
               <div key={a.id} className="flex gap-3">
-                <div className={cn('w-8 h-8 rounded-full flex items-center justify-center border shrink-0', color)}>
+                <div
+                  className={cn(
+                    'w-8 h-8 rounded-full flex items-center justify-center border shrink-0',
+                    color
+                  )}
+                >
                   <Icon size={14} />
                 </div>
                 <div className="flex-1 min-w-0">
@@ -76,9 +88,7 @@ export default function ActivityTimeline({ filters, entityName, onAddActivity }:
                       {new Date(a.happenedAt).toLocaleDateString()}
                     </div>
                   </div>
-                  {a.content && (
-                    <p className="text-sm text-slate-600 mt-0.5">{a.content}</p>
-                  )}
+                  {a.content && <p className="text-sm text-slate-600 mt-0.5">{a.content}</p>}
                 </div>
               </div>
             );

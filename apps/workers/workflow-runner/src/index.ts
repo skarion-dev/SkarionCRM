@@ -124,7 +124,22 @@ async function evaluateOpportunityStale(
   let created = 0;
   if (actions.createTask) {
     for (const opp of staleOpportunities) {
+      const [existingTask] = await db
+        .select({ id: schema.tasks.id })
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.type, 'opportunity_followup'),
+            eq(schema.tasks.opportunityId, opp.id),
+            isNull(schema.tasks.completedAt),
+            isNull(schema.tasks.deletedAt)
+          )
+        )
+        .limit(1);
+      if (existingTask) continue;
+
       await db.insert(schema.tasks).values({
+        type: 'opportunity_followup',
         title: actions.createTask.title.replace(/\{\{name\}\}/g, opp.name),
         description: (actions.createTask.description ?? `Follow up on ${opp.name}`).replace(
           /\{\{name\}\}/g,
@@ -147,7 +162,7 @@ async function evaluateTaskDueSoon(
   rule: typeof schema.workflowRules.$inferSelect
 ): Promise<number> {
   const conditions = rule.conditions as { hoursBeforeDue?: number };
-  const _actions = rule.actions as { sendEmail?: boolean };
+  const actions = rule.actions as { sendEmail?: boolean; createNotification?: boolean };
   const hours = conditions.hoursBeforeDue ?? 24;
   const now = new Date();
   const windowEnd = new Date(Date.now() + hours * 60 * 60 * 1000);
@@ -164,8 +179,37 @@ async function evaluateTaskDueSoon(
       )
     );
 
-  // Email sending is a stub — _actions.sendEmail would trigger email in future
-  return dueTasks.length;
+  if (!actions.sendEmail && !actions.createNotification) return 0;
+
+  let created = 0;
+  for (const task of dueTasks) {
+    if (!task.assigneeId) continue;
+    const [existingNotification] = await db
+      .select({ id: schema.notifications.id })
+      .from(schema.notifications)
+      .where(
+        and(
+          eq(schema.notifications.type, 'task_due_soon'),
+          eq(schema.notifications.resourceType, 'task'),
+          eq(schema.notifications.resourceId, task.id)
+        )
+      )
+      .limit(1);
+    if (existingNotification) continue;
+
+    await db.insert(schema.notifications).values({
+      userId: task.assigneeId,
+      type: 'task_due_soon',
+      title: 'Task due soon',
+      message: task.dueDate
+        ? `${task.title} is due ${task.dueDate.toISOString()}.`
+        : `${task.title} is due soon.`,
+      resourceType: 'task',
+      resourceId: task.id,
+    });
+    created++;
+  }
+  return created;
 }
 
 async function evaluateLeadCreated(

@@ -636,6 +636,7 @@ export interface Activity {
   type: ActivityType;
   subject: string;
   content: string | null;
+  leadId: string | null;
   contactId: string | null;
   companyId: string | null;
   opportunityId: string | null;

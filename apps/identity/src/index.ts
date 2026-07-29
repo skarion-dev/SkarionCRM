@@ -15,7 +15,12 @@ import {
   renderWelcomeAfterInviteEmail,
   renderLoginCodeEmail,
 } from '@skarion/ui/emails';
-import { requireAuth, sendEmail, type AuthedVariables } from '@skarion/auth-client';
+import {
+  platformSecurity,
+  requireAuth,
+  sendEmail,
+  type AuthedVariables,
+} from '@skarion/auth-client';
 import * as schema from './db/schema.js';
 import * as authService from './services/auth.js';
 import * as invitationService from './services/invitations.js';
@@ -58,6 +63,7 @@ type AppContext = Context<{ Bindings: Env; Variables: AuthedVariables }>;
 
 const app = new Hono<{ Bindings: Env; Variables: AuthedVariables }>();
 
+app.use('*', platformSecurity());
 // pages.dev and workers.dev are shared, multi-tenant domains - literally
 // anyone with a Cloudflare account can deploy to <anything>.pages.dev or
 // <anything>.workers.dev. Matching the whole domain with a wildcard (as a
