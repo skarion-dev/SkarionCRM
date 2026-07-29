@@ -77,11 +77,7 @@ function pushToMap(map: Map<string, ExistingLead[]>, key: string | null, lead: E
 }
 
 function mergedTags(existing: unknown, additions: string[]): string[] {
-  return normalizeTagNames([
-    ...(Array.isArray(existing) ? existing : []),
-    ...additions,
-    'Future Candidates',
-  ]);
+  return normalizeTagNames([...(Array.isArray(existing) ? existing : []), ...additions]);
 }
 
 const db = getDb({ DATABASE_URL: databaseUrl }, schema);
@@ -176,21 +172,21 @@ if (mode === 'dry-run') {
 // below is idempotent, so a failed run can be safely retried without creating
 // duplicate leads.
 const result = await (async (tx: typeof db) => {
-  for (const [name, color, description] of [
-    ['Future Candidates', 'violet', 'Imported from the Future Candidates recruiting list.'],
-    [
-      'needs profile capture',
-      'amber',
-      'The name was inferred from a LinkedIn URL; capture the full profile before outreach.',
-    ],
-  ] as const) {
+  const tagNames = normalizeTagNames([
+    batchName,
+    ...candidates.flatMap((candidate) => candidate.tags),
+  ]);
+  for (const name of tagNames) {
+    const needsCapture = name.toLowerCase() === 'needs profile capture';
     await tx
       .insert(schema.tagDefinitions)
       .values({
         name,
         slug: tagSlug(name),
-        color,
-        description,
+        color: needsCapture ? 'amber' : 'violet',
+        description: needsCapture
+          ? 'The LinkedIn profile still needs a full capture before outreach.'
+          : `Imported from the ${batchName} recruiting list.`,
         isSystem: false,
         createdBy: ownerId,
       })
@@ -200,7 +196,10 @@ const result = await (async (tx: typeof db) => {
   let enrichedExisting = 0;
   let taggedExisting = 0;
   for (const { lead, candidate } of plannedUpdates) {
-    const tags = mergedTags(lead.tags, candidate.tags);
+    const tags = mergedTags(lead.tags, [
+      batchName,
+      ...candidate.tags.filter((tag) => tag.toLowerCase() !== 'needs profile capture'),
+    ]);
     const update: Partial<typeof schema.leads.$inferInsert> = {
       tags,
       updatedAt: new Date(),
@@ -217,7 +216,7 @@ const result = await (async (tx: typeof db) => {
     }
     if (
       isGenericName(lead.firstName, lead.lastName) &&
-      !candidate.tags.some((tag) => tag.toLowerCase() === 'needs profile capture')
+      !isGenericName(candidate.firstName, candidate.lastName)
     ) {
       update.firstName = candidate.firstName;
       update.lastName = candidate.lastName;
@@ -242,7 +241,7 @@ const result = await (async (tx: typeof db) => {
       totalRows: candidates.length,
       importedCount: plannedNew.length,
       duplicatesSkipped: plannedUpdates.length + ambiguous,
-      defaultTags: ['Future Candidates'],
+      defaultTags: normalizeTagNames([batchName, 'needs profile capture']),
     })
     .returning({ id: schema.importBatches.id });
   if (!batch) throw new Error('Could not create import batch.');
@@ -275,12 +274,12 @@ const result = await (async (tx: typeof db) => {
         journeyStage: 'new',
         outreachStatus: 'not_approached',
         notes: candidate.notes,
-        sourceSheet: 'Future Candidates',
+        sourceSheet: batchName,
         originalRowNumber: candidate.sourceRow,
-        tags: mergedTags([], candidate.tags),
+        tags: mergedTags([], [batchName, ...candidate.tags]),
         ownerId,
         batchId: batch.id,
-        idempotencyKey: `future-candidates:${canonicalLinkedIn(candidate.linkedinUrl)}`,
+        idempotencyKey: `curated:${tagSlug(batchName)}:${canonicalLinkedIn(candidate.linkedinUrl)}`,
       });
     }
   }
