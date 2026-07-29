@@ -98,6 +98,7 @@ export const AI_MODELS = [
 
 export type AiAgentId =
   | 'crm-copilot'
+  | 'reporting-ceo'
   | 'lead-intake'
   | 'document-ocr'
   | 'linkedin-connection-writer'
@@ -121,6 +122,13 @@ export const AI_AGENTS: ReadonlyArray<{
     name: 'CRM Copilot',
     description: 'Answers CRM questions using permission-filtered RAG context.',
     tier: 'fast',
+  },
+  {
+    id: 'reporting-ceo',
+    name: 'Reporting CEO',
+    description:
+      'Analyzes company-wide CRM metrics, highlights risks, and produces executive reports and charts.',
+    tier: 'reasoning',
   },
   {
     id: 'lead-intake',
@@ -280,6 +288,109 @@ export async function gatewayChatCompletion(
   } catch (error) {
     console.error(`AI gateway chat request failed (${model}):`, error);
     return null;
+  }
+}
+
+/**
+ * Streams OpenAI-compatible chat completion deltas from the configured
+ * gateway. Some compatible gateways ignore `stream: true` and return a normal
+ * JSON completion; that response is supported as a single delta as well.
+ */
+export async function* gatewayChatCompletionStream(
+  messages: AiGatewayMessage[],
+  env: AiGatewayEnv,
+  options: {
+    model?: string;
+    tier?: AiModelTier;
+    temperature?: number;
+    maxTokens?: number;
+    timeoutMs?: number;
+  } = {}
+): AsyncGenerator<string> {
+  if (!hasAiGateway(env)) return;
+
+  const model = options.model || selectAiModel(env, options.tier);
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(
+      gatewayUrl(env, 'chat/completions'),
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${env.AI_GATEWAY_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature: options.temperature ?? 0.3,
+          stream: true,
+          ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
+        }),
+      },
+      options.timeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS
+    );
+  } catch (error) {
+    console.error(`AI gateway streaming request failed (${model}):`, error);
+    return;
+  }
+
+  if (!response.ok) {
+    console.error(
+      `AI gateway streaming error (${model}, ${response.status}):`,
+      await response.text()
+    );
+    return;
+  }
+
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!contentType.includes('text/event-stream')) {
+    const data = (await response.json()) as {
+      choices?: { message?: { content?: string } }[];
+    };
+    const content = data.choices?.[0]?.message?.content;
+    if (content) yield content;
+    return;
+  }
+
+  if (!response.body) return;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let completed = false;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      const events = buffer.split(/\r?\n\r?\n/);
+      buffer = events.pop() ?? '';
+
+      for (const event of events) {
+        for (const line of event.split(/\r?\n/)) {
+          if (!line.startsWith('data:')) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === '[DONE]') continue;
+          try {
+            const data = JSON.parse(payload) as {
+              choices?: { delta?: { content?: string } }[];
+            };
+            const content = data.choices?.[0]?.delta?.content;
+            if (content) yield content;
+          } catch {
+            console.error('AI gateway returned an invalid streaming event.');
+          }
+        }
+      }
+
+      if (done) {
+        completed = true;
+        break;
+      }
+    }
+  } finally {
+    if (!completed) await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
   }
 }
 

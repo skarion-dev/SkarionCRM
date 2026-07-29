@@ -271,7 +271,7 @@ export function redirectToLogin(): void {
   window.location.href = `${IDENTITY_LOGIN_URL}/?return_to=${returnTo}`;
 }
 
-export async function crmFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function crmRequest(path: string, init: RequestInit = {}): Promise<Response> {
   console.log(`[API] crmFetch: request to ${path}`);
   if (!accessToken) {
     console.log('[API] crmFetch: no access token in memory');
@@ -327,7 +327,16 @@ export async function crmFetch<T>(path: string, init: RequestInit = {}): Promise
     console.error(`[API] crmFetch: request to ${path} failed:`, body.error);
     throw new ApiError(body.error ?? 'Request failed', response.status);
   }
+  return response;
+}
+
+export async function crmFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const response = await crmRequest(path, init);
   return response.json() as Promise<T>;
+}
+
+export async function crmStream(path: string, init: RequestInit = {}): Promise<Response> {
+  return crmRequest(path, init);
 }
 
 export async function identityFetch<T>(path: string, init: RequestInit = {}): Promise<T> {

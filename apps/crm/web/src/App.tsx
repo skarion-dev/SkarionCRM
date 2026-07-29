@@ -1,5 +1,5 @@
-import { Suspense } from 'react';
-import { Routes, Route } from 'react-router-dom';
+import { lazy, Suspense } from 'react';
+import { Navigate, Routes, Route } from 'react-router-dom';
 import { AppShell } from './components/layout/AppShell.js';
 import { useAuthStore } from './stores/auth.js';
 import Dashboard from './pages/Dashboard.js';
@@ -16,6 +16,8 @@ import PipelinePage from './pages/PipelinePage.js';
 import SettingsPage from './pages/SettingsPage.js';
 import ChatPage from './pages/ChatPage.js';
 
+const ReportingCeoPage = lazy(() => import('./pages/ReportingCeoPage.js'));
+
 function Loading() {
   return (
     <div className="flex items-center justify-center h-64">
@@ -30,7 +32,8 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 
   if (isLoading) return <Loading />;
   if (!user) {
-    const loginUrl = import.meta.env.VITE_IDENTITY_LOGIN_URL || 'https://skarion-identity-login.pages.dev';
+    const loginUrl =
+      import.meta.env.VITE_IDENTITY_LOGIN_URL || 'https://skarion-identity-login.pages.dev';
     const returnTo = encodeURIComponent(window.location.href);
     window.location.href = `${loginUrl}/?return_to=${returnTo}`;
     return <Loading />;
@@ -38,24 +41,130 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function RequireSuperadmin({ children }: { children: React.ReactNode }) {
+  const isSuperadmin = useAuthStore((state) => state.user?.isSuperadmin ?? false);
+  return isSuperadmin ? <>{children}</> : <Navigate to="/" replace />;
+}
+
 export default function App() {
   return (
     <AppShell>
       <Suspense fallback={<Loading />}>
         <Routes>
-          <Route path="/" element={<RequireAuth><Dashboard /></RequireAuth>} />
-          <Route path="/leads" element={<RequireAuth><LeadsPage /></RequireAuth>} />
-          <Route path="/leads/:id" element={<RequireAuth><LeadDetail /></RequireAuth>} />
-          <Route path="/companies" element={<RequireAuth><CompaniesPage /></RequireAuth>} />
-          <Route path="/companies/:id" element={<RequireAuth><CompanyDetail /></RequireAuth>} />
-          <Route path="/contacts" element={<RequireAuth><ContactsPage /></RequireAuth>} />
-          <Route path="/contacts/:id" element={<RequireAuth><ContactDetail /></RequireAuth>} />
-          <Route path="/opportunities" element={<RequireAuth><OpportunitiesPage /></RequireAuth>} />
-          <Route path="/opportunities/:id" element={<RequireAuth><OpportunityDetail /></RequireAuth>} />
-          <Route path="/pipeline" element={<RequireAuth><PipelinePage /></RequireAuth>} />
-          <Route path="/tasks" element={<RequireAuth><TasksPage /></RequireAuth>} />
-          <Route path="/settings" element={<RequireAuth><SettingsPage /></RequireAuth>} />
-          <Route path="/chat" element={<RequireAuth><ChatPage /></RequireAuth>} />
+          <Route
+            path="/"
+            element={
+              <RequireAuth>
+                <Dashboard />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/leads"
+            element={
+              <RequireAuth>
+                <LeadsPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/leads/:id"
+            element={
+              <RequireAuth>
+                <LeadDetail />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/companies"
+            element={
+              <RequireAuth>
+                <CompaniesPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/companies/:id"
+            element={
+              <RequireAuth>
+                <CompanyDetail />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/contacts"
+            element={
+              <RequireAuth>
+                <ContactsPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/contacts/:id"
+            element={
+              <RequireAuth>
+                <ContactDetail />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/opportunities"
+            element={
+              <RequireAuth>
+                <OpportunitiesPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/opportunities/:id"
+            element={
+              <RequireAuth>
+                <OpportunityDetail />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/pipeline"
+            element={
+              <RequireAuth>
+                <PipelinePage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/tasks"
+            element={
+              <RequireAuth>
+                <TasksPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <RequireAuth>
+                <SettingsPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/chat"
+            element={
+              <RequireAuth>
+                <ChatPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/ceo-chat"
+            element={
+              <RequireAuth>
+                <RequireSuperadmin>
+                  <ReportingCeoPage />
+                </RequireSuperadmin>
+              </RequireAuth>
+            }
+          />
         </Routes>
       </Suspense>
     </AppShell>

@@ -382,6 +382,13 @@ export interface ChatMessage {
   createdAt: string;
 }
 
+export interface CeoChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: string;
+}
+
 export function useSummarizeLead(id: string) {
   return useMutation({
     mutationFn: async () => {
@@ -543,6 +550,23 @@ export function useSendChatMessage() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['chat', 'history'] });
+    },
+  });
+}
+
+export function useCeoChatHistory() {
+  return useCrmQuery(['ceo-chat', 'history'], () =>
+    crmFetch<{ messages: CeoChatMessage[] }>('/api/ceo-chat/history')
+  );
+}
+
+export function useClearCeoChatHistory() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () =>
+      crmFetch<{ success: true }>('/api/ceo-chat/history', { method: 'DELETE' }),
+    onSuccess: () => {
+      qc.setQueryData(['ceo-chat', 'history'], { messages: [] });
     },
   });
 }

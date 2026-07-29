@@ -6,6 +6,7 @@ describe('AI model routing', () => {
     expect(selectAiModel({}, 'cheap')).toBe('coding-cheap');
     expect(AI_AGENTS.find((agent) => agent.id === 'lead-summarizer')?.tier).toBe('cheap');
     expect(AI_AGENTS.find((agent) => agent.id === 'next-best-action')?.tier).toBe('cheap');
+    expect(AI_AGENTS.find((agent) => agent.id === 'reporting-ceo')?.tier).toBe('reasoning');
   });
 
   it('honors per-agent model overrides', () => {

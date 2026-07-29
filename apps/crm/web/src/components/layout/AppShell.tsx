@@ -13,9 +13,25 @@ import {
 import AiWidget from '../../components/AiWidget.js';
 import ToastContainer from '../ToastContainer.js';
 import {
-  LayoutDashboard, Users, Building2, Contact, Target, CheckSquare, Settings, LogOut,
-  BarChart, ChevronLeft, ChevronRight, Bell, Search, Menu, X, MessageSquare,
-  Check, Info,
+  LayoutDashboard,
+  Users,
+  Building2,
+  Contact,
+  Target,
+  CheckSquare,
+  Settings,
+  LogOut,
+  BarChart,
+  ChevronLeft,
+  ChevronRight,
+  Bell,
+  Search,
+  Menu,
+  X,
+  MessageSquare,
+  Check,
+  Info,
+  Crown,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
@@ -27,10 +43,14 @@ const NAV_ITEMS = [
   { icon: Users, label: 'Opportunities', path: '/opportunities', roles: ['manager', 'member'] },
   { icon: CheckSquare, label: 'Tasks', path: '/tasks', roles: ['manager', 'member'] },
   { icon: MessageSquare, label: 'AI Chat', path: '/chat', roles: ['manager', 'member'] },
+  { icon: Crown, label: 'Reporting CEO', path: '/ceo-chat', roles: [] },
   { icon: Settings, label: 'Settings', path: '/settings', roles: ['manager'] },
 ];
 
-const SEARCH_ICONS: Record<SearchResult['type'], React.ComponentType<{ size: number; className?: string }>> = {
+const SEARCH_ICONS: Record<
+  SearchResult['type'],
+  React.ComponentType<{ size: number; className?: string }>
+> = {
   lead: Target,
   company: Building2,
   contact: Contact,
@@ -166,15 +186,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, {});
 
   const role = user?.role ?? '';
-  const visibleNav = isSuperadmin
-    ? NAV_ITEMS
-    : NAV_ITEMS.filter((n) => n.roles.includes(role));
+  const visibleNav = isSuperadmin ? NAV_ITEMS : NAV_ITEMS.filter((n) => n.roles.includes(role));
 
   return (
     <div className="flex h-screen bg-slate-50 text-slate-900">
       {/* Mobile overlay */}
       {mobileOpen && (
-        <div className="fixed inset-0 z-40 bg-black/50 lg:hidden" onClick={() => setMobileOpen(false)} />
+        <div
+          className="fixed inset-0 z-40 bg-black/50 lg:hidden"
+          onClick={() => setMobileOpen(false)}
+        />
       )}
       {/* Search overlay */}
       {searchOpen && (
@@ -286,9 +307,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     </div>
                   )}
                   {searchQuery.length >= 2 && searchResults.length === 0 && (
-                    <div className="p-4 text-sm text-slate-400 text-center">
-                      No results found
-                    </div>
+                    <div className="p-4 text-sm text-slate-400 text-center">No results found</div>
                   )}
                   {Object.entries(groupedResults).map(([group, items]) => (
                     <div key={group}>
@@ -305,9 +324,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                           >
                             <Icon size={16} className="text-slate-400 shrink-0" />
                             <div className="min-w-0">
-                              <div className="text-sm font-medium text-slate-800 truncate">{result.title}</div>
+                              <div className="text-sm font-medium text-slate-800 truncate">
+                                {result.title}
+                              </div>
                               {result.subtitle && (
-                                <div className="text-xs text-slate-500 truncate">{result.subtitle}</div>
+                                <div className="text-xs text-slate-500 truncate">
+                                  {result.subtitle}
+                                </div>
                               )}
                             </div>
                           </button>
@@ -341,13 +364,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   <div className="px-3 py-2 border-b border-slate-100 flex items-center justify-between">
                     <span className="text-sm font-semibold">Notifications</span>
                     {unreadCount > 0 && (
-                      <span className="text-xs text-blue-600 font-medium">{unreadCount} unread</span>
+                      <span className="text-xs text-blue-600 font-medium">
+                        {unreadCount} unread
+                      </span>
                     )}
                   </div>
                   {notifications.length === 0 && (
-                    <div className="p-4 text-sm text-slate-400 text-center">
-                      No notifications
-                    </div>
+                    <div className="p-4 text-sm text-slate-400 text-center">No notifications</div>
                   )}
                   <div className="divide-y divide-slate-50">
                     {notifications.map((notif) => (
@@ -367,11 +390,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                           )}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <p className={cn('text-sm', !notif.read ? 'font-medium text-slate-800' : 'text-slate-600')}>
+                          <p
+                            className={cn(
+                              'text-sm',
+                              !notif.read ? 'font-medium text-slate-800' : 'text-slate-600'
+                            )}
+                          >
                             {notif.message}
                           </p>
                           <p className="text-xs text-slate-400 mt-0.5">
-                            {new Date(notif.createdAt).toLocaleDateString()} {new Date(notif.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            {new Date(notif.createdAt).toLocaleDateString()}{' '}
+                            {new Date(notif.createdAt).toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}
                           </p>
                         </div>
                         {!notif.read && (
@@ -397,9 +429,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </header>
 
         {/* Content */}
-        <main className="flex-1 overflow-auto p-4 lg:p-6">
-          {children}
-        </main>
+        <main className="flex-1 overflow-auto p-4 lg:p-6">{children}</main>
       </div>
       <AiWidget />
       <ToastContainer />

@@ -5,6 +5,7 @@
 
 import {
   gatewayChatCompletion,
+  gatewayChatCompletionStream,
   gatewayEmbedding,
   hasAiGateway,
   selectAiAgentModel,
@@ -231,6 +232,75 @@ export async function chatCompletion(
     '[AI] Preferred model ' + preferredModel + ' failed, trying fallback ' + fallbackModel + '...'
   );
   return tryModel(fallbackModel);
+}
+
+export async function* chatCompletionStream(
+  messages: ChatMessage[],
+  env: Env,
+  opts?: {
+    temperature?: number;
+    systemInstruction?: string;
+    model?: string;
+    tier?: AiModelTier;
+    agent?: AiAgentId;
+    maxTokens?: number;
+  }
+): AsyncGenerator<string> {
+  if (!isAiConfigured(env)) return;
+
+  if (hasAiGateway(env)) {
+    const gatewayMessages: AiGatewayMessage[] = messages.map((message) => ({
+      role: message.role === 'model' ? 'assistant' : 'user',
+      content: message.text,
+    }));
+    if (opts?.systemInstruction) {
+      gatewayMessages.unshift({ role: 'system', content: opts.systemInstruction });
+    }
+
+    const preferredModel =
+      opts?.model ||
+      (opts?.agent
+        ? selectAiAgentModel(env, opts.agent, opts?.tier || 'fast')
+        : selectAiModel(env, opts?.tier || 'fast'));
+    const fallbackModel = env.AI_MODEL_FALLBACK || selectAiModel(env, 'cheap');
+    let producedOutput = false;
+
+    try {
+      for await (const delta of gatewayChatCompletionStream(gatewayMessages, env, {
+        model: preferredModel,
+        temperature: opts?.temperature,
+        maxTokens: opts?.maxTokens,
+      })) {
+        producedOutput = true;
+        yield delta;
+      }
+    } catch (error) {
+      console.error(`AI streaming failed after starting model ${preferredModel}:`, error);
+    }
+    if (producedOutput) return;
+
+    if (fallbackModel !== preferredModel) {
+      try {
+        for await (const delta of gatewayChatCompletionStream(gatewayMessages, env, {
+          model: fallbackModel,
+          temperature: opts?.temperature,
+          maxTokens: opts?.maxTokens,
+        })) {
+          producedOutput = true;
+          yield delta;
+        }
+      } catch (error) {
+        console.error(`AI streaming fallback failed (${fallbackModel}):`, error);
+      }
+    }
+    if (producedOutput) return;
+  }
+
+  // Google fallback and gateways without streaming support still produce a
+  // valid response. The API sends it as one final delta so the client protocol
+  // remains identical.
+  const result = await chatCompletion(messages, env, opts);
+  if (result) yield result;
 }
 
 export async function chatCompletionSingle(

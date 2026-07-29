@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { gatewayChatCompletion, gatewayEmbedding } from '@skarion/ai-toolkit';
+import {
+  gatewayChatCompletion,
+  gatewayChatCompletionStream,
+  gatewayEmbedding,
+} from '@skarion/ai-toolkit';
 import { chatCompletionSingle } from './ai-service.js';
 
 const env = {
@@ -70,5 +74,43 @@ describe('Vertex gateway client', () => {
       model: string;
     };
     expect(fallbackBody.model).toBe('coding-cheap');
+  });
+
+  it('parses OpenAI-compatible streaming deltas', async () => {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            'data: {"choices":[{"delta":{"content":"Executive "}}]}\n\n' +
+              'data: {"choices":[{"delta":{"content":"summary"}}]}\n\n' +
+              'data: [DONE]\n\n'
+          )
+        );
+        controller.close();
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(body, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const deltas: string[] = [];
+    for await (const delta of gatewayChatCompletionStream(
+      [{ role: 'user', content: 'report' }],
+      env,
+      { model: 'coding-best' }
+    )) {
+      deltas.push(delta);
+    }
+
+    expect(deltas).toEqual(['Executive ', 'summary']);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      model: 'coding-best',
+      stream: true,
+    });
   });
 });

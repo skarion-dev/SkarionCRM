@@ -6,7 +6,7 @@ import { AI_AGENTS, AI_MODELS, DEFAULT_AI_MODELS, type AiAgentId } from '@skario
 import { can, canList } from '@skarion/permissions';
 import { parseContactsCsv, parseCompaniesCsv, parseLeadsCsv } from '@skarion/importers';
 import * as schema from './db/schema.js';
-import { eq, and, isNull, like, sql, desc, asc, or } from 'drizzle-orm';
+import { eq, and, isNull, like, sql, desc, asc, or, inArray } from 'drizzle-orm';
 import type { CrmDb } from './db/types.js';
 
 // --- Rate Limiting (per-Worker instance, in-memory) ---
@@ -46,6 +46,12 @@ import {
 } from './lib/leadDedup.js';
 import { nextLeadNumber } from './lib/leadNumber.js';
 import { buildLeadConditions, parseCommaList, resolveLeadSortColumn } from './lib/leadFilters.js';
+import {
+  buildCeoSystemInstruction,
+  parseCeoQuestion,
+  type CeoReportingSnapshot,
+  type ReportingSeriesItem,
+} from './lib/ceo-reporting.js';
 
 // --- Outreach status summary ---
 // Ranks a lead's channel stages and maps the "best" one back to the legacy
@@ -3754,6 +3760,214 @@ app.put('/api/ai/config', async (c) => {
   return c.json({ settings: next });
 });
 
+function reportingSeries(
+  rows: Array<{ label: string | null; count: number | string }>
+): ReportingSeriesItem[] {
+  return rows
+    .map((row) => ({
+      label: row.label || 'unknown',
+      value: Number(row.count) || 0,
+    }))
+    .sort((a, b) => b.value - a.value);
+}
+
+async function buildCeoReportingSnapshot(db: CrmDb): Promise<CeoReportingSnapshot> {
+  const reportingWindowDays = 30;
+  const [
+    [leadTotal],
+    [contactTotal],
+    [companyTotal],
+    [opportunityTotal],
+    [taskSummary],
+    [activitySummary],
+    [leadWindowSummary],
+    [scoreSummary],
+    leadStatusRows,
+    leadOutreachRows,
+    leadSourceRows,
+    classificationRows,
+    opportunityRows,
+    taskPriorityRows,
+    recentLeadRows,
+    upcomingOpportunityRows,
+  ] = await Promise.all([
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.leads)
+      .where(isNull(schema.leads.deletedAt)),
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.contacts)
+      .where(isNull(schema.contacts.deletedAt)),
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.companies)
+      .where(isNull(schema.companies.deletedAt)),
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.opportunities)
+      .where(isNull(schema.opportunities.deletedAt)),
+    db
+      .select({
+        open: sql<number>`count(*) filter (where ${schema.tasks.completedAt} is null)::int`,
+        overdue: sql<number>`count(*) filter (
+          where ${schema.tasks.completedAt} is null
+          and ${schema.tasks.dueDate} is not null
+          and ${schema.tasks.dueDate} < now()
+        )::int`,
+      })
+      .from(schema.tasks)
+      .where(isNull(schema.tasks.deletedAt)),
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.activities)
+      .where(
+        sql`${schema.activities.happenedAt} >= now() - (${reportingWindowDays} * interval '1 day')`
+      ),
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.leads)
+      .where(
+        and(
+          isNull(schema.leads.deletedAt),
+          sql`${schema.leads.createdAt} >= now() - (${reportingWindowDays} * interval '1 day')`
+        )
+      ),
+    db
+      .select({
+        average: sql<string | null>`round(avg(${schema.leadAiAssessments.overallScore}), 1)::text`,
+      })
+      .from(schema.leadAiAssessments),
+    db
+      .select({
+        label: schema.leads.status,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(schema.leads)
+      .where(isNull(schema.leads.deletedAt))
+      .groupBy(schema.leads.status),
+    db
+      .select({
+        label: schema.leads.outreachStatus,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(schema.leads)
+      .where(isNull(schema.leads.deletedAt))
+      .groupBy(schema.leads.outreachStatus),
+    db
+      .select({
+        label: schema.leads.source,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(schema.leads)
+      .where(isNull(schema.leads.deletedAt))
+      .groupBy(schema.leads.source),
+    db
+      .select({
+        label: schema.leadAiAssessments.classification,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(schema.leadAiAssessments)
+      .groupBy(schema.leadAiAssessments.classification),
+    db
+      .select({
+        stage: schema.opportunities.stage,
+        currency: schema.opportunities.currency,
+        count: sql<number>`count(*)::int`,
+        amount: sql<string>`coalesce(sum(${schema.opportunities.amount}), 0)::text`,
+      })
+      .from(schema.opportunities)
+      .where(isNull(schema.opportunities.deletedAt))
+      .groupBy(schema.opportunities.stage, schema.opportunities.currency),
+    db
+      .select({
+        label: schema.tasks.priority,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(schema.tasks)
+      .where(and(isNull(schema.tasks.deletedAt), isNull(schema.tasks.completedAt)))
+      .groupBy(schema.tasks.priority),
+    db
+      .select({
+        firstName: schema.leads.firstName,
+        lastName: schema.leads.lastName,
+        company: schema.leads.companyName,
+        status: schema.leads.status,
+        source: schema.leads.source,
+        createdAt: schema.leads.createdAt,
+      })
+      .from(schema.leads)
+      .where(isNull(schema.leads.deletedAt))
+      .orderBy(desc(schema.leads.createdAt))
+      .limit(10),
+    db
+      .select({
+        name: schema.opportunities.name,
+        stage: schema.opportunities.stage,
+        amount: schema.opportunities.amount,
+        currency: schema.opportunities.currency,
+        probability: schema.opportunities.probability,
+        expectedCloseDate: schema.opportunities.expectedCloseDate,
+      })
+      .from(schema.opportunities)
+      .where(
+        and(
+          isNull(schema.opportunities.deletedAt),
+          sql`${schema.opportunities.stage} not in ('closed_won', 'closed_lost')`
+        )
+      )
+      .orderBy(sql`${schema.opportunities.expectedCloseDate} asc nulls last`)
+      .limit(10),
+  ]);
+
+  return {
+    generatedAt: new Date().toISOString(),
+    reportingWindowDays,
+    totals: {
+      leads: Number(leadTotal?.count) || 0,
+      contacts: Number(contactTotal?.count) || 0,
+      companies: Number(companyTotal?.count) || 0,
+      opportunities: Number(opportunityTotal?.count) || 0,
+      openTasks: Number(taskSummary?.open) || 0,
+      overdueTasks: Number(taskSummary?.overdue) || 0,
+      activitiesInWindow: Number(activitySummary?.count) || 0,
+      leadsCreatedInWindow: Number(leadWindowSummary?.count) || 0,
+      averageLeadScore:
+        scoreSummary?.average === null || scoreSummary?.average === undefined
+          ? null
+          : Number(scoreSummary.average),
+    },
+    leadsByStatus: reportingSeries(leadStatusRows),
+    leadsByOutreachStatus: reportingSeries(leadOutreachRows),
+    leadsBySource: reportingSeries(leadSourceRows),
+    leadClassifications: reportingSeries(classificationRows),
+    opportunitiesByStage: opportunityRows
+      .map((row) => ({
+        label: row.stage,
+        value: Number(row.count) || 0,
+        secondaryValue: Number(row.amount) || 0,
+        currency: row.currency,
+      }))
+      .sort((a, b) => b.secondaryValue - a.secondaryValue),
+    tasksByPriority: reportingSeries(taskPriorityRows),
+    recentLeads: recentLeadRows.map((row) => ({
+      name: `${row.firstName} ${row.lastName}`.trim(),
+      company: row.company,
+      status: row.status,
+      source: row.source,
+      createdAt: row.createdAt.toISOString(),
+    })),
+    upcomingOpportunities: upcomingOpportunityRows.map((row) => ({
+      name: row.name,
+      stage: row.stage,
+      amount: row.amount === null ? null : Number(row.amount),
+      currency: row.currency,
+      probability: row.probability,
+      expectedCloseDate: row.expectedCloseDate,
+    })),
+  };
+}
+
 // ─── CHAT ────────────────────────────────────────────────────────────────
 
 app.get('/api/chat/history', async (c) => {
@@ -3762,7 +3976,12 @@ app.get('/api/chat/history', async (c) => {
   const rows = await db
     .select()
     .from(schema.chatMessages)
-    .where(eq(schema.chatMessages.userId, userId))
+    .where(
+      and(
+        eq(schema.chatMessages.userId, userId),
+        inArray(schema.chatMessages.role, ['user', 'assistant'])
+      )
+    )
     .orderBy(asc(schema.chatMessages.createdAt))
     .limit(100);
   return c.json({ messages: rows });
@@ -3791,7 +4010,12 @@ app.post('/api/chat', async (c) => {
         content: schema.chatMessages.content,
       })
       .from(schema.chatMessages)
-      .where(eq(schema.chatMessages.userId, userId))
+      .where(
+        and(
+          eq(schema.chatMessages.userId, userId),
+          inArray(schema.chatMessages.role, ['user', 'assistant'])
+        )
+      )
       .orderBy(desc(schema.chatMessages.createdAt))
       .limit(12),
   ]);
@@ -3864,6 +4088,208 @@ anything unless the application explicitly confirms that action.`,
     .returning();
 
   return c.json({ answer, context: scored, message: assistantMessage });
+});
+
+app.get('/api/ceo-chat/history', async (c) => {
+  if (!c.get('isSuperadmin')) return c.json({ error: 'Forbidden.' }, 403);
+
+  const db = getDb(c.env, schema) as CrmDb;
+  const rows = await db
+    .select({
+      id: schema.chatMessages.id,
+      role: schema.chatMessages.role,
+      content: schema.chatMessages.content,
+      createdAt: schema.chatMessages.createdAt,
+    })
+    .from(schema.chatMessages)
+    .where(
+      and(
+        eq(schema.chatMessages.userId, c.get('userId')),
+        inArray(schema.chatMessages.role, ['ceo_user', 'ceo_assistant'])
+      )
+    )
+    .orderBy(asc(schema.chatMessages.createdAt))
+    .limit(100);
+
+  return c.json({
+    messages: rows.map((row) => ({
+      ...row,
+      role: row.role === 'ceo_user' ? 'user' : 'assistant',
+    })),
+  });
+});
+
+app.delete('/api/ceo-chat/history', async (c) => {
+  if (!c.get('isSuperadmin')) return c.json({ error: 'Forbidden.' }, 403);
+
+  const db = getDb(c.env, schema) as CrmDb;
+  const userId = c.get('userId');
+  await db
+    .delete(schema.chatMessages)
+    .where(
+      and(
+        eq(schema.chatMessages.userId, userId),
+        inArray(schema.chatMessages.role, ['ceo_user', 'ceo_assistant'])
+      )
+    );
+  await withAudit(db, schema.auditLog, {
+    actorUserId: userId,
+    action: 'delete',
+    resourceType: 'ceo_chat_history',
+    resourceId: userId,
+    app: 'crm',
+  });
+  return c.json({ success: true });
+});
+
+app.post('/api/ceo-chat', async (c) => {
+  const isSuperadmin = c.get('isSuperadmin') ?? false;
+  if (!isSuperadmin) return c.json({ error: 'Forbidden.' }, 403);
+
+  const userId = c.get('userId');
+  const rateLimit = checkRateLimit(`ceo-chat:${userId}`, 20, 5 * 60 * 1000);
+  if (!rateLimit.allowed) {
+    c.header('Retry-After', String(rateLimit.retryAfter ?? 60));
+    return c.json({ error: 'Too many CEO report requests. Please wait and try again.' }, 429);
+  }
+
+  const body = await c.req.json().catch(() => null);
+  const question = parseCeoQuestion((body as { message?: unknown } | null)?.message);
+  if (!question) {
+    return c.json({ error: 'A message between 1 and 8,000 characters is required.' }, 400);
+  }
+
+  const db = getDb(c.env, schema) as CrmDb;
+  const aiEnv = await getConfiguredAiEnv(db, c.env);
+  if (!ai.isAiConfigured(aiEnv)) return c.json({ error: ai.AI_NOT_CONFIGURED_MSG }, 503);
+
+  const [snapshot, recentHistoryRows] = await Promise.all([
+    buildCeoReportingSnapshot(db),
+    db
+      .select({
+        role: schema.chatMessages.role,
+        content: schema.chatMessages.content,
+      })
+      .from(schema.chatMessages)
+      .where(
+        and(
+          eq(schema.chatMessages.userId, userId),
+          inArray(schema.chatMessages.role, ['ceo_user', 'ceo_assistant'])
+        )
+      )
+      .orderBy(desc(schema.chatMessages.createdAt))
+      .limit(12),
+  ]);
+
+  await db.insert(schema.chatMessages).values({
+    userId,
+    role: 'ceo_user',
+    content: question,
+  });
+
+  const conversation: ai.ChatMessage[] = recentHistoryRows.reverse().map((row) => ({
+    role: row.role === 'ceo_assistant' ? 'model' : 'user',
+    text: row.content,
+  }));
+  conversation.push({ role: 'user', text: question });
+
+  const encoder = new TextEncoder();
+  const stream = new TransformStream<Uint8Array, Uint8Array>();
+  const writer = stream.writable.getWriter();
+  let clientConnected = true;
+  const writeEvent = async (event: Record<string, unknown>) => {
+    if (!clientConnected) return false;
+    try {
+      await writer.write(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      return true;
+    } catch {
+      clientConnected = false;
+      return false;
+    }
+  };
+
+  const generate = async () => {
+    let answer = '';
+    let streamInterrupted = false;
+    try {
+      await writeEvent({ type: 'ready', generatedAt: snapshot.generatedAt });
+      for await (const delta of ai.chatCompletionStream(conversation, aiEnv, {
+        tier: 'reasoning',
+        agent: 'reporting-ceo',
+        temperature: 0.2,
+        maxTokens: 4_000,
+        systemInstruction: buildCeoSystemInstruction(snapshot),
+      })) {
+        if (!delta) continue;
+        const remaining = 40_000 - answer.length;
+        if (remaining <= 0) break;
+        const safeDelta = delta.slice(0, remaining);
+        answer += safeDelta;
+        if (!(await writeEvent({ type: 'delta', delta: safeDelta }))) {
+          streamInterrupted = true;
+          break;
+        }
+      }
+
+      if (streamInterrupted) return;
+      if (!answer.trim()) throw new Error('The reporting model returned an empty response.');
+
+      const [saved] = await db
+        .insert(schema.chatMessages)
+        .values({
+          userId,
+          role: 'ceo_assistant',
+          content: answer,
+          contextIds: [{ resourceType: 'reporting_snapshot', resourceId: snapshot.generatedAt }],
+        })
+        .returning({
+          id: schema.chatMessages.id,
+          createdAt: schema.chatMessages.createdAt,
+        });
+
+      await withAudit(db, schema.auditLog, {
+        actorUserId: userId,
+        action: 'generate',
+        resourceType: 'ceo_report',
+        resourceId: saved?.id ?? 'streamed',
+        after: {
+          snapshotGeneratedAt: snapshot.generatedAt,
+          questionCharacters: question.length,
+          answerCharacters: answer.length,
+        },
+        app: 'crm',
+      });
+
+      await writeEvent({
+        type: 'done',
+        id: saved?.id ?? crypto.randomUUID(),
+        createdAt: saved?.createdAt?.toISOString() ?? new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error('Reporting CEO generation failed:', error);
+      await writeEvent({
+        type: 'error',
+        error: 'The Reporting CEO could not complete this report. Please try again.',
+      });
+    } finally {
+      try {
+        await writer.close();
+      } catch {
+        // The browser may have closed the stream.
+      }
+    }
+  };
+  c.executionCtx.waitUntil(generate());
+
+  return new Response(stream.readable, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    },
+  });
 });
 
 // ─── AI SUMMARY / OUTREACH / SCORE ─────────────────────────────────────────
