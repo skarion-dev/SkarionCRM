@@ -32,10 +32,17 @@ import {
   Check,
   Info,
   Crown,
+  ClipboardCheck,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
   { icon: LayoutDashboard, label: 'Dashboard', path: '/', roles: ['manager', 'member'] },
+  {
+    icon: ClipboardCheck,
+    label: 'Prospect Review',
+    path: '/prospects',
+    roles: ['manager', 'member'],
+  },
   { icon: Target, label: 'Leads', path: '/leads', roles: ['manager', 'member'] },
   { icon: Contact, label: 'Contacts', path: '/contacts', roles: ['manager', 'member'] },
   { icon: Building2, label: 'Companies', path: '/companies', roles: ['manager', 'member'] },

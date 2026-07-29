@@ -1,859 +1,157 @@
-// Quick lead-quality tiers — the whole point of this extension per the
-// original brief: whenever you think a profile is a good lead, one click
-// tags it and pushes it to the CRM, instead of manually typing a tag every
-// time. Edit this list to change the tier set; nothing else needs updating,
-// tiers are stored as plain CRM tags, not a separate field.
-const QUALITY_TIERS = ['Excellent Fit', 'Good Fit', 'Future Fit', 'Indian', 'Worth Trying'];
-
-let allProfiles = {};
-let selectedId = null;
-// Pre-filled so a fresh install works against production without the user
-// having to know the URL — still fully editable in Settings (e.g. to point
-// at a local dev CRM instead).
 const DEFAULT_CRM_URL = 'https://skarion-crm-platform.skarion-talentos.workers.dev';
-// Frontend (not API) origin — only used to build "open existing record" links.
 const DEFAULT_CRM_WEB_URL = 'https://skarion-crm-cv9.pages.dev';
+
+const profileName = document.getElementById('profileName');
+const profileMeta = document.getElementById('profileMeta');
+const statusBox = document.getElementById('status');
+const progressBar = document.getElementById('progress');
+const settings = document.getElementById('settings');
+const crmUrlInput = document.getElementById('crmUrl');
+const apiKeyInput = document.getElementById('apiKey');
+const decisionButtons = [...document.querySelectorAll('[data-disposition]')];
+
+let activeTab = null;
+let resolvedLead = null;
+let busy = false;
 let crmSettings = { crmUrl: DEFAULT_CRM_URL, apiKey: '' };
-let leadTags = [];
 
-const statCount = document.getElementById('statCount');
-const statSent = document.getElementById('statSent');
-const searchInput = document.getElementById('searchInput');
-const profileList = document.getElementById('profileList');
-const detail = document.getElementById('detail');
-const btnReviewSend = document.getElementById('btnReviewSend');
-const btnClear = document.getElementById('btnClear');
-const btnCapture = document.getElementById('btnCaptureNow');
-const btnCaptureSend = document.getElementById('btnCaptureSendNow');
-const scrapeProgress = document.getElementById('scrapeProgress');
-const scrapeProgressMessage = document.getElementById('scrapeProgressMessage');
-const scrapeProgressPercent = document.getElementById('scrapeProgressPercent');
-const scrapeProgressFill = document.getElementById('scrapeProgressFill');
-const scrapeProgressDetail = document.getElementById('scrapeProgressDetail');
-const scrapeProgressLink = document.getElementById('scrapeProgressLink');
-let activeTabId = null;
-let activeProfileId = null;
-let captureAndSendRequest = null;
-let captureAndSendBusy = false;
-
-// --- Settings (CRM URL + API key), saved per-device ---
-const btnSettings = document.getElementById('btnSettings');
-const settingsPanel = document.getElementById('settingsPanel');
-const setCrmUrl = document.getElementById('setCrmUrl');
-const setApiKey = document.getElementById('setApiKey');
-const btnSaveSettings = document.getElementById('btnSaveSettings');
-const btnCloseSettings = document.getElementById('btnCloseSettings');
-const settingsStatus = document.getElementById('settingsStatus');
-
-// --- Lead form (send captured profile to CRM) ---
-const leadForm = document.getElementById('leadForm');
-const lfFirstName = document.getElementById('lfFirstName');
-const lfLastName = document.getElementById('lfLastName');
-const lfEmail = document.getElementById('lfEmail');
-const lfPhone = document.getElementById('lfPhone');
-const lfCompanyName = document.getElementById('lfCompanyName');
-const lfCompanyDomain = document.getElementById('lfCompanyDomain');
-const lfLinkedinUrl = document.getElementById('lfLinkedinUrl');
-const lfStatus = document.getElementById('lfStatus');
-const lfOutreachStatus = document.getElementById('lfOutreachStatus');
-const lfTagList = document.getElementById('lfTagList');
-const lfTagInput = document.getElementById('lfTagInput');
-const lfNotes = document.getElementById('lfNotes');
-const lfStatusLine = document.getElementById('lfStatusLine');
-const lfDupeBanner = document.getElementById('lfDupeBanner');
-const btnSendLead = document.getElementById('btnSendLead');
-const btnCancelLead = document.getElementById('btnCancelLead');
-const btnPasteSettings = document.getElementById('btnPasteSettings');
-const lfAiResult = document.getElementById('lfAiResult');
-const lfAiScore = document.getElementById('lfAiScore');
-const lfAiClassification = document.getElementById('lfAiClassification');
-const lfAiReasoning = document.getElementById('lfAiReasoning');
-const lfAiNote = document.getElementById('lfAiNote');
-const lfAiNoteCount = document.getElementById('lfAiNoteCount');
-const btnCopyAiNote = document.getElementById('btnCopyAiNote');
-
-chrome.storage.local.get(['crmSettings'], (data) => {
-  if (data.crmSettings && data.crmSettings.crmUrl) {
-    crmSettings = data.crmSettings;
-  }
-  setCrmUrl.value = crmSettings.crmUrl || '';
-  setApiKey.value = crmSettings.apiKey || '';
-});
-
-btnSettings.addEventListener('click', () => {
-  settingsPanel.classList.toggle('open');
-});
-btnCloseSettings.addEventListener('click', () => {
-  settingsPanel.classList.remove('open');
-});
-// Normalizes whatever the user types (with/without scheme, with/without
-// trailing slash) into an absolute http(s) URL. Without this, a bare value
-// like "localhost:8788" gets resolved by fetch() as a path relative to the
-// extension's own chrome-extension:// origin instead of an actual host,
-// which fails instantly with an opaque "Failed to fetch".
 function normalizeCrmUrl(raw) {
-  let url = raw.trim().replace(/\/$/, '');
-  if (!url) return '';
-  if (!/^https?:\/\//i.test(url)) url = `http://${url}`;
-  return url;
+  let value = String(raw || '').trim().replace(/\/+$/, '');
+  if (value && !/^https?:\/\//i.test(value)) value = `https://${value}`;
+  return value;
 }
 
-btnSaveSettings.addEventListener('click', () => {
-  const crmUrl = normalizeCrmUrl(setCrmUrl.value);
-  setCrmUrl.value = crmUrl;
-  crmSettings = { crmUrl, apiKey: setApiKey.value.trim() };
-  chrome.storage.local.set({ crmSettings }, () => {
-    settingsStatus.textContent = crmUrl ? `Saved: ${crmUrl}` : 'Saved.';
-    settingsStatus.className = 'status-line';
-    setTimeout(() => {
-      settingsStatus.textContent = '';
-    }, 3000);
-  });
-});
-
-// Admin's "Copy for extension" button (ApiKeysList.tsx) puts a small JSON
-// blob on the clipboard: {"crmUrl": "...", "apiKey": "..."}. Paste it here
-// instead of retyping both fields by hand.
-btnPasteSettings.addEventListener('click', async () => {
-  try {
-    const text = await navigator.clipboard.readText();
-    const parsed = JSON.parse(text);
-    if (!parsed || typeof parsed.apiKey !== 'string') throw new Error('not a key blob');
-    if (typeof parsed.crmUrl === 'string' && parsed.crmUrl)
-      setCrmUrl.value = normalizeCrmUrl(parsed.crmUrl);
-    setApiKey.value = parsed.apiKey;
-    btnSaveSettings.click();
-    settingsStatus.textContent = 'Pasted from clipboard — saved.';
-    settingsStatus.className = 'status-line';
-  } catch {
-    settingsStatus.textContent =
-      'Clipboard doesn’t contain a key from the admin panel’s "Copy for extension" button.';
-    settingsStatus.className = 'status-line err';
-  }
-});
-
-function esc(s) {
-  return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function setStatus(message, kind = '', percent = null) {
+  statusBox.textContent = message;
+  statusBox.className = `status${kind ? ` ${kind}` : ''}`;
+  if (percent !== null) progressBar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
 }
 
-function timeAgo(iso) {
-  if (!iso) return '';
-  const diff = Date.now() - new Date(iso).getTime();
-  const m = Math.floor(diff / 60000);
-  if (m < 1) return 'just now';
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
-}
-
-function render(filter = '') {
-  const q = filter.toLowerCase();
-  const sorted = Object.values(allProfiles)
-    .sort((a, b) => new Date(b.capturedAt) - new Date(a.capturedAt))
-    .filter(
-      (p) =>
-        !q ||
-        [p.name, p.headline, p.location, p.currentCompanies].join(' ').toLowerCase().includes(q)
-    );
-
-  statCount.textContent = Object.keys(allProfiles).length;
-  statSent.textContent = Object.values(allProfiles).filter((p) => p.crmStatus === 'sent').length;
-  btnReviewSend.disabled = Object.keys(allProfiles).length === 0;
-
-  if (sorted.length === 0) {
-    profileList.style.display = 'none';
-    return;
-  }
-
-  profileList.style.display = 'block';
-  profileList.innerHTML = sorted
-    .map(
-      (p) => `
-    <div class="profile-item${selectedId === p.profileId ? ' selected' : ''}" data-id="${esc(p.profileId)}">
-      <div class="profile-dot"></div>
-      <div class="profile-info">
-        <div class="profile-name">${esc(p.name)}</div>
-        <div class="profile-sub">${esc(p.headline || p.location || '—')}</div>
-        <div class="profile-time">${esc(p.location || '')} · ${timeAgo(p.capturedAt)}</div>
-      </div>
-      <div class="profile-crm-status ${p.crmStatus === 'sent' ? 'sent' : 'pending'}">
-        ${p.crmStatus === 'sent' ? '✓ Sent to CRM' : 'Not sent'}
-      </div>
-    </div>
-  `
-    )
-    .join('');
-
-  profileList.querySelectorAll('.profile-item').forEach((el) => {
-    el.addEventListener('click', () => showDetail(el.dataset.id));
+function setBusy(value) {
+  busy = value;
+  decisionButtons.forEach((button) => {
+    button.disabled = value;
   });
 }
 
-function renderScrapeProgress(progress) {
-  if (!progress || !activeProfileId || (activeTabId !== null && progress.tabId !== activeTabId)) {
-    scrapeProgress.classList.remove('open');
-    return;
-  }
-
-  const rawPercent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
-  const oneShotCapturing =
-    Boolean(captureAndSendRequest) && ['waiting', 'running', 'complete'].includes(progress.status);
-  const percent = oneShotCapturing ? Math.round(rawPercent * 0.7) : rawPercent;
-  const visualStatus = progress.status === 'sent' ? 'complete' : progress.status || '';
-  scrapeProgress.className = `scrape-progress open ${visualStatus}`;
-  scrapeProgressMessage.textContent = progress.message || 'Capturing profile';
-  scrapeProgressPercent.textContent = `${percent}%`;
-  scrapeProgressFill.style.width = `${percent}%`;
-  scrapeProgressDetail.textContent = progress.detail || '';
-  if (progress.recordUrl) {
-    scrapeProgressLink.href = progress.recordUrl;
-    scrapeProgressLink.classList.add('open');
-  } else {
-    scrapeProgressLink.removeAttribute('href');
-    scrapeProgressLink.classList.remove('open');
-  }
-
-  const inProgress =
-    progress.status === 'running' || progress.status === 'waiting' || progress.status === 'sending';
-  btnCapture.disabled = inProgress;
-  btnCaptureSend.disabled = inProgress || captureAndSendBusy;
-  if (progress.status === 'sent') {
-    btnCapture.textContent = 'Capture only';
-    btnCaptureSend.textContent = '✓ Sent to CRM';
-  } else if (progress.status === 'complete' && captureAndSendRequest) {
-    btnCapture.textContent = 'Capture only';
-    btnCaptureSend.textContent = 'Sending to CRM…';
-    void maybeCaptureAndSend();
-  } else if (progress.status === 'complete') {
-    btnCapture.textContent = '✓ Captured';
-    btnCaptureSend.textContent = 'Capture & Send to CRM';
-  } else if (progress.status === 'failed') {
-    btnCapture.textContent = 'Try capture again';
-    btnCaptureSend.textContent = 'Capture & Send to CRM';
-  } else if (inProgress) {
-    btnCapture.textContent = 'Capturing…';
-    btnCaptureSend.textContent =
-      progress.status === 'sending' ? 'Sending to CRM…' : 'Capture & Send to CRM';
-  } else {
-    btnCapture.textContent = 'Capture only';
-    btnCaptureSend.textContent = 'Capture & Send to CRM';
-  }
-}
-
-function showDetail(id) {
-  selectedId = id;
-  const p = allProfiles[id];
-  if (!p) return;
-
-  render(searchInput.value);
-
-  const sections = [
-    p.about && { title: 'About', body: p.about },
-    p.experience && { title: 'Experience', body: p.experience },
-    p.education && { title: 'Education', body: p.education },
-    p.skills && { title: 'Skills', body: p.skills },
-    p.certifications && { title: 'Certifications', body: p.certifications },
-  ].filter(Boolean);
-
-  detail.style.display = 'block';
-  detail.innerHTML = `
-    <h3>${esc(p.name)}</h3>
-    <div class="dheadline">${esc(p.headline || '')}</div>
-    ${p.location ? `<div class="dheadline" style="color:#888">📍 ${esc(p.location)}</div>` : ''}
-    ${p.connections ? `<div class="dheadline" style="color:#888">🔗 ${esc(p.connections)} connections</div>` : ''}
-    ${
-      p.crmStatus === 'sent'
-        ? `<a class="crm-sync-banner" href="${esc(p.crmRecordUrl || DEFAULT_CRM_WEB_URL)}" target="_blank">✓ Sent to CRM ${timeAgo(p.crmSentAt)} · Open record</a>`
-        : '<div class="crm-sync-banner pending">Not sent to CRM yet</div>'
-    }
-    ${sections
-      .map(
-        (s) => `
-      <div class="section">
-        <div class="section-title">${esc(s.title)}</div>
-        <div class="section-body">${esc(s.body.slice(0, 500))}${s.body.length > 500 ? '…' : ''}</div>
-      </div>
-    `
-      )
-      .join('')}
-    <a class="open-link" href="${esc(p.profileUrl)}" target="_blank">↗ Open profile</a>
-
-    <div class="tier-row">
-      ${QUALITY_TIERS.map((t) => `<button class="tier-btn" data-tier="${esc(t)}">${esc(t)}</button>`).join('')}
-    </div>
-    <button class="send-crm-btn" id="btnOpenLeadForm">
-      ${p.crmStatus === 'sent' ? 'Review / resend to CRM' : 'Review & send to CRM'}
-    </button>
-  `;
-
-  detail.querySelectorAll('.tier-btn').forEach((btn) => {
-    btn.addEventListener('click', () => openLeadForm(p, btn.dataset.tier));
-  });
-  document.getElementById('btnOpenLeadForm').addEventListener('click', () => openLeadForm(p));
-}
-
-// --- Name splitting: LinkedIn only gives a single "name" string ---
-function splitName(fullName) {
-  const parts = (fullName || '').trim().split(/\s+/);
-  if (parts.length === 0) return { firstName: '', lastName: '' };
-  if (parts.length === 1) return { firstName: parts[0], lastName: '' };
-  return { firstName: parts[0], lastName: parts.slice(1).join(' ') };
-}
-
-// Fold the sections that have no dedicated CRM column into notes
-function composeNotes(p) {
-  const lines = [];
-  if (p.headline) lines.push(`Headline: ${p.headline}`);
-  if (p.location) lines.push(`Location: ${p.location}`);
-  if (p.connections) lines.push(`Connections: ${p.connections}`);
-  if (p.about) lines.push(`\nAbout:\n${p.about}`);
-  if (p.experience) lines.push(`\nExperience:\n${p.experience}`);
-  if (p.education) lines.push(`\nEducation:\n${p.education}`);
-  if (p.skills) lines.push(`\nSkills:\n${p.skills}`);
-  if (p.certifications) lines.push(`\nCertifications:\n${p.certifications}`);
-  return lines.join('\n');
-}
-
-function renderTags() {
-  lfTagList.innerHTML = leadTags
-    .map(
-      (t, i) => `
-    <span class="tag">${esc(t)}<button data-i="${i}">✕</button></span>
-  `
-    )
-    .join('');
-  lfTagList.querySelectorAll('button').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      leadTags.splice(Number(btn.dataset.i), 1);
-      renderTags();
-    });
-  });
-}
-
-lfTagInput.addEventListener('keydown', (e) => {
-  if (e.key !== 'Enter') return;
-  e.preventDefault();
-  const tag = lfTagInput.value.trim();
-  if (tag && !leadTags.includes(tag)) leadTags.push(tag);
-  lfTagInput.value = '';
-  renderTags();
-});
-
-function openLeadForm(p, presetTier) {
-  const { firstName, lastName } = splitName(p.name);
-  lfFirstName.value = firstName;
-  lfLastName.value = lastName;
-  lfEmail.value = '';
-  lfPhone.value = '';
-  lfCompanyName.value = (p.currentCompanies || '').split(',')[0]?.trim() || '';
-  lfCompanyDomain.value = '';
-  lfLinkedinUrl.value = p.profileUrl || '';
-  lfStatus.value = 'new';
-  lfOutreachStatus.value = 'not_approached';
-  leadTags = presetTier ? [presetTier] : [];
-  renderTags();
-  lfNotes.value = composeNotes(p);
-  lfStatusLine.textContent = presetTier ? `Tier: ${presetTier} — review and send.` : '';
-  lfStatusLine.className = 'status-line';
-  lfDupeBanner.style.display = 'none';
-  lfDupeBanner.innerHTML = '';
-  lfAiResult.classList.remove('open');
-  lfAiNote.value = '';
-  leadForm.dataset.profileId = p.profileId;
-  // Stable per-profile key so a retried send (or a deliberate re-send later)
-  // always carries the same idempotency key — persisted alongside the
-  // captured profile so it survives popup close/reopen.
-  if (!p.idempotencyKey) {
-    p.idempotencyKey = crypto.randomUUID();
-    allProfiles[p.profileId] = p;
-    chrome.storage.local.set({ profiles: allProfiles });
-  }
-  leadForm.dataset.idempotencyKey = p.idempotencyKey;
-  leadForm.classList.add('open');
-  leadForm.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  scheduleDuplicateCheck();
-}
-
-function showAiAssessment(assessment) {
-  if (!assessment?.connectionNote) return;
-  lfAiScore.textContent = `${assessment.overallScore}/100`;
-  lfAiClassification.textContent = assessment.classification;
-  lfAiReasoning.textContent = assessment.reasoningSummary || '';
-  lfAiNote.value = assessment.connectionNote;
-  lfAiNoteCount.textContent = `${[...assessment.connectionNote].length}/300 characters`;
-  btnCopyAiNote.textContent = 'Copy note';
-  lfAiResult.classList.add('open');
-  lfAiResult.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-}
-
-btnCopyAiNote.addEventListener('click', async () => {
-  if (!lfAiNote.value) return;
-  await navigator.clipboard.writeText(lfAiNote.value);
-  btnCopyAiNote.textContent = 'Copied ✓';
-  setTimeout(() => {
-    btnCopyAiNote.textContent = 'Copy note';
-  }, 2000);
-});
-
-function recordLink(entityType, id) {
-  return `${DEFAULT_CRM_WEB_URL}/${entityType === 'contact' ? 'contacts' : 'leads'}/${id}`;
-}
-
-async function markProfileSent(result, keepLocal = true) {
-  const profileId = leadForm.dataset.profileId;
-  const profile = allProfiles[profileId];
-  const entityType = result.entityType || (result.contact ? 'contact' : 'lead');
-  const record = result.contact || result.lead;
-  if (!profile || !record?.id) return null;
-
-  const sentProfile = {
-    ...profile,
-    crmStatus: 'sent',
-    crmSentAt: new Date().toISOString(),
-    crmRecordId: record.id,
-    crmEntityType: entityType,
-    crmRecordUrl: recordLink(entityType, record.id),
-  };
-  const nextProfiles = { ...allProfiles };
-  if (keepLocal) nextProfiles[profileId] = sentProfile;
-  else delete nextProfiles[profileId];
-  await chrome.storage.local.set({ profiles: nextProfiles });
-  allProfiles = nextProfiles;
-  if (!keepLocal) await chrome.action.setBadgeText({ text: '0' });
-  render(searchInput.value);
-  return sentProfile.crmRecordUrl;
-}
-
-function storeOneShotProgress(progress) {
-  const value = {
-    ...progress,
-    profileId: activeProfileId,
-    tabId: activeTabId,
-    updatedAt: new Date().toISOString(),
-  };
-  chrome.storage.local.set({ scrapeProgress: value });
-  renderScrapeProgress(value);
-}
-
-function showCrmConfirmation(message, url) {
-  lfStatusLine.textContent = `${message} `;
-  if (url) {
-    const link = document.createElement('a');
-    link.href = url;
-    link.target = '_blank';
-    link.textContent = 'Open in CRM';
-    lfStatusLine.appendChild(link);
-  }
-}
-
-function showDupeBanner(html) {
-  lfDupeBanner.innerHTML = html;
-  lfDupeBanner.style.display = 'block';
-}
-
-function currentLeadFormPayload() {
-  return {
-    firstName: lfFirstName.value.trim(),
-    lastName: lfLastName.value.trim(),
-    email: lfEmail.value.trim() || null,
-    phone: lfPhone.value.trim() || null,
-    companyName: lfCompanyName.value.trim() || null,
-    companyDomain: lfCompanyDomain.value.trim() || null,
-    linkedinUrl: lfLinkedinUrl.value.trim() || null,
-    tags: leadTags,
-    notes: lfNotes.value.trim() || null,
-  };
-}
-
-// Preflight — calls /extension/leads/check so the user sees "already
-// exists" (with a link to the real record) before deciding whether to send
-// at all, rather than only finding out after (or, previously, never).
-let dupeCheckTimer = null;
-let dupeCheckController = null;
-let sendInProgress = false;
-
-function clearDupeBanner() {
-  lfDupeBanner.style.display = 'none';
-  lfDupeBanner.innerHTML = '';
-}
-
-function cancelDuplicateCheck() {
-  clearTimeout(dupeCheckTimer);
-  dupeCheckTimer = null;
-  dupeCheckController?.abort();
-  dupeCheckController = null;
-}
-
-async function checkDuplicate() {
-  if (sendInProgress || !crmSettings.crmUrl || !crmSettings.apiKey) return;
-  const controller = new AbortController();
-  dupeCheckController?.abort();
-  dupeCheckController = controller;
-  try {
-    const headers = {
+async function api(path, options = {}) {
+  if (!crmSettings.apiKey) throw new Error('Add your extension API key in settings first.');
+  const response = await fetch(`${crmSettings.crmUrl}${path}`, {
+    ...options,
+    headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${crmSettings.apiKey}`,
-    };
-    const res = await fetch(`${crmSettings.crmUrl}/extension/leads/check`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(currentLeadFormPayload()),
-      signal: controller.signal,
+      ...(options.headers || {}),
+    },
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.error || `${response.status} request failed`);
+  return body;
+}
+
+async function resolveCurrentProfile() {
+  [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!activeTab?.url?.includes('linkedin.com/in/')) {
+    profileName.textContent = 'Open a LinkedIn profile';
+    profileMeta.textContent = 'This extension only reviews linkedin.com/in/ pages.';
+    decisionButtons.forEach((button) => {
+      button.disabled = true;
     });
-    if (!res.ok) return;
-    const result = await res.json();
-    // The send request can create the lead while this slower preflight is
-    // still returning. Ignore that stale response so the lead never detects
-    // the record it just created as a pre-existing duplicate.
-    if (controller.signal.aborted || sendInProgress || dupeCheckController !== controller) return;
-    if (result.status === 'exact_duplicate') {
-      const record = result.record;
-      const label = result.entityType === 'contact' ? 'an existing contact' : 'an existing lead';
-      const enrichmentMessage = result.enrichmentAvailable
-        ? ` Sending will enrich missing fields: ${result.enrichedFields.join(', ')}.`
-        : ' The stored record already contains these profile details.';
-      showDupeBanner(
-        `⚠ Already in the CRM as ${label} (matched by ${result.matchType.replace('_', ' ')}). ` +
-          `No duplicate will be created.${enrichmentMessage} ` +
-          `<a href="${recordLink(result.entityType, record.id)}" target="_blank">Open existing ${result.entityType}</a>`
-      );
-    } else if (result.status === 'enrichment_available') {
-      const record = result.record;
-      showDupeBanner(
-        `✓ Existing name-only lead found. Sending will update the same lead with: ` +
-          `${result.enrichedFields.join(', ') || 'captured LinkedIn details'}. ` +
-          `<a href="${recordLink('lead', record.id)}" target="_blank">Open existing lead</a>`
-      );
-    } else if (result.status === 'possible_duplicate') {
-      const names = result.matches.map((m) => `${m.firstName} ${m.lastName}`.trim()).join(', ');
-      showDupeBanner(
-        `⚠ Possible duplicate — same name + company already in leads: ${names}. Review before sending.`
-      );
-    } else {
-      clearDupeBanner();
-    }
-  } catch (error) {
-    if (error?.name === 'AbortError') return;
-    // Best-effort — a failed preflight shouldn't block the form from being usable.
-  } finally {
-    if (dupeCheckController === controller) dupeCheckController = null;
+    return;
   }
-}
-
-function scheduleDuplicateCheck() {
-  cancelDuplicateCheck();
-  if (sendInProgress) return;
-  dupeCheckTimer = setTimeout(() => {
-    dupeCheckTimer = null;
-    void checkDuplicate();
-  }, 400);
-}
-[lfLinkedinUrl, lfEmail, lfFirstName, lfLastName, lfCompanyName].forEach((el) => {
-  el.addEventListener('input', scheduleDuplicateCheck);
-});
-
-btnCancelLead.addEventListener('click', () => {
-  cancelDuplicateCheck();
-  leadForm.classList.remove('open');
-});
-
-async function sendLeadToCrm(removeAfterSend = false) {
-  if (!crmSettings.crmUrl) {
-    lfStatusLine.textContent = 'Set the CRM API base URL in ⚙ Settings first.';
-    lfStatusLine.className = 'status-line err';
-    return false;
-  }
-  // The CRM now rejects any /extension/leads request with no valid key —
-  // fail fast here with a clear message instead of a confusing 401 later.
+  profileName.textContent = activeTab.title?.replace(/\s*\|\s*LinkedIn.*$/i, '') || 'LinkedIn profile';
   if (!crmSettings.apiKey) {
-    lfStatusLine.textContent =
-      'Add your personal API key in ⚙ Settings first (ask an admin to generate one).';
-    lfStatusLine.className = 'status-line err';
-    return false;
+    profileMeta.textContent = 'Add your CRM API key to begin.';
+    settings.classList.add('open');
+    return;
   }
-  const displayName = `${lfFirstName.value.trim()} ${lfLastName.value.trim()}`.trim();
-  if (!displayName || !(lfLinkedinUrl.value.trim() || lfEmail.value.trim())) {
-    lfStatusLine.textContent = 'A name plus a LinkedIn URL or an email is required.';
-    lfStatusLine.className = 'status-line err';
-    return false;
-  }
-
-  const payload = {
-    firstName: lfFirstName.value.trim(),
-    lastName: lfLastName.value.trim(),
-    email: lfEmail.value.trim() || null,
-    phone: lfPhone.value.trim() || null,
-    companyName: lfCompanyName.value.trim() || null,
-    companyDomain: lfCompanyDomain.value.trim() || null,
-    linkedinUrl: lfLinkedinUrl.value.trim() || null,
-    source: 'linkedin',
-    status: lfStatus.value,
-    outreachStatus: lfOutreachStatus.value,
-    tags: leadTags,
-    notes: lfNotes.value,
-  };
-
-  btnSendLead.disabled = true;
-  btnSendLead.textContent = 'Sending…';
-  lfStatusLine.textContent = '';
-  lfStatusLine.className = 'status-line';
-  sendInProgress = true;
-  cancelDuplicateCheck();
-  clearDupeBanner();
-  let succeeded = false;
-
   try {
-    const headers = {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${crmSettings.apiKey}`,
-      'X-Idempotency-Key': leadForm.dataset.idempotencyKey,
-    };
-
-    const res = await fetch(`${crmSettings.crmUrl}/extension/leads`, {
+    const result = await api('/extension/prospects/resolve', {
       method: 'POST',
-      headers,
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ linkedinUrl: activeTab.url }),
     });
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`${res.status} ${body}`);
-    }
-    const result = await res.json();
-    const crmRecordUrl = await markProfileSent(result, !removeAfterSend);
-    if (!crmRecordUrl) {
-      throw new Error('CRM response did not include a confirmed lead or contact record.');
-    }
-
-    if (result.duplicate) {
-      const entityType = result.entityType || 'lead';
-      const record = result.contact || result.lead;
-      showDupeBanner(
-        result.enriched
-          ? `Existing ${entityType} enriched with ${result.enrichedFields.join(', ')} — no duplicate was created. ` +
-              `<a href="${recordLink(entityType, record.id)}" target="_blank">Open updated ${entityType}</a>`
-          : `Already existed as ${entityType === 'contact' ? 'a contact' : 'a lead'} — no duplicate was created. ` +
-              `<a href="${recordLink(entityType, record.id)}" target="_blank">Open existing ${entityType}</a>`
-      );
-      showCrmConfirmation(
-        result.enriched
-          ? 'Updated missing LinkedIn profile details in CRM. ✓'
-          : result.replayed
-            ? 'Confirmed in CRM—same send as before, no duplicate created. ✓'
-            : 'Confirmed: already exists in CRM. ✓',
-        crmRecordUrl
-      );
-      showAiAssessment(result.aiAssessment);
-    } else {
-      clearDupeBanner();
-      showCrmConfirmation(
-        result.aiAssessment
-          ? 'Sent to CRM and qualified ✓'
-          : 'Sent to CRM ✓—AI assessment was unavailable',
-        crmRecordUrl
-      );
-      showAiAssessment(result.aiAssessment);
-    }
-    succeeded = true;
-    if (removeAfterSend) {
-      storeOneShotProgress({
-        status: 'sent',
-        percent: 100,
-        message: result.enriched
-          ? 'Existing lead enriched'
-          : result.duplicate
-            ? 'Confirmed in CRM'
-            : 'Sent to CRM',
-        detail: result.aiAssessment
-          ? 'CRM delivery and AI qualification completed. Nothing remains queued locally.'
-          : 'CRM delivery completed. Nothing remains queued locally.',
-        recordUrl: crmRecordUrl,
-      });
-    }
-    lfStatusLine.className = 'status-line';
-  } catch (err) {
-    lfStatusLine.textContent = `Failed to reach ${crmSettings.crmUrl}/extension/leads — ${err.message}`;
-    lfStatusLine.className = 'status-line err';
-    if (removeAfterSend) {
-      storeOneShotProgress({
-        status: 'failed',
-        percent: 72,
-        message: 'CRM send failed',
-        detail: `${err.message} The single capture is retained for retry.`,
-      });
-    }
-  } finally {
-    sendInProgress = false;
-    btnSendLead.disabled = false;
-    btnSendLead.textContent = 'Send to CRM';
-  }
-  return succeeded;
-}
-
-btnSendLead.addEventListener('click', () => {
-  void sendLeadToCrm();
-});
-
-// Load
-chrome.storage.local.get(['profiles'], (data) => {
-  allProfiles = data.profiles || {};
-  render();
-});
-
-void chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
-  activeTabId = tab?.id ?? null;
-  activeProfileId = tab?.url?.split('/in/')[1]?.split('?')[0]?.replace(/\/$/, '') || null;
-  chrome.storage.local.get(['scrapeProgress'], (data) => {
-    renderScrapeProgress(data.scrapeProgress);
-  });
-});
-
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'local') return;
-  if (changes.scrapeProgress) {
-    renderScrapeProgress(changes.scrapeProgress.newValue);
-  }
-  if (changes.profiles) {
-    allProfiles = changes.profiles.newValue || {};
-    render(searchInput.value);
-    if (activeProfileId && allProfiles[activeProfileId]) {
-      showDetail(activeProfileId);
-    }
-    if (captureAndSendRequest) void maybeCaptureAndSend();
-  }
-});
-
-async function maybeCaptureAndSend() {
-  if (!captureAndSendRequest || captureAndSendBusy) return;
-  const profile = allProfiles[captureAndSendRequest.profileId];
-  const capturedAt = profile ? new Date(profile.capturedAt).getTime() : 0;
-  if (!profile || capturedAt < captureAndSendRequest.startedAt - 1000) return;
-
-  captureAndSendBusy = true;
-  openLeadForm(profile);
-  storeOneShotProgress({
-    status: 'sending',
-    percent: 74,
-    message: 'Sending current profile to CRM',
-    detail: 'Waiting for CRM confirmation and AI qualification. Only this profile is being sent.',
-  });
-
-  try {
-    const sent = await sendLeadToCrm(true);
-    if (!sent) {
-      storeOneShotProgress({
-        status: 'failed',
-        percent: 72,
-        message: 'CRM send did not complete',
-        detail: 'Review the form error below. The single capture is retained for retry.',
-      });
-    }
-  } finally {
-    captureAndSendRequest = null;
-    captureAndSendBusy = false;
-    btnCapture.disabled = false;
-    btnCaptureSend.disabled = false;
+    resolvedLead = result.lead;
+    profileMeta.textContent = resolvedLead
+      ? `${resolvedLead.leadNumber} · ${resolvedLead.reviewState === 'pending' ? 'Awaiting review' : `Already ${resolvedLead.reviewDisposition || resolvedLead.reviewState}`}`
+      : 'Not imported yet — a lead number will be created when you decide.';
+  } catch (error) {
+    setStatus(error.message, 'error', 0);
   }
 }
 
-async function startCapture(sendAfterCapture) {
-  if (captureAndSendBusy || captureAndSendRequest) return;
-  btnCapture.disabled = true;
-  btnCaptureSend.disabled = true;
-
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab || !tab.url?.includes('linkedin.com/in/')) {
-    const button = sendAfterCapture ? btnCaptureSend : btnCapture;
-    button.textContent = 'Not a LinkedIn profile';
-    setTimeout(() => {
-      button.textContent = sendAfterCapture ? 'Capture & Send to CRM' : 'Capture only';
-    }, 2000);
-    btnCapture.disabled = false;
-    btnCaptureSend.disabled = false;
-    return;
-  }
-  if (sendAfterCapture && (!crmSettings.crmUrl || !crmSettings.apiKey)) {
-    settingsPanel.classList.add('open');
-    settingsStatus.textContent = 'Add and save your CRM API key before using capture & send.';
-    settingsStatus.className = 'status-line err';
-    btnCapture.disabled = false;
-    btnCaptureSend.disabled = false;
-    return;
-  }
-
-  activeTabId = tab.id;
-  activeProfileId = tab.url.split('/in/')[1]?.split('?')[0]?.replace(/\/$/, '') || null;
-  captureAndSendRequest = sendAfterCapture
-    ? { profileId: activeProfileId, startedAt: Date.now() }
-    : null;
-  renderScrapeProgress({
-    tabId: tab.id,
-    status: 'running',
-    percent: 2,
-    message: sendAfterCapture ? 'Starting capture & send' : 'Starting capture',
-    detail: sendAfterCapture
-      ? 'This action is locked to the currently open profile.'
-      : 'Connecting to the currently open LinkedIn profile.',
-  });
-
+async function captureProfile() {
   try {
-    await chrome.tabs.sendMessage(tab.id, { action: 'captureProfileNow' });
+    const response = await chrome.tabs.sendMessage(activeTab.id, { action: 'captureProfileNow' });
+    if (!response?.ok) throw new Error(response?.error || 'Profile capture failed.');
+    return response.profile;
   } catch {
-    try {
-      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
-      await chrome.tabs.sendMessage(tab.id, { action: 'captureProfileNow' });
-    } catch (error) {
-      captureAndSendRequest = null;
-      renderScrapeProgress({
-        tabId: tab.id,
-        status: 'failed',
-        percent: 2,
-        message: 'Could not start capture',
-        detail:
-          error instanceof Error ? error.message : 'Reload the LinkedIn profile and try again.',
-      });
-      btnCapture.disabled = false;
-      btnCaptureSend.disabled = false;
-    }
+    await chrome.scripting.executeScript({ target: { tabId: activeTab.id }, files: ['content.js'] });
+    const response = await chrome.tabs.sendMessage(activeTab.id, { action: 'captureProfileNow' });
+    if (!response?.ok) throw new Error(response?.error || 'Profile capture failed.');
+    return response.profile;
   }
 }
 
-// Search
-searchInput.addEventListener('input', () => {
-  selectedId = null;
-  detail.style.display = 'none';
-  render(searchInput.value);
+async function captureAndReview(disposition) {
+  if (busy || !activeTab) return;
+  setBusy(true);
+  setStatus('Capturing visible LinkedIn profile sections…', '', 5);
+  try {
+    const profile = await captureProfile();
+    profileName.textContent = profile.name || profileName.textContent;
+    setStatus('Sending capture and decision directly to CRM…', '', 82);
+    const result = await api('/extension/prospects/review', {
+      method: 'POST',
+      headers: { 'X-Idempotency-Key': profile.idempotencyKey },
+      body: JSON.stringify({
+        disposition,
+        linkedinUrl: activeTab.url,
+        profile,
+        rowVersion: resolvedLead?.rowVersion,
+      }),
+    });
+    resolvedLead = result.lead;
+    const recordUrl = `${DEFAULT_CRM_WEB_URL}/leads/${result.lead.id}`;
+    statusBox.innerHTML = `Saved as <strong>${result.lead.leadNumber}</strong>. <a href="${recordUrl}" target="_blank">Open CRM record</a>`;
+    statusBox.className = 'status success';
+    progressBar.style.width = '100%';
+    profileMeta.textContent = `${result.lead.leadNumber} · ${result.lead.reviewDisposition.replaceAll('_', ' ')}`;
+  } catch (error) {
+    setStatus(error.message || 'Review failed.', 'error', 0);
+  } finally {
+    setBusy(false);
+  }
+}
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (message.action === 'scrapeProgress') {
+    setStatus(message.detail || message.message, message.status === 'failed' ? 'error' : '', message.percent);
+  }
 });
 
-btnCapture.addEventListener('click', () => {
-  void startCapture(false);
+document.getElementById('toggleSettings').addEventListener('click', () => {
+  settings.classList.toggle('open');
+});
+document.getElementById('saveSettings').addEventListener('click', async () => {
+  crmSettings = {
+    crmUrl: normalizeCrmUrl(crmUrlInput.value) || DEFAULT_CRM_URL,
+    apiKey: apiKeyInput.value.trim(),
+  };
+  await chrome.storage.local.set({ crmSettings });
+  settings.classList.remove('open');
+  setStatus('Settings saved. Choose a review decision.', 'success', 0);
+  await resolveCurrentProfile();
+});
+decisionButtons.forEach((button) => {
+  button.addEventListener('click', () => void captureAndReview(button.dataset.disposition));
 });
 
-btnCaptureSend.addEventListener('click', () => {
-  void startCapture(true);
-});
-
-// Clear
-btnClear.addEventListener('click', () => {
-  if (!confirm('Clear all saved profiles?')) return;
-  chrome.storage.local.remove('profiles');
-  allProfiles = {};
-  selectedId = null;
-  detail.style.display = 'none';
-  render();
-  chrome.action.setBadgeText({ text: '0' });
-});
-
-btnReviewSend.addEventListener('click', () => {
-  const profiles = Object.values(allProfiles).sort(
-    (a, b) => new Date(b.capturedAt) - new Date(a.capturedAt)
-  );
-  const profile =
-    (selectedId && allProfiles[selectedId]) ||
-    profiles.find((candidate) => candidate.crmStatus !== 'sent') ||
-    profiles[0];
-  if (!profile) return;
-
-  showDetail(profile.profileId);
-  openLeadForm(profile);
+void chrome.storage.local.get(['crmSettings']).then(async (stored) => {
+  crmSettings = {
+    crmUrl: normalizeCrmUrl(stored.crmSettings?.crmUrl) || DEFAULT_CRM_URL,
+    apiKey: stored.crmSettings?.apiKey || '',
+  };
+  crmUrlInput.value = crmSettings.crmUrl;
+  apiKeyInput.value = crmSettings.apiKey;
+  await resolveCurrentProfile();
 });

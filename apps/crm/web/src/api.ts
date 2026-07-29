@@ -445,13 +445,30 @@ export type OutreachStatus =
 
 export interface Lead {
   id: string;
+  workspaceId: string;
   firstName: string;
   lastName: string;
   email: string | null;
   phone: string | null;
+  headline: string | null;
+  location: string | null;
+  about: string | null;
+  experience: string | null;
+  education: string | null;
+  skills: string | null;
   companyName: string | null;
   companyDomain: string | null;
   linkedinUrl: string | null;
+  linkedinProfileKey: string | null;
+  leadSequence: number | null;
+  reviewState: 'pending' | 'accepted' | 'rejected';
+  reviewDisposition: 'excellent_fit' | 'maybe' | 'worth_trying' | 'future' | 'disqualified' | null;
+  reviewedAt: string | null;
+  reviewedBy: string | null;
+  profileCaptureStatus: 'not_captured' | 'processing' | 'captured' | 'partial' | 'failed';
+  lastCapturedAt: string | null;
+  dataCompleteness: number;
+  rowVersion: number;
   outreachStatus: string | null;
   approachedAt: string | null;
   connectionStatus: string | null;
@@ -474,6 +491,27 @@ export interface Lead {
   aiScore?: number | null;
   aiClassification?: string | null;
   scoreJobStatus?: string | null;
+}
+
+export interface Prospect extends Lead {
+  claimedBy: string | null;
+  claimExpiresAt: string | null;
+}
+
+export interface ProspectImportJob {
+  id: string;
+  batchId: string | null;
+  name: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  totalRows: number;
+  processedRows: number;
+  createdCount: number;
+  duplicateCount: number;
+  invalidCount: number;
+  errorRows: Array<{ row: number; error: string }> | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface TagDefinition {

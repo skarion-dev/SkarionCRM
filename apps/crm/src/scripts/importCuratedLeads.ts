@@ -280,10 +280,13 @@ const result = await (async (tx: typeof db) => {
       }
       leadValues.push({
         leadNumber: formatLeadNumber(typeof sequence === 'string' ? BigInt(sequence) : sequence),
+        leadSequence:
+          typeof sequence === 'string' ? Number.parseInt(sequence, 10) : Number(sequence),
         firstName: candidate.firstName,
         lastName: candidate.lastName,
         email: candidate.email,
         linkedinUrl: candidate.linkedinUrl,
+        linkedinProfileKey: canonicalLinkedIn(candidate.linkedinUrl),
         source: 'linkedin',
         status: 'new',
         journeyStage: 'new',

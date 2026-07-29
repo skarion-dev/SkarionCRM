@@ -62,13 +62,14 @@ import * as docConv from './lib/document-converter.js';
 import { cleanMarkdownForAi, estimateTokens } from './lib/markdown-utils.js';
 import {
   canonicalizeLinkedinUrl,
+  linkedinProfileKey,
   normalizePhoneKey,
   isRealEmail,
   findExactMatch,
   buildLeadEnrichmentPatch,
   findNameEnrichmentCandidate,
 } from './lib/leadDedup.js';
-import { nextLeadNumber } from './lib/leadNumber.js';
+import { formatLeadNumber, nextLeadIdentity } from './lib/leadNumber.js';
 import { buildLeadConditions, parseCommaList, resolveLeadSortColumn } from './lib/leadFilters.js';
 import { shouldAutoGenerateLinkedinConnectionNote } from './lib/leadAutomation.js';
 import {
@@ -96,6 +97,15 @@ import {
   tagSlug,
   type LeadJourneyStage,
 } from './lib/leadJourney.js';
+import {
+  calculateLeadCompleteness,
+  deriveProspectName,
+  dispositionTag,
+  isProspectDisposition,
+  normalizeProspectCsvRecord,
+  type ProspectDisposition,
+  type ProspectCsvRow,
+} from './lib/prospects.js';
 
 async function ensureTagDefinitions(
   db: CrmDb,
@@ -123,6 +133,378 @@ async function unknownTagNames(db: CrmDb, values: unknown): Promise<string[]> {
     .from(schema.tagDefinitions);
   const known = new Set(definitions.map((tag) => tag.name.toLowerCase()));
   return names.filter((name) => !known.has(name.toLowerCase()));
+}
+
+const DEFAULT_WORKSPACE_ID = schema.DEFAULT_WORKSPACE_ID;
+
+async function publishLeadEvent(
+  db: CrmDb,
+  eventType: string,
+  actorUserId: string | null,
+  lead: typeof schema.leads.$inferSelect
+): Promise<void> {
+  await db.insert(schema.leadEventOutbox).values({
+    workspaceId: lead.workspaceId,
+    leadId: lead.id,
+    eventType,
+    actorUserId,
+    payload: {
+      lead,
+      occurredAt: new Date().toISOString(),
+    },
+  });
+}
+
+function profileString(profile: Record<string, unknown>, key: string): string | null {
+  const value = profile[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function mergeLeadTags(existing: unknown, additions: string[], removals: string[] = []): string[] {
+  const remove = new Set(removals.map((tag) => tag.toLowerCase()));
+  return normalizeTagNames([
+    ...(Array.isArray(existing) ? existing : []).filter(
+      (tag): tag is string => typeof tag === 'string' && !remove.has(tag.toLowerCase())
+    ),
+    ...additions,
+  ]);
+}
+
+async function reviewProspect(
+  db: CrmDb,
+  lead: typeof schema.leads.$inferSelect,
+  actorUserId: string,
+  disposition: ProspectDisposition,
+  profile: Record<string, unknown> | null,
+  expectedVersion?: number
+): Promise<typeof schema.leads.$inferSelect> {
+  if (expectedVersion && lead.rowVersion !== expectedVersion) {
+    throw new Error('PROSPECT_VERSION_CONFLICT');
+  }
+  if (lead.reviewState !== 'pending' && lead.reviewDisposition === disposition && !profile) {
+    return lead;
+  }
+
+  const now = new Date();
+  const accepted = disposition !== 'disqualified';
+  const journeyStage: LeadJourneyStage =
+    disposition === 'disqualified' ? 'disqualified' : disposition === 'future' ? 'nurture' : 'new';
+  const legacy = legacyFieldsForJourney(journeyStage);
+  const profileName = profileString(profile ?? {}, 'name');
+  const name = profileName ? deriveProspectName(profileName, lead.linkedinUrl ?? '') : null;
+  const companyName =
+    profileString(profile ?? {}, 'companyName') ??
+    profileString(profile ?? {}, 'currentCompanies')
+      ?.split(',')[0]
+      ?.trim() ??
+    null;
+  const headline = profileString(profile ?? {}, 'headline');
+  const location = profileString(profile ?? {}, 'location');
+  const about = profileString(profile ?? {}, 'about');
+  const experience = profileString(profile ?? {}, 'experience');
+  const education = profileString(profile ?? {}, 'education');
+  const skills = profileString(profile ?? {}, 'skills');
+  const linkedinUrl =
+    canonicalizeLinkedinUrl(profileString(profile ?? {}, 'profileUrl')) ?? lead.linkedinUrl;
+  const captureReceived = Boolean(profile);
+  const tags = await ensureTagDefinitions(
+    db,
+    mergeLeadTags(
+      lead.tags,
+      [dispositionTag(disposition)],
+      captureReceived ? ['needs profile capture'] : []
+    ),
+    actorUserId
+  );
+  const completeness = calculateLeadCompleteness({
+    firstName: name?.firstName ?? lead.firstName,
+    lastName: name?.lastName ?? lead.lastName,
+    linkedinUrl,
+    companyName: companyName ?? lead.companyName,
+    email: lead.email,
+    phone: lead.phone,
+    headline: headline ?? lead.headline,
+    location: location ?? lead.location,
+    about: about ?? lead.about,
+  });
+
+  if (profile) {
+    const payloadText = JSON.stringify(profile);
+    await db.insert(schema.leadProfileCaptures).values({
+      workspaceId: lead.workspaceId,
+      leadId: lead.id,
+      capturedBy: actorUserId,
+      payload: profile,
+      payloadHash: await sha256Hex(payloadText),
+    });
+  }
+
+  const [updated] = await db
+    .update(schema.leads)
+    .set({
+      firstName: name?.firstName ?? lead.firstName,
+      lastName: name?.lastName ?? lead.lastName,
+      linkedinUrl,
+      linkedinProfileKey: linkedinProfileKey(linkedinUrl),
+      headline: headline ?? lead.headline,
+      location: location ?? lead.location,
+      about: about ?? lead.about,
+      experience: experience ?? lead.experience,
+      education: education ?? lead.education,
+      skills: skills ?? lead.skills,
+      companyName: companyName ?? lead.companyName,
+      reviewState: accepted ? 'accepted' : 'rejected',
+      reviewDisposition: disposition,
+      reviewedAt: now,
+      reviewedBy: actorUserId,
+      profileCaptureStatus: captureReceived ? 'captured' : lead.profileCaptureStatus,
+      lastCapturedAt: captureReceived ? now : lead.lastCapturedAt,
+      dataCompleteness: completeness,
+      rowVersion: sql`${schema.leads.rowVersion} + 1`,
+      journeyStage,
+      status: legacy.status,
+      outreachStatus: legacy.outreachStatus,
+      tags,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(schema.leads.id, lead.id),
+        expectedVersion ? eq(schema.leads.rowVersion, expectedVersion) : sql`true`
+      )
+    )
+    .returning();
+  if (!updated) throw new Error('PROSPECT_VERSION_CONFLICT');
+
+  await db
+    .delete(schema.prospectReviewClaims)
+    .where(eq(schema.prospectReviewClaims.leadId, lead.id));
+  if (accepted && disposition !== 'future') {
+    await db
+      .insert(schema.leadScoreJobs)
+      .values({ leadId: lead.id })
+      .onConflictDoNothing({ target: schema.leadScoreJobs.leadId });
+    await autoCreateLeadChannels(db, updated);
+  }
+  await withAudit(db, schema.auditLog, {
+    actorUserId,
+    action: accepted ? 'accept_prospect' : 'disqualify_prospect',
+    resourceType: 'lead',
+    resourceId: lead.id,
+    before: lead,
+    after: updated,
+    app: 'crm',
+  });
+  await publishLeadEvent(db, 'prospect.reviewed', actorUserId, updated);
+  return updated;
+}
+
+function chunksOf<T>(values: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size));
+  }
+  return chunks;
+}
+
+async function processProspectImport(
+  db: CrmDb,
+  jobId: string,
+  batch: typeof schema.importBatches.$inferSelect,
+  actorUserId: string,
+  candidates: ProspectCsvRow[],
+  invalidRows: Array<{ row: number; error: string }>
+): Promise<void> {
+  try {
+    await db
+      .update(schema.prospectImportJobs)
+      .set({ status: 'processing', processedRows: 0, updatedAt: new Date() })
+      .where(eq(schema.prospectImportJobs.id, jobId));
+
+    const existingByKey = new Map<string, { id: string; workspaceId: string }>();
+    for (const keyChunk of chunksOf(
+      candidates.map((candidate) => candidate.linkedinProfileKey),
+      400
+    )) {
+      const rows = await db
+        .select({
+          id: schema.leads.id,
+          workspaceId: schema.leads.workspaceId,
+          linkedinProfileKey: schema.leads.linkedinProfileKey,
+        })
+        .from(schema.leads)
+        .where(
+          and(
+            eq(schema.leads.workspaceId, batch.workspaceId),
+            inArray(schema.leads.linkedinProfileKey, keyChunk),
+            isNull(schema.leads.deletedAt)
+          )
+        );
+      for (const row of rows) {
+        if (row.linkedinProfileKey) existingByKey.set(row.linkedinProfileKey, row);
+      }
+    }
+
+    const newCandidates = candidates.filter(
+      (candidate) => !existingByKey.has(candidate.linkedinProfileKey)
+    );
+    const tagNames = await ensureTagDefinitions(
+      db,
+      [batch.name, 'needs profile capture'],
+      actorUserId
+    );
+    const leadValues: Array<typeof schema.leads.$inferInsert> = [];
+    if (newCandidates.length > 0) {
+      const sequenceResult = await db.execute(
+        sql`SELECT nextval('crm.lead_number_seq') AS seq
+            FROM generate_series(1, ${newCandidates.length}::integer)`
+      );
+      const sequenceRows =
+        (sequenceResult as unknown as { rows?: Array<{ seq?: string | number }> }).rows ?? [];
+      if (sequenceRows.length !== newCandidates.length) {
+        throw new Error('Lead number sequence returned an unexpected row count.');
+      }
+      for (let index = 0; index < newCandidates.length; index += 1) {
+        const candidate = newCandidates[index];
+        const rawSequence = sequenceRows[index]?.seq;
+        if (!candidate || rawSequence === undefined) throw new Error('Missing lead sequence.');
+        const sequence =
+          typeof rawSequence === 'string' ? Number.parseInt(rawSequence, 10) : rawSequence;
+        leadValues.push({
+          workspaceId: batch.workspaceId,
+          leadNumber: formatLeadNumber(sequence),
+          leadSequence: sequence,
+          firstName: candidate.firstName,
+          lastName: candidate.lastName,
+          email: candidate.email,
+          phone: candidate.phone,
+          companyName: candidate.companyName,
+          linkedinUrl: candidate.linkedinUrl,
+          linkedinProfileKey: candidate.linkedinProfileKey,
+          source: 'linkedin',
+          status: 'new',
+          journeyStage: 'new',
+          outreachStatus: 'not_approached',
+          reviewState: 'pending',
+          profileCaptureStatus: 'not_captured',
+          dataCompleteness: calculateLeadCompleteness(candidate),
+          notes: candidate.notes,
+          sourceSheet: batch.name,
+          originalRowNumber: candidate.sourceRow,
+          tags: tagNames,
+          ownerId: actorUserId,
+          batchId: batch.id,
+          idempotencyKey: `prospect-import:${batch.id}:${candidate.linkedinProfileKey}`,
+        });
+      }
+    }
+
+    const created: Array<{ id: string; linkedinProfileKey: string | null }> = [];
+    for (const valueChunk of chunksOf(leadValues, 200)) {
+      const rows = await db
+        .insert(schema.leads)
+        .values(valueChunk)
+        .onConflictDoNothing()
+        .returning({
+          id: schema.leads.id,
+          linkedinProfileKey: schema.leads.linkedinProfileKey,
+        });
+      created.push(...rows);
+    }
+    const createdByKey = new Map(
+      created
+        .filter((row): row is { id: string; linkedinProfileKey: string } =>
+          Boolean(row.linkedinProfileKey)
+        )
+        .map((row) => [row.linkedinProfileKey, row.id])
+    );
+    const unresolvedKeys = candidates
+      .map((candidate) => candidate.linkedinProfileKey)
+      .filter((key) => !existingByKey.has(key) && !createdByKey.has(key));
+    for (const keyChunk of chunksOf(unresolvedKeys, 400)) {
+      if (keyChunk.length === 0) continue;
+      const racedRows = await db
+        .select({
+          id: schema.leads.id,
+          workspaceId: schema.leads.workspaceId,
+          linkedinProfileKey: schema.leads.linkedinProfileKey,
+        })
+        .from(schema.leads)
+        .where(
+          and(
+            eq(schema.leads.workspaceId, batch.workspaceId),
+            inArray(schema.leads.linkedinProfileKey, keyChunk),
+            isNull(schema.leads.deletedAt)
+          )
+        );
+      for (const row of racedRows) {
+        if (row.linkedinProfileKey) existingByKey.set(row.linkedinProfileKey, row);
+      }
+    }
+    const memberships = candidates
+      .map((candidate) => {
+        const leadId =
+          existingByKey.get(candidate.linkedinProfileKey)?.id ??
+          createdByKey.get(candidate.linkedinProfileKey);
+        return leadId
+          ? {
+              workspaceId: batch.workspaceId,
+              leadId,
+              batchId: batch.id,
+              sourceRow: candidate.sourceRow,
+            }
+          : null;
+      })
+      .filter((row): row is NonNullable<typeof row> => Boolean(row));
+    for (const membershipChunk of chunksOf(memberships, 300)) {
+      await db.insert(schema.leadImportMemberships).values(membershipChunk).onConflictDoNothing();
+    }
+
+    const duplicateCount = candidates.length - created.length;
+    await db
+      .update(schema.importBatches)
+      .set({ importedCount: created.length, duplicatesSkipped: duplicateCount })
+      .where(eq(schema.importBatches.id, batch.id));
+    await db
+      .update(schema.prospectImportJobs)
+      .set({
+        status: 'completed',
+        processedRows: candidates.length + invalidRows.length,
+        createdCount: created.length,
+        duplicateCount,
+        invalidCount: invalidRows.length,
+        errorRows: invalidRows,
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.prospectImportJobs.id, jobId));
+    await db.insert(schema.leadEventOutbox).values({
+      workspaceId: batch.workspaceId,
+      eventType: 'prospect.import.completed',
+      actorUserId,
+      payload: {
+        jobId,
+        batchId: batch.id,
+        createdCount: created.length,
+        duplicateCount,
+        invalidCount: invalidRows.length,
+      },
+    });
+  } catch (error) {
+    await db
+      .update(schema.prospectImportJobs)
+      .set({
+        status: 'failed',
+        errorRows: [
+          ...invalidRows,
+          { row: 0, error: error instanceof Error ? error.message : 'Import failed.' },
+        ],
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.prospectImportJobs.id, jobId));
+    throw error;
+  }
 }
 
 // --- Outreach status summary ---
@@ -423,10 +805,16 @@ async function enrichExtensionLead(
     await linkImportedLinkedInConversationsToLead(db, existing);
     return { lead: existing, enrichedFields };
   }
+  const databasePatch = {
+    ...patch,
+    ...(typeof patch.linkedinUrl === 'string'
+      ? { linkedinProfileKey: linkedinProfileKey(patch.linkedinUrl) }
+      : {}),
+  };
 
   const [lead] = await db
     .update(schema.leads)
-    .set({ ...patch, updatedAt: new Date() })
+    .set({ ...databasePatch, updatedAt: new Date() })
     .where(eq(schema.leads.id, existing.id))
     .returning();
   if (!lead) return { lead: existing, enrichedFields: [] };
@@ -686,8 +1074,10 @@ app.post('/extension/leads', async (c) => {
   });
   const extensionLegacy = legacyFieldsForJourney(extensionJourneyStage);
   const extensionTags = await ensureTagDefinitions(db, body.tags, ownerId);
+  const extensionIdentity = await nextLeadIdentity(db);
   const data = {
-    leadNumber: await nextLeadNumber(db),
+    ...extensionIdentity,
+    workspaceId: DEFAULT_WORKSPACE_ID,
     firstName: String(body.firstName ?? '').trim() || displayName,
     lastName: String(body.lastName ?? '').trim(),
     email,
@@ -695,6 +1085,7 @@ app.post('/extension/leads', async (c) => {
     companyName: body.companyName ?? null,
     companyDomain: body.companyDomain ?? null,
     linkedinUrl,
+    linkedinProfileKey: linkedinProfileKey(linkedinUrl),
     outreachStatus: extensionLegacy.outreachStatus,
     tags: extensionTags.length > 0 ? extensionTags : null,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -777,6 +1168,112 @@ app.post('/extension/leads', async (c) => {
     },
     201
   );
+});
+
+app.post('/extension/prospects/resolve', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const resolved = await resolveExtensionKeyOwner(db, readExtensionKey(c));
+  if (!resolved) return c.json({ error: 'Invalid or missing API key.' }, 401);
+  const body = await c.req.json();
+  const profileKey = linkedinProfileKey(body.linkedinUrl);
+  if (!profileKey) return c.json({ error: 'A valid LinkedIn profile URL is required.' }, 400);
+
+  const [lead] = await db
+    .select()
+    .from(schema.leads)
+    .where(
+      and(
+        eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
+        eq(schema.leads.linkedinProfileKey, profileKey),
+        isNull(schema.leads.deletedAt)
+      )
+    )
+    .limit(1);
+  return c.json({ lead: lead ?? null, found: Boolean(lead) });
+});
+
+app.post('/extension/prospects/review', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const resolved = await resolveExtensionKeyOwner(db, readExtensionKey(c));
+  if (!resolved) return c.json({ error: 'Invalid or missing API key.' }, 401);
+  const body = (await c.req.json()) as Record<string, unknown>;
+  if (!isProspectDisposition(body.disposition)) {
+    return c.json({ error: 'Choose a valid review decision.' }, 400);
+  }
+  const profile =
+    body.profile && typeof body.profile === 'object'
+      ? (body.profile as Record<string, unknown>)
+      : null;
+  const linkedinUrl = canonicalizeLinkedinUrl(
+    profileString(profile ?? {}, 'profileUrl') ?? body.linkedinUrl
+  );
+  const profileKey = linkedinProfileKey(linkedinUrl);
+  if (!linkedinUrl || !profileKey) {
+    return c.json({ error: 'A valid LinkedIn profile URL is required.' }, 400);
+  }
+
+  let [lead] = await db
+    .select()
+    .from(schema.leads)
+    .where(
+      and(
+        eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
+        eq(schema.leads.linkedinProfileKey, profileKey),
+        isNull(schema.leads.deletedAt)
+      )
+    )
+    .limit(1);
+  let createdFromExtension = false;
+  if (!lead) {
+    const identity = await nextLeadIdentity(db);
+    const name = deriveProspectName(profileString(profile ?? {}, 'name'), linkedinUrl);
+    const initialTags = await ensureTagDefinitions(db, ['needs profile capture'], resolved.userId);
+    [lead] = await db
+      .insert(schema.leads)
+      .values({
+        workspaceId: DEFAULT_WORKSPACE_ID,
+        ...identity,
+        firstName: name.firstName,
+        lastName: name.lastName,
+        linkedinUrl,
+        linkedinProfileKey: profileKey,
+        source: 'linkedin',
+        ownerId: resolved.userId,
+        reviewState: 'pending',
+        profileCaptureStatus: 'processing',
+        tags: initialTags,
+        status: 'new',
+        journeyStage: 'new',
+        outreachStatus: 'not_approached',
+      })
+      .returning();
+    if (!lead) return c.json({ error: 'Could not create prospect.' }, 500);
+    createdFromExtension = true;
+  }
+
+  try {
+    const reviewed = await reviewProspect(
+      db,
+      lead,
+      resolved.userId,
+      body.disposition,
+      profile,
+      typeof body.rowVersion === 'number' ? body.rowVersion : undefined
+    );
+    if (body.disposition !== 'future' && body.disposition !== 'disqualified') {
+      c.executionCtx.waitUntil(
+        generateAndSaveLeadAiAssessment(db, reviewed, c.env).catch((error) =>
+          console.error('Accepted prospect AI assessment failed:', error)
+        )
+      );
+    }
+    return c.json({ lead: reviewed, createdFromExtension });
+  } catch (error) {
+    if (error instanceof Error && error.message === 'PROSPECT_VERSION_CONFLICT') {
+      return c.json({ error: 'This prospect changed in another session. Refresh and retry.' }, 409);
+    }
+    throw error;
+  }
 });
 
 app.post('/internal/lead-score-queue/drain', async (c) => {
@@ -862,6 +1359,8 @@ async function getConfiguredAiEnv(db: CrmDb, env: Env, actorUserId?: string | nu
       ...settings.agentModels,
       // Lead scoring is intentionally pinned to the cheapest Flash route.
       'lead-scorer': DEFAULT_AI_MODELS.cheap,
+      'prospect-profile': DEFAULT_AI_MODELS.cheap,
+      'linkedin-connection-writer': DEFAULT_AI_MODELS.cheap,
     }),
     AI_USAGE_RECORDER: async (record) => {
       await db.insert(schema.aiUsageEvents).values({
@@ -921,7 +1420,17 @@ async function generateAndSaveLeadScore(
       companyName: lead.companyName,
       status: lead.journeyStage,
       source: lead.source,
-      notes: lead.notes,
+      notes: [
+        lead.notes,
+        lead.headline ? `Headline: ${lead.headline}` : null,
+        lead.location ? `Location: ${lead.location}` : null,
+        lead.about ? `About: ${lead.about}` : null,
+        lead.experience ? `Experience: ${lead.experience}` : null,
+        lead.education ? `Education: ${lead.education}` : null,
+        lead.skills ? `Skills: ${lead.skills}` : null,
+      ]
+        .filter(Boolean)
+        .join('\n'),
     },
     aiEnv
   );
@@ -1000,7 +1509,13 @@ async function drainLeadScoreQueue(db: CrmDb, env: Env, limit: number) {
         db
           .select()
           .from(schema.leads)
-          .where(and(eq(schema.leads.id, job.leadId), isNull(schema.leads.deletedAt)))
+          .where(
+            and(
+              eq(schema.leads.id, job.leadId),
+              eq(schema.leads.reviewState, 'accepted'),
+              isNull(schema.leads.deletedAt)
+            )
+          )
           .limit(1),
         db
           .select({ leadId: schema.leadAiAssessments.leadId })
@@ -1077,7 +1592,17 @@ async function generateAndSaveLeadAiAssessment(
     companyName: lead.companyName,
     status: lead.journeyStage,
     source: lead.source,
-    notes: lead.notes,
+    notes: [
+      lead.notes,
+      lead.headline ? `Headline: ${lead.headline}` : null,
+      lead.location ? `Location: ${lead.location}` : null,
+      lead.about ? `About: ${lead.about}` : null,
+      lead.experience ? `Experience: ${lead.experience}` : null,
+      lead.education ? `Education: ${lead.education}` : null,
+      lead.skills ? `Skills: ${lead.skills}` : null,
+    ]
+      .filter(Boolean)
+      .join('\n'),
   };
   const [assessment, connectionNote] = await Promise.all([
     ai.qualifyLead(input, aiEnv),
@@ -1568,6 +2093,406 @@ app.post('/api/tags', async (c) => {
   return c.json({ tag, created: true }, 201);
 });
 
+// --- PROSPECT REVIEW ---
+
+app.get('/api/prospects', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  if (!getRole(c)) return c.json({ error: 'Forbidden.' }, 403);
+  const page = Math.max(1, Number.parseInt(c.req.query('page') || '1', 10));
+  const pageSize = Math.min(
+    200,
+    Math.max(1, Number.parseInt(c.req.query('pageSize') || '100', 10))
+  );
+  const search = c.req.query('search')?.trim().toLowerCase();
+  const batchId = c.req.query('batchId');
+  const captureStatus = c.req.query('captureStatus');
+  const claimed = c.req.query('claimed');
+  const requestedReviewState = c.req.query('reviewState');
+  const reviewState = requestedReviewState === 'rejected' ? 'rejected' : 'pending';
+  const leadFrom = Number.parseInt(c.req.query('leadFrom') || '', 10);
+  const leadTo = Number.parseInt(c.req.query('leadTo') || '', 10);
+  const userId = c.get('userId');
+  const conditions = [
+    eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
+    eq(schema.leads.reviewState, reviewState),
+    isNull(schema.leads.deletedAt),
+  ];
+  if (search) {
+    const searchCondition = or(
+      like(sql`lower(${schema.leads.firstName})`, `%${search}%`),
+      like(sql`lower(${schema.leads.lastName})`, `%${search}%`),
+      like(sql`lower(${schema.leads.companyName})`, `%${search}%`),
+      like(sql`lower(${schema.leads.linkedinUrl})`, `%${search}%`),
+      like(sql`lower(${schema.leads.leadNumber})`, `%${search}%`)
+    );
+    if (searchCondition) conditions.push(searchCondition);
+  }
+  if (Number.isFinite(leadFrom)) conditions.push(gte(schema.leads.leadSequence, leadFrom));
+  if (Number.isFinite(leadTo)) conditions.push(lte(schema.leads.leadSequence, leadTo));
+  if (batchId) {
+    conditions.push(
+      sql`EXISTS (
+        SELECT 1 FROM ${schema.leadImportMemberships} membership
+        WHERE membership.lead_id = ${schema.leads.id}
+          AND membership.batch_id = ${batchId}::uuid
+      )`
+    );
+  }
+  if (
+    captureStatus &&
+    ['not_captured', 'processing', 'captured', 'partial', 'failed'].includes(captureStatus)
+  ) {
+    conditions.push(eq(schema.leads.profileCaptureStatus, captureStatus as never));
+  }
+  if (claimed === 'mine') {
+    conditions.push(
+      sql`${schema.prospectReviewClaims.claimedBy} = ${userId}
+          AND ${schema.prospectReviewClaims.expiresAt} > now()`
+    );
+  } else if (claimed === 'unclaimed') {
+    conditions.push(
+      sql`(${schema.prospectReviewClaims.leadId} IS NULL
+          OR ${schema.prospectReviewClaims.expiresAt} <= now())`
+    );
+  }
+
+  const sortBy = c.req.query('sortBy') || 'leadSequence';
+  const sortOrder = c.req.query('sortOrder') === 'desc' ? 'desc' : 'asc';
+  const sortColumns: Record<string, unknown> = {
+    leadSequence: schema.leads.leadSequence,
+    name: sql`lower(${schema.leads.firstName} || ' ' || ${schema.leads.lastName})`,
+    createdAt: schema.leads.createdAt,
+    updatedAt: schema.leads.updatedAt,
+    companyName: schema.leads.companyName,
+    profileCaptureStatus: schema.leads.profileCaptureStatus,
+    dataCompleteness: schema.leads.dataCompleteness,
+  };
+  const sortColumn = sortColumns[sortBy] ?? schema.leads.leadSequence;
+  const ordering =
+    sortOrder === 'desc'
+      ? sql`${sortColumn as never} desc nulls last`
+      : sql`${sortColumn as never} asc nulls last`;
+
+  const [{ count = 0 } = { count: 0 }] = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(schema.leads)
+    .leftJoin(schema.prospectReviewClaims, eq(schema.prospectReviewClaims.leadId, schema.leads.id))
+    .where(and(...conditions));
+  const prospects = await db
+    .select({
+      ...getTableColumns(schema.leads),
+      claimedBy: schema.prospectReviewClaims.claimedBy,
+      claimExpiresAt: schema.prospectReviewClaims.expiresAt,
+    })
+    .from(schema.leads)
+    .leftJoin(schema.prospectReviewClaims, eq(schema.prospectReviewClaims.leadId, schema.leads.id))
+    .where(and(...conditions))
+    .orderBy(ordering)
+    .limit(pageSize)
+    .offset((page - 1) * pageSize);
+  return c.json({
+    prospects,
+    page,
+    pageSize,
+    total: Number(count),
+    totalPages: Math.ceil(Number(count) / pageSize),
+  });
+});
+
+app.post('/api/prospects/import', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const role = getRole(c);
+  if (!role) return c.json({ error: 'Forbidden.' }, 403);
+  const userId = c.get('userId');
+  const body = await c.req.json();
+  const csv = typeof body.csv === 'string' ? body.csv : '';
+  const name =
+    typeof body.name === 'string' && body.name.trim()
+      ? body.name.trim().slice(0, 120)
+      : `Prospect import ${new Date().toISOString()}`;
+  if (!csv) return c.json({ error: 'Upload a CSV file.' }, 400);
+  if (new TextEncoder().encode(csv).byteLength > 8_000_000) {
+    return c.json({ error: 'CSV is too large. Maximum size is 8 MB.' }, 413);
+  }
+  const parsed = Papa.parse<Record<string, unknown>>(csv, {
+    header: true,
+    skipEmptyLines: 'greedy',
+  });
+  if (parsed.data.length === 0) return c.json({ error: 'The CSV has no data rows.' }, 400);
+  if (parsed.data.length > 10_000) {
+    return c.json({ error: 'Maximum 10,000 rows per import.' }, 413);
+  }
+
+  const invalidRows: Array<{ row: number; error: string }> = [];
+  const byProfileKey = new Map<string, ProspectCsvRow>();
+  for (let index = 0; index < parsed.data.length; index += 1) {
+    const normalized = normalizeProspectCsvRecord(parsed.data[index] ?? {}, index + 2);
+    if (!normalized.row) {
+      invalidRows.push({ row: index + 2, error: normalized.error ?? 'Invalid row.' });
+      continue;
+    }
+    if (!byProfileKey.has(normalized.row.linkedinProfileKey)) {
+      byProfileKey.set(normalized.row.linkedinProfileKey, normalized.row);
+    } else {
+      invalidRows.push({ row: index + 2, error: 'Duplicate LinkedIn URL inside this CSV.' });
+    }
+  }
+  const candidates = [...byProfileKey.values()];
+  if (candidates.length === 0) {
+    return c.json({ error: 'No valid LinkedIn profile URLs were found.', invalidRows }, 400);
+  }
+
+  const [batch] = await db
+    .insert(schema.importBatches)
+    .values({
+      workspaceId: DEFAULT_WORKSPACE_ID,
+      name,
+      importedByUserId: userId,
+      source: 'linkedin',
+      totalRows: parsed.data.length,
+      defaultTags: [name, 'needs profile capture'],
+    })
+    .returning();
+  if (!batch) return c.json({ error: 'Could not create import batch.' }, 500);
+  const [job] = await db
+    .insert(schema.prospectImportJobs)
+    .values({
+      workspaceId: DEFAULT_WORKSPACE_ID,
+      batchId: batch.id,
+      createdBy: userId,
+      name,
+      status: 'pending',
+      totalRows: parsed.data.length,
+      invalidCount: invalidRows.length,
+      errorRows: invalidRows,
+    })
+    .returning();
+  if (!job) return c.json({ error: 'Could not create import job.' }, 500);
+  c.executionCtx.waitUntil(
+    processProspectImport(db, job.id, batch, userId, candidates, invalidRows).catch((error) =>
+      console.error('Prospect import failed:', error)
+    )
+  );
+  return c.json({ job, batchId: batch.id, validRows: candidates.length, invalidRows }, 202);
+});
+
+app.get('/api/prospects/imports/:id', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  if (!getRole(c)) return c.json({ error: 'Forbidden.' }, 403);
+  const [job] = await db
+    .select()
+    .from(schema.prospectImportJobs)
+    .where(
+      and(
+        eq(schema.prospectImportJobs.id, c.req.param('id')),
+        eq(schema.prospectImportJobs.workspaceId, DEFAULT_WORKSPACE_ID)
+      )
+    )
+    .limit(1);
+  return job ? c.json({ job }) : c.json({ error: 'Import job not found.' }, 404);
+});
+
+app.post('/api/prospects/claim-next', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  if (!getRole(c)) return c.json({ error: 'Forbidden.' }, 403);
+  const userId = c.get('userId');
+  const body = await c.req.json();
+  const requested = Number(body.limit ?? 10);
+  const limit = Math.min(10, Math.max(1, Number.isFinite(requested) ? requested : 10));
+  const leadFrom = Number(body.leadFrom);
+  const leadTo = Number(body.leadTo);
+  const search = typeof body.search === 'string' ? body.search.trim().toLowerCase() : '';
+  const batchId =
+    typeof body.batchId === 'string' && /^[0-9a-f-]{36}$/i.test(body.batchId) ? body.batchId : '';
+  const captureStatus =
+    typeof body.captureStatus === 'string' &&
+    ['not_captured', 'processing', 'captured', 'partial', 'failed'].includes(body.captureStatus)
+      ? body.captureStatus
+      : '';
+  const sortBy =
+    typeof body.sortBy === 'string' &&
+    [
+      'leadSequence',
+      'name',
+      'createdAt',
+      'updatedAt',
+      'companyName',
+      'profileCaptureStatus',
+      'dataCompleteness',
+    ].includes(body.sortBy)
+      ? body.sortBy
+      : 'leadSequence';
+  const sortOrder = body.sortOrder === 'desc' ? 'desc' : 'asc';
+  const result = await db.execute(sql`
+    WITH candidates AS (
+      SELECT lead.id
+      FROM crm.leads lead
+      LEFT JOIN crm.prospect_review_claims claim ON claim.lead_id = lead.id
+      WHERE lead.workspace_id = ${DEFAULT_WORKSPACE_ID}::uuid
+        AND lead.review_state = 'pending'
+        AND lead.deleted_at IS NULL
+        AND lead.linkedin_url IS NOT NULL
+        AND (${Number.isFinite(leadFrom) ? leadFrom : null}::bigint IS NULL
+          OR lead.lead_sequence >= ${Number.isFinite(leadFrom) ? leadFrom : null})
+        AND (${Number.isFinite(leadTo) ? leadTo : null}::bigint IS NULL
+          OR lead.lead_sequence <= ${Number.isFinite(leadTo) ? leadTo : null})
+        AND (${search || null}::text IS NULL OR
+          lower(
+            coalesce(lead.first_name, '') || ' ' ||
+            coalesce(lead.last_name, '') || ' ' ||
+            coalesce(lead.company_name, '') || ' ' ||
+            coalesce(lead.linkedin_url, '') || ' ' ||
+            coalesce(lead.lead_number, '')
+          ) LIKE ${search ? `%${search}%` : null})
+        AND (${captureStatus || null}::text IS NULL
+          OR lead.profile_capture_status::text = ${captureStatus || null})
+        AND (${batchId || null}::uuid IS NULL OR EXISTS (
+          SELECT 1 FROM crm.lead_import_memberships membership
+          WHERE membership.lead_id = lead.id
+            AND membership.batch_id = ${batchId || null}::uuid
+        ))
+        AND (claim.lead_id IS NULL OR claim.expires_at <= now() OR claim.claimed_by = ${userId}::uuid)
+      ORDER BY
+        CASE WHEN ${sortBy} = 'leadSequence' AND ${sortOrder} = 'asc'
+          THEN lead.lead_sequence END ASC NULLS LAST,
+        CASE WHEN ${sortBy} = 'leadSequence' AND ${sortOrder} = 'desc'
+          THEN lead.lead_sequence END DESC NULLS LAST,
+        CASE WHEN ${sortBy} = 'name' AND ${sortOrder} = 'asc'
+          THEN lower(lead.first_name || ' ' || lead.last_name) END ASC NULLS LAST,
+        CASE WHEN ${sortBy} = 'name' AND ${sortOrder} = 'desc'
+          THEN lower(lead.first_name || ' ' || lead.last_name) END DESC NULLS LAST,
+        CASE WHEN ${sortBy} = 'createdAt' AND ${sortOrder} = 'asc'
+          THEN lead.created_at END ASC NULLS LAST,
+        CASE WHEN ${sortBy} = 'createdAt' AND ${sortOrder} = 'desc'
+          THEN lead.created_at END DESC NULLS LAST,
+        CASE WHEN ${sortBy} = 'updatedAt' AND ${sortOrder} = 'asc'
+          THEN lead.updated_at END ASC NULLS LAST,
+        CASE WHEN ${sortBy} = 'updatedAt' AND ${sortOrder} = 'desc'
+          THEN lead.updated_at END DESC NULLS LAST,
+        CASE WHEN ${sortBy} = 'companyName' AND ${sortOrder} = 'asc'
+          THEN lower(lead.company_name) END ASC NULLS LAST,
+        CASE WHEN ${sortBy} = 'companyName' AND ${sortOrder} = 'desc'
+          THEN lower(lead.company_name) END DESC NULLS LAST,
+        CASE WHEN ${sortBy} = 'profileCaptureStatus' AND ${sortOrder} = 'asc'
+          THEN lead.profile_capture_status::text END ASC NULLS LAST,
+        CASE WHEN ${sortBy} = 'profileCaptureStatus' AND ${sortOrder} = 'desc'
+          THEN lead.profile_capture_status::text END DESC NULLS LAST,
+        CASE WHEN ${sortBy} = 'dataCompleteness' AND ${sortOrder} = 'asc'
+          THEN lead.data_completeness END ASC NULLS LAST,
+        CASE WHEN ${sortBy} = 'dataCompleteness' AND ${sortOrder} = 'desc'
+          THEN lead.data_completeness END DESC NULLS LAST,
+        lead.lead_sequence ASC NULLS LAST,
+        lead.created_at ASC
+      LIMIT ${limit}
+      FOR UPDATE OF lead SKIP LOCKED
+    )
+    INSERT INTO crm.prospect_review_claims
+      (lead_id, workspace_id, claimed_by, claimed_at, expires_at)
+    SELECT id, ${DEFAULT_WORKSPACE_ID}::uuid, ${userId}::uuid, now(), now() + interval '15 minutes'
+    FROM candidates
+    ON CONFLICT (lead_id) DO UPDATE SET
+      claimed_by = EXCLUDED.claimed_by,
+      claimed_at = EXCLUDED.claimed_at,
+      expires_at = EXCLUDED.expires_at
+    WHERE crm.prospect_review_claims.expires_at <= now()
+       OR crm.prospect_review_claims.claimed_by = EXCLUDED.claimed_by
+    RETURNING lead_id
+  `);
+  const claimedIds = ((result as unknown as { rows?: Array<{ lead_id: string }> }).rows ?? []).map(
+    (row) => row.lead_id
+  );
+  const prospects =
+    claimedIds.length > 0
+      ? await db
+          .select()
+          .from(schema.leads)
+          .where(inArray(schema.leads.id, claimedIds))
+          .orderBy(asc(schema.leads.leadSequence))
+      : [];
+  for (const lead of prospects) {
+    await db.insert(schema.leadEventOutbox).values({
+      workspaceId: lead.workspaceId,
+      leadId: lead.id,
+      eventType: 'prospect.claimed',
+      actorUserId: userId,
+      payload: {
+        lead: {
+          ...lead,
+          claimedBy: userId,
+          claimExpiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+        },
+        occurredAt: new Date().toISOString(),
+      },
+    });
+  }
+  return c.json({ prospects, leaseMinutes: 15 });
+});
+
+app.put('/api/prospects/:id/review', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  if (!getRole(c)) return c.json({ error: 'Forbidden.' }, 403);
+  const body = await c.req.json();
+  if (!isProspectDisposition(body.disposition)) {
+    return c.json({ error: 'Choose a valid review decision.' }, 400);
+  }
+  const [lead] = await db
+    .select()
+    .from(schema.leads)
+    .where(
+      and(
+        eq(schema.leads.id, c.req.param('id')),
+        eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
+        isNull(schema.leads.deletedAt)
+      )
+    )
+    .limit(1);
+  if (!lead) return c.json({ error: 'Prospect not found.' }, 404);
+  try {
+    const updated = await reviewProspect(
+      db,
+      lead,
+      c.get('userId'),
+      body.disposition,
+      null,
+      typeof body.rowVersion === 'number' ? body.rowVersion : undefined
+    );
+    if (body.disposition !== 'future' && body.disposition !== 'disqualified') {
+      c.executionCtx.waitUntil(
+        generateAndSaveLeadAiAssessment(db, updated, c.env).catch((error) =>
+          console.error('Accepted prospect AI assessment failed:', error)
+        )
+      );
+    }
+    return c.json({ lead: updated });
+  } catch (error) {
+    if (error instanceof Error && error.message === 'PROSPECT_VERSION_CONFLICT') {
+      return c.json({ error: 'This prospect changed in another session. Refresh and retry.' }, 409);
+    }
+    throw error;
+  }
+});
+
+app.get('/api/prospect-events', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  if (!getRole(c)) return c.json({ error: 'Forbidden.' }, 403);
+  const after = Math.max(0, Number.parseInt(c.req.query('after') || '0', 10) || 0);
+  const events = await db
+    .select()
+    .from(schema.leadEventOutbox)
+    .where(
+      and(
+        eq(schema.leadEventOutbox.workspaceId, DEFAULT_WORKSPACE_ID),
+        sql`${schema.leadEventOutbox.sequence} > ${after}`
+      )
+    )
+    .orderBy(asc(schema.leadEventOutbox.sequence))
+    .limit(200);
+  return c.json({
+    events,
+    cursor: events.at(-1)?.sequence ?? after,
+  });
+});
+
 // --- LEADS ---
 
 app.get('/api/leads', async (c) => {
@@ -1651,6 +2576,7 @@ app.get('/api/leads', async (c) => {
     .where(
       and(
         isNull(schema.leads.deletedAt),
+        eq(schema.leads.reviewState, 'accepted'),
         ...(!isSuperadmin ? [eq(schema.leads.ownerId, caller.userId)] : [])
       )
     )
@@ -1720,15 +2646,19 @@ app.post('/api/leads', async (c) => {
     isSuperadmin || role === 'manager'
       ? await ensureTagDefinitions(db, requestedTags, caller.userId)
       : requestedTags;
+  const leadIdentity = await nextLeadIdentity(db);
+  const normalizedLinkedInUrl = canonicalizeLinkedinUrl(body.linkedinUrl);
   const data = {
-    leadNumber: await nextLeadNumber(db),
+    ...leadIdentity,
+    workspaceId: DEFAULT_WORKSPACE_ID,
     firstName: body.firstName,
     lastName: body.lastName,
     email: body.email,
     phone: body.phone ?? null,
     companyName: body.companyName ?? null,
     companyDomain: body.companyDomain ?? null,
-    linkedinUrl: body.linkedinUrl ?? null,
+    linkedinUrl: normalizedLinkedInUrl,
+    linkedinProfileKey: linkedinProfileKey(normalizedLinkedInUrl),
     outreachStatus: legacy.outreachStatus,
     approachedAt: body.approachedAt ? new Date(body.approachedAt) : null,
     connectionStatus: body.connectionStatus ?? null,
@@ -4052,17 +4982,21 @@ app.post('/api/import/leads', async (c) => {
       outreachStatus: row.outreachStatus,
     });
     const legacy = legacyFieldsForJourney(journeyStage);
+    const importIdentity = await nextLeadIdentity(db);
+    const importLinkedInUrl = canonicalizeLinkedinUrl(row.linkedinUrl);
     const [result] = await db
       .insert(schema.leads)
       .values({
-        leadNumber: await nextLeadNumber(db),
+        workspaceId: DEFAULT_WORKSPACE_ID,
+        ...importIdentity,
         firstName: row.firstName,
         lastName: row.lastName,
         email: row.email,
         phone: row.phone ?? null,
         companyName: row.companyName ?? null,
         companyDomain: row.companyDomain ?? null,
-        linkedinUrl: row.linkedinUrl ?? null,
+        linkedinUrl: importLinkedInUrl,
+        linkedinProfileKey: linkedinProfileKey(importLinkedInUrl),
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         source: (row.source ?? 'other') as any,
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -6077,10 +7011,12 @@ app.post('/api/leads/import/document/confirm', async (c) => {
     ? await ensureTagDefinitions(db, [documentBatchTag], caller.userId, true)
     : [];
   const documentTags = normalizeTagNames([...documentUserTags, ...documentBatchTags]);
+  const documentIdentity = await nextLeadIdentity(db);
   const [lead] = await db
     .insert(schema.leads)
     .values({
-      leadNumber: await nextLeadNumber(db),
+      workspaceId: DEFAULT_WORKSPACE_ID,
+      ...documentIdentity,
       firstName: leadData.firstName,
       lastName: leadData.lastName,
       email: leadData.email.toLowerCase(),

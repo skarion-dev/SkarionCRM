@@ -1,68 +1,27 @@
-# LinkedIn Profile Capture (Chrome extension)
+# Skarion Prospect Review extension
 
-Captures the currently open LinkedIn profile (name, headline, location,
-about, experience, education, skills, certifications) and sends it straight
-into Skarion CRM as a lead.
+Version 2 reviews one visible LinkedIn profile at a time and writes the
+decision directly to the existing Skarion prospect record.
 
-## Install (unpacked, for internal team use — not published to the Chrome Web Store)
+## Workflow
 
-1. Ask a superadmin to generate you a personal API key: Identity Admin →
-   **API Keys** → enter your email + a label (e.g. "Saki's laptop") →
-   **Generate key**. Copy it immediately — it's shown once and can't be
-   retrieved again.
-2. Chrome → `chrome://extensions` → enable **Developer mode** (top right).
-3. **Load unpacked** → select this `extension/li-profile-capture` folder.
-4. Click the extension icon → ⚙ **Settings** → paste your API key. The CRM
-   URL is pre-filled to production; only change it if you're pointing at a
-   local dev instance.
+1. Import profile URLs into **Prospect Review** in the CRM.
+2. Open a LinkedIn profile manually.
+3. Open the extension and choose **Excellent Fit**, **Worth Trying**,
+   **Maybe**, **Future**, or **Disqualify**.
+4. The extension captures visible profile data in memory, sends the capture
+   and decision to CRM, and discards the payload after confirmation.
 
-## Use
+The extension has no saved-profile queue, capture-only mode, Excel export, or
+bulk-send path. Only the CRM URL and the user's personal extension API key are
+stored locally.
 
-- Nothing is captured or queued automatically. On a `linkedin.com/in/*`
-  profile, choose **Capture only** for review or **Capture & Send to CRM**
-  for the locked one-profile workflow.
-- The popup shows the scraper's live stage, percentage, scroll pass, section
-  count, and recently detected LinkedIn section names. The progress comes
-  directly from the content script rather than an estimated timer.
-- Click the extension icon to see the current local capture. **Captured**
-  means saved locally in Chrome; it has not reached CRM until the profile
-  displays the green **Sent to CRM** badge.
-- Click a profile or **Review & Send to CRM**, review the form, then press
-  **Send to CRM**. The extension only marks the profile as sent after the
-  CRM server confirms the record and provides an **Open in CRM** link.
-- Capture storage has a maximum of one profile. **Capture & Send to CRM**
-  sends only the currently open LinkedIn profile and removes that capture
-  after CRM confirmation, so it cannot bulk-send a queue.
-- **Lead quality tiers**: on a captured profile's detail view, one click on
-  a tier button (Excellent Fit / Good Fit / Future Fit / Indian / Worth
-  Trying) pre-fills the lead form with that tier as a tag and opens it for
-  a final review — this is the actual point of the extension: tag a
-  profile's fit the moment you look at it, don't come back to it later. Edit
-  `QUALITY_TIERS` in `popup.js` to change the tier set; tiers are plain CRM
-  tags, not a separate field, so nothing else needs updating.
-- Email is optional because LinkedIn does not expose it on profile pages. The
-  extension and CRM do not manufacture placeholder addresses.
-- Sending the same LinkedIn URL twice does not create a duplicate lead — the
-  CRM returns the existing one and fills missing email, phone, company,
-  LinkedIn URL, tags, and captured profile sections without overwriting
-  stronger human-entered data.
-- A unique exact-name match for an older name-only lead is enriched in place.
-  Ambiguous same-name matches remain warnings and are never merged automatically.
-- Version 1.5 cancels the duplicate pre-check as soon as a send begins, so a
-  newly created lead cannot be mistaken for its own pre-existing duplicate.
-- After a new LinkedIn lead is saved, the Vertex-backed qualification workflow
-  scores it, stores the detailed assessment, and generates a personalized
-  connection-request note capped at 300 characters. The extension keeps the
-  lead form open and shows **Copy note** so the message can be pasted directly
-  into LinkedIn.
+## Decision behavior
 
-## Notes for whoever maintains this next
+- Excellent Fit, Worth Trying, and Maybe promote the same lead number into
+  active Leads and queue the cheap scoring/connection-note workflow.
+- Future promotes the record into Nurture without immediate AI work.
+- Disqualify rejects the prospect while preserving it for deduplication and
+  audit history.
 
-- `content.js` does the actual scraping — it's DOM-structure-dependent on
-  LinkedIn's current markup and **will** break silently if LinkedIn changes
-  their profile page layout. No automated tests here; if captures start
-  coming back empty, check the selectors in `extractProfile()` first.
-- API keys are per-teammate (`identity.api_keys`, see
-  `apps/identity/src/services/api-keys.ts`), issued/revoked from the
-  identity admin UI. `/extension/leads` on the CRM Worker rejects any
-  request with a missing or revoked key — there's no anonymous fallback.
+Reload the unpacked extension from `chrome://extensions` after changing files.

@@ -4,6 +4,7 @@ import { AppShell } from './components/layout/AppShell.js';
 import { useAuthStore } from './stores/auth.js';
 import Dashboard from './pages/Dashboard.js';
 import LeadsPage from './pages/LeadsPage.js';
+import ProspectReviewPage from './pages/ProspectReviewPage.js';
 import LeadDetail from './pages/LeadDetail.js';
 import CompaniesPage from './pages/CompaniesPage.js';
 import CompanyDetail from './pages/CompanyDetail.js';
@@ -56,6 +57,14 @@ export default function App() {
             element={
               <RequireAuth>
                 <Dashboard />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/prospects"
+            element={
+              <RequireAuth>
+                <ProspectReviewPage />
               </RequireAuth>
             }
           />

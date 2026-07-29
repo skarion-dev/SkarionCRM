@@ -1,766 +1,105 @@
 <!doctype html>
-<html>
+<html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Profile Capture</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Skarion Prospect Review</title>
     <style>
-      * {
-        box-sizing: border-box;
-        margin: 0;
-        padding: 0;
-      }
+      * { box-sizing: border-box; }
       body {
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-        width: 380px;
-        background: #f3f2ef;
-        color: #1a1a1a;
+        margin: 0;
+        width: 420px;
+        min-height: 430px;
+        font: 14px/1.4 Inter, ui-sans-serif, system-ui, sans-serif;
+        color: #0f172a;
+        background: #f8fafc;
       }
-      .header {
-        background: #0a66c2;
+      header {
+        padding: 16px 18px;
         color: white;
-        padding: 12px 16px;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-      }
-      .header h1 {
-        font-size: 15px;
-        font-weight: 700;
-      }
-      .header small {
-        font-size: 11px;
-        opacity: 0.8;
-        display: block;
-        margin-top: 2px;
-      }
-      .header .spacer {
-        flex: 1;
-      }
-      .icon-btn {
-        background: none;
-        border: none;
-        color: white;
-        cursor: pointer;
-        opacity: 0.85;
-        padding: 4px;
-        border-radius: 6px;
-        font-size: 16px;
-        line-height: 1;
-      }
-      .icon-btn:hover {
-        opacity: 1;
-        background: rgba(255, 255, 255, 0.15);
-      }
-
-      .body {
-        padding: 12px;
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-      }
-
-      /* Settings panel */
-      .panel {
-        background: white;
-        border: 1px solid #dce6f1;
-        border-radius: 8px;
-        padding: 12px;
-        display: none;
-        flex-direction: column;
-        gap: 8px;
-      }
-      .panel.open {
-        display: flex;
-      }
-      .panel h2 {
-        font-size: 12px;
-        font-weight: 700;
-        color: #333;
-      }
-      .field label {
-        font-size: 10px;
-        font-weight: 600;
-        color: #888;
-        text-transform: uppercase;
-        letter-spacing: 0.4px;
-        display: block;
-        margin-bottom: 3px;
-      }
-      .field input,
-      .field select,
-      .field textarea {
-        width: 100%;
-        padding: 7px 9px;
-        border: 1px solid #ccc;
-        border-radius: 6px;
-        font-size: 12px;
-        outline: none;
-        font-family: inherit;
-      }
-      .field input:focus,
-      .field select:focus,
-      .field textarea:focus {
-        border-color: #0a66c2;
-      }
-      .field textarea {
-        resize: vertical;
-        min-height: 60px;
-      }
-      .field-row {
-        display: flex;
-        gap: 8px;
-      }
-      .field-row .field {
-        flex: 1;
-      }
-      .status-line {
-        font-size: 11px;
-        color: #057642;
-        min-height: 14px;
-      }
-      .status-line.err {
-        color: #b91c1c;
-      }
-
-      .stat-row {
-        display: flex;
-        gap: 8px;
-      }
-      .stat {
-        flex: 1;
-        background: white;
-        border: 1px solid #dce6f1;
-        border-radius: 8px;
-        padding: 10px;
-        text-align: center;
-      }
-      .stat .n {
-        font-size: 24px;
-        font-weight: 700;
-        color: #0a66c2;
-      }
-      .stat .l {
-        font-size: 10px;
-        color: #888;
-        margin-top: 2px;
-      }
-      .stat.green .n {
-        color: #057642;
-      }
-
-      /* Search */
-      .search-box {
-        display: flex;
-        gap: 6px;
-      }
-      .search-box input {
-        flex: 1;
-        padding: 8px 10px;
-        border: 1px solid #ccc;
-        border-radius: 20px;
-        font-size: 12px;
-        outline: none;
-      }
-      .search-box input:focus {
-        border-color: #0a66c2;
-      }
-
-      /* Profile list */
-      .profile-list {
-        background: white;
-        border: 1px solid #dce6f1;
-        border-radius: 8px;
-        max-height: 260px;
-        overflow-y: auto;
-        display: none;
-      }
-      .profile-item {
-        padding: 8px 12px;
-        border-bottom: 1px solid #f0f0f0;
-        cursor: pointer;
-        display: flex;
-        gap: 8px;
-        align-items: flex-start;
-      }
-      .profile-item:last-child {
-        border-bottom: none;
-      }
-      .profile-item:hover {
-        background: #f8f8f8;
-      }
-      .profile-item.selected {
-        background: #e8f0fb;
-      }
-      .profile-dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: #0a66c2;
-        margin-top: 4px;
-        flex-shrink: 0;
-      }
-      .profile-info {
-        flex: 1;
-        min-width: 0;
-      }
-      .profile-name {
-        font-size: 12px;
-        font-weight: 600;
-        color: #0a66c2;
-      }
-      .profile-sub {
-        font-size: 11px;
-        color: #666;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        margin-top: 1px;
-      }
-      .profile-time {
-        font-size: 10px;
-        color: #aaa;
-        margin-top: 2px;
-      }
-      .profile-crm-status {
-        flex-shrink: 0;
-        border-radius: 999px;
-        padding: 3px 7px;
-        font-size: 9px;
-        font-weight: 700;
-        white-space: nowrap;
-      }
-      .profile-crm-status.pending {
-        background: #f1f5f9;
-        color: #64748b;
-      }
-      .profile-crm-status.sent {
-        background: #dcfce7;
-        color: #166534;
-      }
-
-      /* Detail panel */
-      .detail {
-        background: white;
-        border: 1px solid #dce6f1;
-        border-radius: 8px;
-        padding: 12px;
-        display: none;
-        max-height: 220px;
-        overflow-y: auto;
-      }
-      .detail h3 {
-        font-size: 13px;
-        font-weight: 700;
-        color: #0a66c2;
-        margin-bottom: 4px;
-      }
-      .detail .dheadline {
-        font-size: 11px;
-        color: #444;
-        margin-bottom: 8px;
-      }
-      .detail .section {
-        margin-top: 8px;
-      }
-      .detail .section-title {
-        font-size: 10px;
-        font-weight: 700;
-        color: #888;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-        margin-bottom: 3px;
-      }
-      .detail .section-body {
-        font-size: 11px;
-        color: #333;
-        white-space: pre-wrap;
-        line-height: 1.5;
-      }
-      .detail .open-link {
-        font-size: 11px;
-        color: #0a66c2;
-        text-decoration: none;
-        display: inline-block;
-        margin-top: 6px;
-      }
-      .detail .open-link:hover {
-        text-decoration: underline;
-      }
-      .detail .send-crm-btn {
-        margin-top: 8px;
-        width: 100%;
-        padding: 7px;
-        border: none;
-        border-radius: 18px;
-        background: white;
-        color: #888;
-        border: 1px solid #ccc;
-        font-size: 11px;
-        font-weight: 600;
-        cursor: pointer;
-      }
-      .detail .send-crm-btn:hover {
-        background: #fafafa;
-      }
-      .crm-sync-banner {
-        display: block;
-        margin: 8px 0;
-        border-radius: 6px;
-        padding: 8px 10px;
-        background: #dcfce7;
-        color: #166534;
-        font-size: 11px;
-        font-weight: 700;
-        text-decoration: none;
-      }
-      .crm-sync-banner.pending {
-        background: #f1f5f9;
-        color: #475569;
-      }
-
-      /* One-click lead-quality tiers — tag + send in a single click */
-      .tier-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-        margin-top: 10px;
-      }
-      .tier-btn {
-        padding: 6px 10px;
-        border-radius: 14px;
-        border: 1px solid #0a66c2;
-        background: #eef3fa;
-        color: #0a66c2;
-        font-size: 11px;
-        font-weight: 600;
-        cursor: pointer;
-        transition: all 0.15s;
-      }
-      .tier-btn:hover {
-        background: #0a66c2;
-        color: white;
-      }
-
-      /* Lead form (send-to-CRM) */
-      .lead-form {
-        display: none;
-        flex-direction: column;
-        gap: 8px;
-      }
-      .lead-form.open {
-        display: flex;
-      }
-      .lead-form .tag-list {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px;
-        margin-bottom: 4px;
-      }
-      .lead-form .tag {
-        background: #eef3fa;
-        color: #0a66c2;
-        border-radius: 12px;
-        padding: 2px 8px;
-        font-size: 10px;
-        display: flex;
-        align-items: center;
-        gap: 4px;
-      }
-      .lead-form .tag button {
-        background: none;
-        border: none;
-        color: #0a66c2;
-        cursor: pointer;
-        font-size: 11px;
-        padding: 0;
-      }
-      .lead-form .form-actions {
-        display: flex;
-        gap: 8px;
-        margin-top: 4px;
-      }
-      .lead-form .form-actions .btn {
-        flex: 1;
-      }
-      .ai-result {
-        display: none;
-        background: #f5f3ff;
-        border: 1px solid #c4b5fd;
-        border-radius: 8px;
-        padding: 10px;
-        gap: 8px;
-        flex-direction: column;
-      }
-      .ai-result.open {
-        display: flex;
-      }
-      .ai-result-head {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-      }
-      .ai-score {
-        background: #6d28d9;
-        color: white;
-        border-radius: 14px;
-        padding: 3px 9px;
-        font-size: 12px;
-        font-weight: 700;
-      }
-      .ai-classification {
-        font-size: 11px;
-        font-weight: 700;
-        color: #5b21b6;
-      }
-      .ai-reasoning {
-        font-size: 10px;
-        color: #5b5563;
-        line-height: 1.4;
-      }
-      .ai-note {
-        width: 100%;
-        min-height: 82px;
-        resize: vertical;
-        padding: 8px;
-        border: 1px solid #c4b5fd;
-        border-radius: 6px;
-        font: 11px/1.45 inherit;
-        background: white;
-      }
-      .ai-note-footer {
+        background: linear-gradient(135deg, #0a66c2, #1d4ed8);
         display: flex;
         justify-content: space-between;
         align-items: center;
       }
-      .ai-note-count {
-        font-size: 10px;
-        color: #6b7280;
-      }
-      .ai-copy {
-        border: 0;
-        border-radius: 14px;
-        background: #6d28d9;
-        color: white;
-        padding: 6px 10px;
-        font-size: 11px;
-        font-weight: 600;
-        cursor: pointer;
-      }
-
-      /* Buttons */
-      .btn-row {
-        display: flex;
-        gap: 8px;
-      }
-      .btn {
-        flex: 1;
-        padding: 9px;
-        border: none;
-        border-radius: 18px;
-        font-size: 13px;
-        font-weight: 600;
-        cursor: pointer;
-        transition: all 0.15s;
-      }
-      .btn:disabled {
-        opacity: 0.4;
-        cursor: not-allowed;
-      }
-      .btn-clear {
-        background: white;
-        color: #888;
-        border: 1px solid #ccc;
-      }
-      .btn-clear:hover:not(:disabled) {
-        background: #fafafa;
-      }
-      .btn-capture {
-        background: #0a66c2;
-        color: white;
-      }
-      .btn-capture:hover:not(:disabled) {
-        background: #004182;
-      }
-      .btn-capture-send {
-        background: #057642;
-        color: white;
-      }
-      .btn-capture-send:hover:not(:disabled) {
-        background: #046034;
-      }
-
-      .scrape-progress {
-        display: none;
-        background: white;
-        border: 1px solid #bfdbfe;
-        border-radius: 8px;
+      h1 { margin: 0; font-size: 18px; }
+      header p { margin: 2px 0 0; font-size: 12px; opacity: .85; }
+      button { font: inherit; cursor: pointer; }
+      .gear { border: 0; background: rgba(255,255,255,.16); color: white; border-radius: 7px; padding: 7px 9px; }
+      main { padding: 16px; }
+      .card { background: white; border: 1px solid #dbe3ee; border-radius: 12px; padding: 14px; margin-bottom: 12px; }
+      .profile-name { font-weight: 700; font-size: 16px; }
+      .muted { color: #64748b; font-size: 12px; margin-top: 4px; }
+      .status {
         padding: 10px 12px;
+        border-radius: 8px;
+        background: #eff6ff;
+        color: #1d4ed8;
+        min-height: 40px;
       }
-      .scrape-progress.open {
-        display: block;
-      }
-      .scrape-progress.failed {
-        border-color: #fecaca;
-      }
-      .scrape-progress.complete {
-        border-color: #bbf7d0;
-      }
-      .scrape-progress-head {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        font-size: 11px;
+      .status.error { background: #fef2f2; color: #b91c1c; }
+      .status.success { background: #ecfdf5; color: #047857; }
+      .progress { height: 6px; background: #e2e8f0; border-radius: 99px; overflow: hidden; margin-top: 9px; }
+      .progress > div { height: 100%; width: 0; background: #2563eb; transition: width .25s; }
+      .decisions { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 12px; }
+      .decision {
+        border: 0;
+        border-radius: 9px;
+        padding: 11px 8px;
         font-weight: 700;
+        color: white;
       }
-      .scrape-progress-percent {
-        color: #0a66c2;
-      }
-      .scrape-progress-track {
-        height: 7px;
-        background: #dbeafe;
-        border-radius: 999px;
-        overflow: hidden;
-        margin-top: 7px;
-      }
-      .scrape-progress-fill {
-        height: 100%;
-        width: 0;
-        background: #0a66c2;
-        border-radius: inherit;
-        transition: width 180ms ease;
-      }
-      .scrape-progress.complete .scrape-progress-fill {
-        background: #16a34a;
-      }
-      .scrape-progress.failed .scrape-progress-fill {
-        background: #dc2626;
-      }
-      .scrape-progress-detail {
-        color: #64748b;
-        font-size: 10px;
-        margin-top: 6px;
-      }
-      .scrape-progress-link {
-        display: none;
-        color: #0a66c2;
-        font-size: 10px;
-        font-weight: 700;
-        margin-top: 6px;
-        text-decoration: none;
-      }
-      .scrape-progress-link.open {
-        display: inline-block;
-      }
-
-      .tip {
-        font-size: 10px;
-        color: #aaa;
-        text-align: center;
-        padding: 0 4px;
-      }
+      .decision:disabled { opacity: .45; cursor: wait; }
+      .excellent { background: #059669; }
+      .worth { background: #2563eb; }
+      .maybe { background: #d97706; }
+      .future { background: #7c3aed; }
+      .disqualify { background: white; color: #b91c1c; border: 1px solid #fca5a5; grid-column: 1 / -1; }
+      .settings { display: none; }
+      .settings.open { display: block; }
+      label { display: block; font-size: 11px; font-weight: 700; color: #475569; margin: 8px 0 4px; }
+      input { width: 100%; padding: 9px; border: 1px solid #cbd5e1; border-radius: 7px; }
+      .save { margin-top: 10px; width: 100%; border: 0; border-radius: 8px; padding: 9px; background: #0f172a; color: white; }
+      .privacy { color: #64748b; font-size: 11px; text-align: center; }
+      a { color: inherit; }
     </style>
   </head>
   <body>
-    <div class="header">
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="white">
-        <path
-          d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433c-1.144 0-2.063-.926-2.063-2.065 0-1.138.92-2.063 2.063-2.063 1.14 0 2.064.925 2.064 2.063 0 1.139-.925 2.065-2.064 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"
-        />
-      </svg>
+    <header>
       <div>
-        <h1>Profile Capture</h1>
-        <small>Capture and send one profile at a time</small>
+        <h1>Skarion Prospect Review</h1>
+        <p>Capture once, decide, and update CRM</p>
       </div>
-      <div class="spacer"></div>
-      <button class="icon-btn" id="btnSettings" title="CRM connection settings">⚙</button>
-    </div>
+      <button class="gear" id="toggleSettings" aria-label="Settings">⚙</button>
+    </header>
+    <main>
+      <section class="card settings" id="settings">
+        <label for="crmUrl">CRM API URL</label>
+        <input id="crmUrl" />
+        <label for="apiKey">Personal extension API key</label>
+        <input id="apiKey" type="password" />
+        <button class="save" id="saveSettings">Save settings</button>
+      </section>
 
-    <div class="body">
-      <div class="panel" id="settingsPanel">
-        <h2>CRM Connection</h2>
-        <div class="field">
-          <label>CRM API Base URL</label>
-          <input type="text" id="setCrmUrl" placeholder="https://crm.skarion.workers.dev" />
+      <section class="card">
+        <div class="profile-name" id="profileName">Current LinkedIn profile</div>
+        <div class="muted" id="profileMeta">Checking CRM…</div>
+      </section>
+
+      <section class="card">
+        <div class="status" id="status">Choose a decision. The profile will be captured and sent directly to CRM.</div>
+        <div class="progress"><div id="progress"></div></div>
+        <div class="decisions">
+          <button class="decision excellent" data-disposition="excellent_fit">Excellent Fit</button>
+          <button class="decision worth" data-disposition="worth_trying">Worth Trying</button>
+          <button class="decision maybe" data-disposition="maybe">Maybe</button>
+          <button class="decision future" data-disposition="future">Future</button>
+          <button class="decision disqualify" data-disposition="disqualified">Disqualify</button>
         </div>
-        <div class="field">
-          <label>API Key</label>
-          <input type="password" id="setApiKey" placeholder="Personal key issued to you" />
-        </div>
-        <div class="field-row">
-          <button class="btn btn-capture" id="btnSaveSettings">Save</button>
-          <button class="btn btn-clear" id="btnCloseSettings">Close</button>
-        </div>
-        <button class="btn btn-clear" id="btnPasteSettings" style="width: 100%">
-          📋 Paste from admin panel
-        </button>
-        <div class="status-line" id="settingsStatus"></div>
-      </div>
+      </section>
 
-      <div class="stat-row">
-        <div class="stat">
-          <div class="n" id="statCount">0</div>
-          <div class="l">Current local capture</div>
-        </div>
-        <div class="stat green">
-          <div class="n" id="statSent">0</div>
-          <div class="l">Sent to CRM</div>
-        </div>
-      </div>
-
-      <div class="btn-row">
-        <button class="btn btn-capture" id="btnCaptureNow">Capture only</button>
-        <button class="btn btn-capture-send" id="btnCaptureSendNow">
-          Capture &amp; Send to CRM
-        </button>
-      </div>
-
-      <div class="scrape-progress" id="scrapeProgress">
-        <div class="scrape-progress-head">
-          <span id="scrapeProgressMessage">Preparing profile scan</span>
-          <span class="scrape-progress-percent" id="scrapeProgressPercent">0%</span>
-        </div>
-        <div class="scrape-progress-track">
-          <div class="scrape-progress-fill" id="scrapeProgressFill"></div>
-        </div>
-        <div class="scrape-progress-detail" id="scrapeProgressDetail"></div>
-        <a class="scrape-progress-link" id="scrapeProgressLink" target="_blank">Open in CRM</a>
-      </div>
-
-      <div class="search-box">
-        <input type="text" id="searchInput" placeholder="Search by name, headline, location…" />
-      </div>
-
-      <div class="profile-list" id="profileList"></div>
-      <div class="detail" id="detail"></div>
-
-      <div class="lead-form" id="leadForm">
-        <h2 style="font-size: 12px; font-weight: 700; color: #333">Send to CRM</h2>
-
-        <div class="field-row">
-          <div class="field">
-            <label>First Name *</label>
-            <input type="text" id="lfFirstName" />
-          </div>
-          <div class="field">
-            <label>Last Name</label>
-            <input type="text" id="lfLastName" />
-          </div>
-        </div>
-
-        <div class="field">
-          <label>Email</label>
-          <input type="email" id="lfEmail" placeholder="optional — LinkedIn doesn't expose this" />
-        </div>
-
-        <div class="field">
-          <label>Phone</label>
-          <input type="text" id="lfPhone" />
-        </div>
-
-        <div class="field-row">
-          <div class="field">
-            <label>Company Name</label>
-            <input type="text" id="lfCompanyName" />
-          </div>
-          <div class="field">
-            <label>Company Domain</label>
-            <input type="text" id="lfCompanyDomain" placeholder="example.com" />
-          </div>
-        </div>
-
-        <div class="field">
-          <label>LinkedIn URL</label>
-          <input type="text" id="lfLinkedinUrl" readonly />
-        </div>
-
-        <div class="field-row">
-          <div class="field">
-            <label>Status</label>
-            <select id="lfStatus">
-              <option value="new">new</option>
-              <option value="contacted">contacted</option>
-              <option value="qualified">qualified</option>
-              <option value="disqualified">disqualified</option>
-              <option value="converted">converted</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>Outreach Status</label>
-            <select id="lfOutreachStatus">
-              <option value="not_approached">not approached</option>
-              <option value="approached">approached</option>
-              <option value="connection_request_sent">connection request sent</option>
-              <option value="in_conversation">in conversation</option>
-              <option value="connected">connected</option>
-              <option value="replied">replied</option>
-              <option value="booked_call">booked call</option>
-              <option value="not_interested">not interested</option>
-              <option value="bad_fit">bad fit</option>
-            </select>
-          </div>
-        </div>
-
-        <div class="field">
-          <label>Tags</label>
-          <div class="tag-list" id="lfTagList"></div>
-          <input type="text" id="lfTagInput" placeholder="Type a tag and press Enter" />
-        </div>
-
-        <div class="field">
-          <label>Notes</label>
-          <textarea id="lfNotes" rows="5"></textarea>
-        </div>
-
-        <div
-          id="lfDupeBanner"
-          style="
-            display: none;
-            background: #fefce8;
-            border: 1px solid #fde047;
-            border-radius: 6px;
-            padding: 8px 10px;
-            font-size: 11px;
-            color: #713f12;
-          "
-        ></div>
-
-        <div class="ai-result" id="lfAiResult">
-          <div class="ai-result-head">
-            <span class="ai-score" id="lfAiScore"></span>
-            <span class="ai-classification" id="lfAiClassification"></span>
-          </div>
-          <div class="ai-reasoning" id="lfAiReasoning"></div>
-          <label style="font-size: 10px; font-weight: 700; color: #5b21b6"
-            >LINKEDIN CONNECTION NOTE</label
-          >
-          <textarea class="ai-note" id="lfAiNote" readonly></textarea>
-          <div class="ai-note-footer">
-            <span class="ai-note-count" id="lfAiNoteCount"></span>
-            <button class="ai-copy" id="btnCopyAiNote" type="button">Copy note</button>
-          </div>
-        </div>
-
-        <div class="status-line" id="lfStatusLine"></div>
-
-        <div class="form-actions">
-          <button class="btn btn-capture" id="btnSendLead">Send to CRM</button>
-          <button class="btn btn-clear" id="btnCancelLead">Cancel</button>
-        </div>
-      </div>
-
-      <div class="btn-row">
-        <button class="btn btn-capture" id="btnReviewSend" disabled>
-          Review &amp; Send to CRM
-        </button>
-        <button class="btn btn-clear" id="btnClear">✕ Clear</button>
-      </div>
-
-      <p class="tip">
-        “Captured” means saved locally. Only profiles marked “Sent to CRM” reached Skarion.
-      </p>
-    </div>
-
+      <div class="privacy">Profile data is kept in memory only and discarded after CRM confirms the decision.</div>
+    </main>
     <script src="popup.js"></script>
   </body>
 </html>

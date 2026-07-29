@@ -189,6 +189,7 @@ export type AiAgentId =
   | 'crm-copilot'
   | 'reporting-ceo'
   | 'lead-intake'
+  | 'prospect-profile'
   | 'document-ocr'
   | 'linkedin-connection-writer'
   | 'outreach-writer'
@@ -224,6 +225,13 @@ export const AI_AGENTS: ReadonlyArray<{
     name: 'Lead Intake Agent',
     description: 'Extracts structured lead data from PDFs, resumes, and pasted text.',
     tier: 'fast',
+  },
+  {
+    id: 'prospect-profile',
+    name: 'Prospect Profile Agent',
+    description:
+      'Normalizes extension captures, measures profile completeness, and prepares accepted prospects for scoring.',
+    tier: 'cheap',
   },
   {
     id: 'document-ocr',

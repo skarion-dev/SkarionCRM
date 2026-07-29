@@ -12,6 +12,9 @@ import {
   decimal,
   date,
   boolean,
+  bigint,
+  bigserial,
+  primaryKey,
 } from 'drizzle-orm/pg-core';
 
 function timestamps() {
@@ -29,6 +32,7 @@ function softDelete() {
 }
 
 export const crmSchema = pgSchema('crm');
+export const DEFAULT_WORKSPACE_ID = '00000000-0000-4000-8000-000000000001';
 
 export const leadStatusEnum = crmSchema.enum('lead_status', [
   'new',
@@ -53,6 +57,28 @@ export const leadJourneyStageEnum = crmSchema.enum('lead_journey_stage', [
   'no_response',
   'disqualified',
   'lost',
+]);
+
+export const leadReviewStateEnum = crmSchema.enum('lead_review_state', [
+  'pending',
+  'accepted',
+  'rejected',
+]);
+
+export const leadReviewDispositionEnum = crmSchema.enum('lead_review_disposition', [
+  'excellent_fit',
+  'maybe',
+  'worth_trying',
+  'future',
+  'disqualified',
+]);
+
+export const profileCaptureStatusEnum = crmSchema.enum('profile_capture_status', [
+  'not_captured',
+  'processing',
+  'captured',
+  'partial',
+  'failed',
 ]);
 
 export const opportunityStageEnum = crmSchema.enum('opportunity_stage', [
@@ -124,6 +150,17 @@ export const currencyEnum = crmSchema.enum('currency', [
   'SAR',
 ]);
 
+export const workspaces = crmSchema.table(
+  'workspaces',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    name: text('name').notNull(),
+    slug: text('slug').notNull(),
+    ...timestamps(),
+  },
+  (table) => [uniqueIndex('idx_workspaces_slug').on(table.slug)]
+);
+
 export const companies = crmSchema.table(
   'companies',
   {
@@ -149,6 +186,10 @@ export const importBatches = crmSchema.table(
   'import_batches',
   {
     id: uuid('id').defaultRandom().primaryKey(),
+    workspaceId: uuid('workspace_id')
+      .default(sql`'${sql.raw(DEFAULT_WORKSPACE_ID)}'::uuid`)
+      .notNull()
+      .references(() => workspaces.id),
     name: text('name').notNull(),
     importedByUserId: uuid('imported_by_user_id').notNull(),
     source: leadSourceEnum('source').default('other').notNull(),
@@ -215,16 +256,38 @@ export const leads = crmSchema.table(
   'leads',
   {
     id: uuid('id').defaultRandom().primaryKey(),
+    workspaceId: uuid('workspace_id')
+      .default(sql`'${sql.raw(DEFAULT_WORKSPACE_ID)}'::uuid`)
+      .notNull()
+      .references(() => workspaces.id),
     leadNumber: text('lead_number'),
+    leadSequence: bigint('lead_sequence', { mode: 'number' }),
     firstName: text('first_name').notNull(),
     lastName: text('last_name').notNull(),
     // Nullable: LinkedIn never exposes email on a profile page, and manufacturing
     // a fake placeholder address for every capture poisoned dedup and reporting.
     email: text('email'),
     phone: text('phone'),
+    headline: text('headline'),
+    location: text('location'),
+    about: text('about'),
+    experience: text('experience'),
+    education: text('education'),
+    skills: text('skills'),
     companyName: text('company_name'),
     companyDomain: text('company_domain'),
     linkedinUrl: text('linkedin_url'),
+    linkedinProfileKey: text('linkedin_profile_key'),
+    reviewState: leadReviewStateEnum('review_state').default('accepted').notNull(),
+    reviewDisposition: leadReviewDispositionEnum('review_disposition'),
+    reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
+    reviewedBy: uuid('reviewed_by'),
+    profileCaptureStatus: profileCaptureStatusEnum('profile_capture_status')
+      .default('not_captured')
+      .notNull(),
+    lastCapturedAt: timestamp('last_captured_at', { withTimezone: true }),
+    dataCompleteness: integer('data_completeness').default(0).notNull(),
+    rowVersion: integer('row_version').default(1).notNull(),
     outreachStatus: text('outreach_status').default('not_approached'),
     approachedAt: timestamp('approached_at', { withTimezone: true }),
     connectionStatus: text('connection_status'),
@@ -256,16 +319,131 @@ export const leads = crmSchema.table(
     index('idx_leads_outreach').on(table.outreachStatus),
     index('idx_leads_created').on(table.createdAt),
     index('idx_leads_lead_number').on(table.leadNumber),
+    index('idx_leads_lead_sequence').on(table.leadSequence),
+    index('idx_leads_review_queue').on(table.workspaceId, table.reviewState, table.createdAt),
+    index('idx_leads_capture_status').on(table.profileCaptureStatus),
     index('idx_leads_batch').on(table.batchId),
     // Replaces the old plain idx_leads_linkedin index — this one is unique so
     // the database itself rejects a second lead for the same canonical URL
     // even under concurrent requests, closing the SELECT-then-INSERT race.
-    uniqueIndex('idx_leads_linkedin_unique')
-      .on(sql`lower(${table.linkedinUrl})`)
-      .where(sql`${table.linkedinUrl} IS NOT NULL AND ${table.deletedAt} IS NULL`),
+    uniqueIndex('idx_leads_workspace_linkedin_key_unique')
+      .on(table.workspaceId, table.linkedinProfileKey)
+      .where(sql`${table.linkedinProfileKey} IS NOT NULL AND ${table.deletedAt} IS NULL`),
     uniqueIndex('idx_leads_idempotency_key')
       .on(table.idempotencyKey)
       .where(sql`${table.idempotencyKey} IS NOT NULL`),
+  ]
+);
+
+export const leadImportMemberships = crmSchema.table(
+  'lead_import_memberships',
+  {
+    workspaceId: uuid('workspace_id')
+      .default(sql`'${sql.raw(DEFAULT_WORKSPACE_ID)}'::uuid`)
+      .notNull()
+      .references(() => workspaces.id),
+    leadId: uuid('lead_id')
+      .notNull()
+      .references(() => leads.id, { onDelete: 'cascade' }),
+    batchId: uuid('batch_id')
+      .notNull()
+      .references(() => importBatches.id, { onDelete: 'cascade' }),
+    sourceRow: integer('source_row'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.leadId, table.batchId] }),
+    index('idx_lead_import_memberships_batch').on(table.batchId),
+  ]
+);
+
+export const prospectReviewClaims = crmSchema.table(
+  'prospect_review_claims',
+  {
+    leadId: uuid('lead_id')
+      .primaryKey()
+      .references(() => leads.id, { onDelete: 'cascade' }),
+    workspaceId: uuid('workspace_id')
+      .default(sql`'${sql.raw(DEFAULT_WORKSPACE_ID)}'::uuid`)
+      .notNull()
+      .references(() => workspaces.id),
+    claimedBy: uuid('claimed_by').notNull(),
+    claimedAt: timestamp('claimed_at', { withTimezone: true }).defaultNow().notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    index('idx_prospect_review_claims_workspace').on(table.workspaceId),
+    index('idx_prospect_review_claims_expiry').on(table.expiresAt),
+  ]
+);
+
+export const leadProfileCaptures = crmSchema.table(
+  'lead_profile_captures',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    workspaceId: uuid('workspace_id')
+      .default(sql`'${sql.raw(DEFAULT_WORKSPACE_ID)}'::uuid`)
+      .notNull()
+      .references(() => workspaces.id),
+    leadId: uuid('lead_id')
+      .notNull()
+      .references(() => leads.id, { onDelete: 'cascade' }),
+    capturedBy: uuid('captured_by').notNull(),
+    source: text('source').default('linkedin-extension').notNull(),
+    payload: jsonb('payload').notNull(),
+    payloadHash: text('payload_hash'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('idx_lead_profile_captures_lead').on(table.leadId, table.createdAt),
+    index('idx_lead_profile_captures_workspace').on(table.workspaceId),
+  ]
+);
+
+export const prospectImportJobs = crmSchema.table(
+  'prospect_import_jobs',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    workspaceId: uuid('workspace_id')
+      .default(sql`'${sql.raw(DEFAULT_WORKSPACE_ID)}'::uuid`)
+      .notNull()
+      .references(() => workspaces.id),
+    batchId: uuid('batch_id').references(() => importBatches.id, { onDelete: 'set null' }),
+    createdBy: uuid('created_by').notNull(),
+    name: text('name').notNull(),
+    status: text('status').default('pending').notNull(),
+    totalRows: integer('total_rows').default(0).notNull(),
+    processedRows: integer('processed_rows').default(0).notNull(),
+    createdCount: integer('created_count').default(0).notNull(),
+    duplicateCount: integer('duplicate_count').default(0).notNull(),
+    invalidCount: integer('invalid_count').default(0).notNull(),
+    errorRows: jsonb('error_rows'),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    ...timestamps(),
+  },
+  (table) => [
+    index('idx_prospect_import_jobs_workspace').on(table.workspaceId, table.createdAt),
+    index('idx_prospect_import_jobs_status').on(table.status),
+  ]
+);
+
+export const leadEventOutbox = crmSchema.table(
+  'lead_event_outbox',
+  {
+    sequence: bigserial('sequence', { mode: 'number' }).primaryKey(),
+    workspaceId: uuid('workspace_id')
+      .default(sql`'${sql.raw(DEFAULT_WORKSPACE_ID)}'::uuid`)
+      .notNull()
+      .references(() => workspaces.id),
+    leadId: uuid('lead_id').references(() => leads.id, { onDelete: 'cascade' }),
+    eventType: text('event_type').notNull(),
+    actorUserId: uuid('actor_user_id'),
+    payload: jsonb('payload').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('idx_lead_event_outbox_workspace_sequence').on(table.workspaceId, table.sequence),
+    index('idx_lead_event_outbox_created').on(table.createdAt),
   ]
 );
 

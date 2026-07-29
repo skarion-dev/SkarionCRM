@@ -45,7 +45,10 @@ export function parseCommaList(raw?: string): string[] | undefined {
  * created before multi-select existed.
  */
 export function buildLeadConditions(params: LeadFilterParams): SQL[] {
-  const conditions: SQL[] = [isNull(schema.leads.deletedAt) as unknown as SQL];
+  const conditions: SQL[] = [
+    isNull(schema.leads.deletedAt) as unknown as SQL,
+    eq(schema.leads.reviewState, 'accepted') as unknown as SQL,
+  ];
 
   if (!params.isSuperadmin) {
     conditions.push(eq(schema.leads.ownerId, params.ownerId));

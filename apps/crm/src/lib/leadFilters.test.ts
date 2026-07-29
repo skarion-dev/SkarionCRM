@@ -34,16 +34,16 @@ describe('resolveLeadSortColumn', () => {
 });
 
 describe('buildLeadConditions', () => {
-  it('scopes non-superadmins to their own leads (deletedAt + ownerId)', () => {
-    expect(buildLeadConditions(base)).toHaveLength(2);
+  it('scopes non-superadmins to accepted, non-deleted leads they own', () => {
+    expect(buildLeadConditions(base)).toHaveLength(3);
   });
 
-  it('does not scope superadmins by owner (deletedAt only)', () => {
-    expect(buildLeadConditions({ ...base, isSuperadmin: true })).toHaveLength(1);
+  it('does not scope superadmins by owner but still excludes pending prospects', () => {
+    expect(buildLeadConditions({ ...base, isSuperadmin: true })).toHaveLength(2);
   });
 
   it('adds one condition for a single status filter', () => {
-    expect(buildLeadConditions({ ...base, status: 'new' })).toHaveLength(3);
+    expect(buildLeadConditions({ ...base, status: 'new' })).toHaveLength(4);
   });
 
   it('multi-select statuses takes precedence over singular status, not additive', () => {
@@ -54,25 +54,25 @@ describe('buildLeadConditions', () => {
     });
     const withMultiOnly = buildLeadConditions({ ...base, statuses: ['new', 'contacted'] });
     expect(withBoth).toHaveLength(withMultiOnly.length);
-    expect(withBoth).toHaveLength(3);
+    expect(withBoth).toHaveLength(4);
   });
 
   it('collapses multiple tags into a single OR condition', () => {
     const withOneTag = buildLeadConditions({ ...base, tag: 'vip' });
     const withThreeTags = buildLeadConditions({ ...base, tags: ['vip', 'warm', 'cold'] });
-    expect(withOneTag).toHaveLength(3);
-    expect(withThreeTags).toHaveLength(3);
+    expect(withOneTag).toHaveLength(4);
+    expect(withThreeTags).toHaveLength(4);
   });
 
   it('adds one condition per side of a date range', () => {
     expect(
       buildLeadConditions({ ...base, createdFrom: '2026-01-01', createdTo: '2026-06-01' })
-    ).toHaveLength(4);
-    expect(buildLeadConditions({ ...base, createdFrom: '2026-01-01' })).toHaveLength(3);
+    ).toHaveLength(5);
+    expect(buildLeadConditions({ ...base, createdFrom: '2026-01-01' })).toHaveLength(4);
   });
 
   it('adds one condition for search', () => {
-    expect(buildLeadConditions({ ...base, search: 'acme' })).toHaveLength(3);
+    expect(buildLeadConditions({ ...base, search: 'acme' })).toHaveLength(4);
   });
 
   it('stacks independent filters additively', () => {
@@ -84,6 +84,6 @@ describe('buildLeadConditions', () => {
         search: 'acme',
         createdFrom: '2026-01-01',
       })
-    ).toHaveLength(6); // deletedAt + ownerId + status + batchId + createdFrom + search
+    ).toHaveLength(7); // deletedAt + reviewState + ownerId + status + batchId + date + search
   });
 });

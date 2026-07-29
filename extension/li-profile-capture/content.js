@@ -23,7 +23,7 @@ function initLiProfileCapture() {
     status: 'idle',
     percent: 0,
     message: 'Ready to capture',
-    detail: 'Choose capture only or capture and send to CRM.',
+    detail: 'Choose a review decision in the extension popup.',
   };
 
   function delay(ms) {
@@ -270,33 +270,15 @@ function initLiProfileCapture() {
         throw new Error('LinkedIn profile name was not available.');
       }
 
-      // Preserve the idempotency key across re-captures of the same profile so
-      // repeated sends to the CRM stay recognizable as the same intent.
-      const existing = await new Promise((resolve) => {
-        chrome.storage.local.get(['profiles'], (data) => resolve(data.profiles || {}));
-      });
-      const prior = existing[profile.profileId] || {};
-      profile.idempotencyKey = prior.idempotencyKey || crypto.randomUUID();
-      // Refresh scraped LinkedIn fields without erasing the persistent CRM
-      // delivery receipt added by popup.js after the server confirms a send.
-      // Keep only the currently requested profile: this extension is not a
-      // multi-profile queue and can never bulk-send older captures.
-      const currentProfileOnly = {
-        [profile.profileId]: { ...prior, ...profile },
-      };
-      reportProgress('running', 97, 'Saving captured profile', 'Writing to extension storage.');
-      await chrome.storage.local.set({ profiles: currentProfileOnly });
-      console.log(`[LI Capture] Saved: ${profile.name} (${profile.profileId})`);
-
-      // Badge the extension icon with count
-      const count = 1;
-      chrome.runtime.sendMessage({ action: 'updateBadge', count });
+      profile.idempotencyKey = crypto.randomUUID();
+      reportProgress('running', 97, 'Preparing CRM review', 'Keeping this capture in memory only.');
       reportProgress(
         'complete',
         100,
         'Profile captured',
-        `${profile.name} is saved locally and ready for CRM review.`
+        `${profile.name} is ready for a review decision. Nothing was saved locally.`
       );
+      return profile;
     } catch (error) {
       reportProgress(
         'failed',
@@ -304,15 +286,25 @@ function initLiProfileCapture() {
         'Capture failed',
         error instanceof Error ? error.message : 'Unknown capture error.'
       );
+      throw error;
     } finally {
       window.__liProfileCaptureRunning = false;
     }
   }
 
-  chrome.runtime.onMessage.addListener((message) => {
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.action === 'captureProfileNow') {
-      void run();
+      void run()
+        .then((profile) => sendResponse({ ok: true, profile }))
+        .catch((error) =>
+          sendResponse({
+            ok: false,
+            error: error instanceof Error ? error.message : 'Capture failed.',
+          })
+        );
+      return true;
     }
+    return false;
   });
 
   reportProgress(

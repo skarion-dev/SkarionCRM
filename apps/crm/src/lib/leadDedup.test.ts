@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { CrmDb } from '../db/types.js';
 import {
   canonicalizeLinkedinUrl,
+  linkedinProfileKey,
   normalizePhoneKey,
   isRealEmail,
   findExactMatch,
@@ -49,6 +50,12 @@ describe('canonicalizeLinkedinUrl', () => {
     expect(canonicalizeLinkedinUrl(undefined)).toBeNull();
     expect(canonicalizeLinkedinUrl('')).toBeNull();
     expect(canonicalizeLinkedinUrl('   ')).toBeNull();
+  });
+});
+
+describe('linkedinProfileKey', () => {
+  it('uses the stable /in slug across URL variants', () => {
+    expect(linkedinProfileKey('https://m.linkedin.com/in/John-Doe/?trk=profile')).toBe('john-doe');
   });
 });
 

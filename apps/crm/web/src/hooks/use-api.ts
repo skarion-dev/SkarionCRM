@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
+import { useEffect, useRef } from 'react';
 import {
   crmFetch,
   redirectToLogin,
@@ -12,6 +13,8 @@ import {
   type LeadAttachment,
   type ImportBatch,
   type TagDefinition,
+  type Prospect,
+  type ProspectImportJob,
   type WorkflowRule,
   getLeadChannels,
   logOutreachAction,
@@ -188,6 +191,191 @@ export function useInfiniteLeads(filters: LeadFilters) {
     initialPageParam: 1,
     getNextPageParam: (last) => (last.page < last.totalPages ? last.page + 1 : undefined),
   });
+}
+
+export type ProspectFilters = {
+  search?: string;
+  leadFrom?: string;
+  leadTo?: string;
+  batchId?: string;
+  captureStatus?: string;
+  claimed?: 'all' | 'mine' | 'unclaimed';
+  reviewState?: 'pending' | 'rejected';
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
+  page?: number;
+  pageSize?: number;
+};
+
+export interface ProspectsResponse {
+  prospects: Prospect[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+}
+
+function prospectQueryString(filters: ProspectFilters): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== '' && value !== 'all') query.set(key, String(value));
+  }
+  return query.toString();
+}
+
+export function useProspects(filters: ProspectFilters) {
+  const query = prospectQueryString(filters);
+  return useCrmQuery(['prospects', query], () =>
+    crmFetch<ProspectsResponse>(`/api/prospects?${query}`)
+  );
+}
+
+export function useImportProspects() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { csv: string; name: string }) =>
+      crmFetch<{
+        job: ProspectImportJob;
+        batchId: string;
+        validRows: number;
+        invalidRows: Array<{ row: number; error: string }>;
+      }>('/api/prospects/import', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['import-batches'] });
+    },
+  });
+}
+
+export function useProspectImportJob(id: string | null) {
+  return useQuery({
+    queryKey: ['prospect-import-job', id],
+    queryFn: () =>
+      crmFetch<{ job: ProspectImportJob }>(
+        `/api/prospects/imports/${encodeURIComponent(id ?? '')}`
+      ),
+    enabled: Boolean(id),
+    refetchInterval: (query) => {
+      const status = query.state.data?.job.status;
+      return status === 'pending' || status === 'processing' ? 1500 : false;
+    },
+  });
+}
+
+export function useClaimNextProspects() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: {
+      limit?: number;
+      leadFrom?: string;
+      leadTo?: string;
+      search?: string;
+      batchId?: string;
+      captureStatus?: string;
+      sortBy?: string;
+      sortOrder?: 'asc' | 'desc';
+    }) =>
+      crmFetch<{ prospects: Prospect[]; leaseMinutes: number }>('/api/prospects/claim-next', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['prospects'] }),
+  });
+}
+
+export type ProspectDisposition =
+  | 'excellent_fit'
+  | 'maybe'
+  | 'worth_trying'
+  | 'future'
+  | 'disqualified';
+
+export function useReviewProspect() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { id: string; disposition: ProspectDisposition; rowVersion: number }) =>
+      crmFetch<{ lead: Lead }>(`/api/prospects/${payload.id}/review`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          disposition: payload.disposition,
+          rowVersion: payload.rowVersion,
+        }),
+      }),
+    onSuccess: (_data, payload) => {
+      qc.setQueriesData<ProspectsResponse>({ queryKey: ['prospects'] }, (current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          prospects: current.prospects.filter((prospect) => prospect.id !== payload.id),
+          total: Math.max(0, current.total - 1),
+        };
+      });
+      qc.invalidateQueries({ queryKey: ['leads-infinite'] });
+    },
+  });
+}
+
+export function useProspectEvents(enabled = true) {
+  const qc = useQueryClient();
+  const cursor = useRef(0);
+  useEffect(() => {
+    if (!enabled) return;
+    let stopped = false;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      try {
+        const data = await crmFetch<{
+          events: Array<{
+            sequence: number;
+            eventType: string;
+            payload: { lead?: Prospect };
+          }>;
+          cursor: number;
+        }>(`/api/prospect-events?after=${cursor.current}`);
+        if (stopped) return;
+        cursor.current = data.cursor;
+        for (const event of data.events) {
+          if (
+            event.eventType === 'prospect.import.completed' ||
+            event.eventType === 'prospect.reviewed'
+          ) {
+            await qc.invalidateQueries({ queryKey: ['prospects'] });
+            await qc.invalidateQueries({ queryKey: ['leads-infinite'] });
+            continue;
+          }
+          const lead = event.payload?.lead;
+          if (!lead) continue;
+          qc.setQueriesData<ProspectsResponse>({ queryKey: ['prospects'] }, (current) => {
+            if (!current) return current;
+            const existingIndex = current.prospects.findIndex((row) => row.id === lead.id);
+            if (lead.reviewState !== 'pending') {
+              if (existingIndex < 0) return current;
+              return {
+                ...current,
+                prospects: current.prospects.filter((row) => row.id !== lead.id),
+                total: Math.max(0, current.total - 1),
+              };
+            }
+            if (existingIndex < 0) return current;
+            const prospects = [...current.prospects];
+            prospects[existingIndex] = { ...prospects[existingIndex], ...lead };
+            return { ...current, prospects };
+          });
+        }
+      } catch {
+        // Reconnect automatically. The cursor keeps delivery idempotent.
+      } finally {
+        if (!stopped) timeout = setTimeout(poll, 2000);
+      }
+    };
+    void poll();
+    return () => {
+      stopped = true;
+      if (timeout) clearTimeout(timeout);
+    };
+  }, [enabled, qc]);
 }
 
 export interface LeadSavedSearch {

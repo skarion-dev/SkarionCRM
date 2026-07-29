@@ -36,6 +36,19 @@ export function canonicalizeLinkedinUrl(raw: unknown): string | null {
   return `https://${host}${path}`;
 }
 
+/** Stable workspace-local identity for a LinkedIn profile. Unlike the full
+ * URL, this survives mobile hosts, query parameters and trailing slashes. */
+export function linkedinProfileKey(raw: unknown): string | null {
+  const canonical = canonicalizeLinkedinUrl(raw);
+  if (!canonical) return null;
+  try {
+    const parts = new URL(canonical).pathname.split('/').filter(Boolean);
+    return parts[0] === 'in' && parts[1] ? decodeURIComponent(parts[1]).toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Digits-only phone comparison key: last 10 digits, so a missing/extra
  * country code still matches. Returns null for anything with no digits. */
 export function normalizePhoneKey(raw: unknown): string | null {

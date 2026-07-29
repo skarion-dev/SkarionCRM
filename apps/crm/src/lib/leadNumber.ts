@@ -13,10 +13,20 @@ export function formatLeadNumber(seq: number | bigint): string {
   return `SK${String(seq).padStart(4, '0')}`;
 }
 
-export async function nextLeadNumber(db: CrmDb): Promise<string> {
+export async function nextLeadIdentity(
+  db: CrmDb
+): Promise<{ leadNumber: string; leadSequence: number }> {
   const res = await db.execute(sql`SELECT nextval('crm.lead_number_seq') AS seq`);
   const rows = (res as unknown as { rows?: Record<string, unknown>[] }).rows ?? [];
   const seq = rows[0]?.seq as string | number | undefined;
   if (seq === undefined) throw new Error('nextLeadNumber: sequence returned no value');
-  return formatLeadNumber(typeof seq === 'string' ? BigInt(seq) : seq);
+  const numeric = typeof seq === 'string' ? Number.parseInt(seq, 10) : seq;
+  if (!Number.isSafeInteger(numeric)) {
+    throw new Error('nextLeadNumber: sequence exceeds JavaScript safe integer range');
+  }
+  return { leadNumber: formatLeadNumber(numeric), leadSequence: numeric };
+}
+
+export async function nextLeadNumber(db: CrmDb): Promise<string> {
+  return (await nextLeadIdentity(db)).leadNumber;
 }
