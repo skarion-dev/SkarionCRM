@@ -43,6 +43,7 @@ import { CRM_API_URL, getAccessToken } from '../api.js';
 import { showToast } from '../stores/toast.js';
 import { buildLeadsQueryString, type LeadFilters } from '../lib/leadFilters.js';
 import { LEAD_JOURNEY_STAGES, journeyBadgeClass, journeyLabel } from '../lib/leadJourney.js';
+import { formatCandidateCreatedTime } from '../lib/candidateTime.js';
 
 const LEAD_SORT_OPTIONS = [
   ['createdAt', 'Created'],
@@ -99,6 +100,29 @@ function SortableHeader({
         )}
       </div>
     </th>
+  );
+}
+
+function CandidateCreatedAt({
+  createdAt,
+  location,
+}: {
+  createdAt: string;
+  location: string | null;
+}) {
+  const formatted = formatCandidateCreatedTime(createdAt, location);
+  return (
+    <div
+      className="whitespace-nowrap"
+      title={
+        formatted.inferredFromCandidate
+          ? `Candidate local time inferred from ${location} (${formatted.timeZone})`
+          : `Candidate timezone unavailable; shown in your local timezone (${formatted.timeZone})`
+      }
+    >
+      <div>{formatted.date}</div>
+      <div className="text-xs text-slate-400">{formatted.time}</div>
+    </div>
   );
 }
 
@@ -730,12 +754,14 @@ export default function LeadsPage() {
                 </button>
               </>
             )}
-            <button
-              onClick={handleBulkDelete}
-              className="px-3 py-1.5 text-sm border border-red-200 rounded-md bg-red-50 hover:bg-red-100 text-red-600"
-            >
-              <Trash2 size={14} className="inline mr-1" /> Delete
-            </button>
+            {isSuperadmin && (
+              <button
+                onClick={handleBulkDelete}
+                className="px-3 py-1.5 text-sm border border-red-200 rounded-md bg-red-50 hover:bg-red-100 text-red-600"
+              >
+                <Trash2 size={14} className="inline mr-1" /> Delete
+              </button>
+            )}
             <button
               onClick={() => setSelectedIds(new Set())}
               className="p-1.5 rounded-md hover:bg-slate-200 text-slate-500"
@@ -890,8 +916,8 @@ export default function LeadsPage() {
                   onSort={toggleSort}
                 />
                 <SortableHeader
-                  column="companyName"
-                  label="Company"
+                  column="tags"
+                  label="Tags"
                   sortBy={sortBy}
                   sortOrder={sortOrder}
                   onSort={toggleSort}
@@ -913,13 +939,6 @@ export default function LeadsPage() {
                 <SortableHeader
                   column="source"
                   label="Source"
-                  sortBy={sortBy}
-                  sortOrder={sortOrder}
-                  onSort={toggleSort}
-                />
-                <SortableHeader
-                  column="tags"
-                  label="Tags"
                   sortBy={sortBy}
                   sortOrder={sortOrder}
                   onSort={toggleSort}
@@ -1014,28 +1033,6 @@ export default function LeadsPage() {
                       <span className="text-xs text-slate-400">Queued</span>
                     )}
                   </td>
-                  <td className="px-4 py-3 text-slate-600">{lead.companyName ?? '—'}</td>
-                  <td className="px-4 py-3 text-slate-600">
-                    {!lead.email || lead.email.includes('@placeholder.skarion') ? '—' : lead.email}
-                  </td>
-                  <td className="px-4 py-3">
-                    {lead.linkedinUrl ? (
-                      <a
-                        href={lead.linkedinUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={(e) => e.stopPropagation()}
-                        className="text-blue-600 hover:text-blue-800"
-                      >
-                        <Linkedin size={16} />
-                      </a>
-                    ) : (
-                      '—'
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-slate-600 capitalize">
-                    {lead.source.replace(/_/g, ' ')}
-                  </td>
                   <td className="px-4 py-3">
                     {lead.tags && lead.tags.length > 0 ? (
                       <div className="flex flex-wrap gap-1">
@@ -1058,12 +1055,33 @@ export default function LeadsPage() {
                     )}
                   </td>
                   <td className="px-4 py-3 text-slate-600">
+                    {!lead.email || lead.email.includes('@placeholder.skarion') ? '—' : lead.email}
+                  </td>
+                  <td className="px-4 py-3">
+                    {lead.linkedinUrl ? (
+                      <a
+                        href={lead.linkedinUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="text-blue-600 hover:text-blue-800"
+                      >
+                        <Linkedin size={16} />
+                      </a>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-slate-600 capitalize">
+                    {lead.source.replace(/_/g, ' ')}
+                  </td>
+                  <td className="px-4 py-3 text-slate-600">
                     {canManage
                       ? crmUsers.find((u) => u.id === lead.ownerId)?.displayName || '—'
                       : 'Me'}
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap text-slate-500">
-                    {new Date(lead.createdAt).toLocaleDateString()}
+                    <CandidateCreatedAt createdAt={lead.createdAt} location={lead.location} />
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-2">
@@ -1085,31 +1103,34 @@ export default function LeadsPage() {
                       >
                         <ArrowRight size={14} />
                       </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (
-                            window.confirm(
-                              'Are you sure you want to delete this lead? This action cannot be undone.'
-                            )
-                          ) {
-                            deleteMutation.mutate(
-                              { type: 'leads', id: lead.id },
-                              { onSuccess: () => showToast('Lead deleted', 'success') }
-                            );
-                          }
-                        }}
-                        className="p-1.5 rounded hover:bg-red-100 text-red-500"
-                      >
-                        <Trash2 size={14} />
-                      </button>
+                      {isSuperadmin && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (
+                              window.confirm(
+                                'Are you sure you want to delete this lead? This action cannot be undone.'
+                              )
+                            ) {
+                              deleteMutation.mutate(
+                                { type: 'leads', id: lead.id },
+                                { onSuccess: () => showToast('Lead deleted', 'success') }
+                              );
+                            }
+                          }}
+                          className="p-1.5 rounded hover:bg-red-100 text-red-500"
+                          title="Delete lead (superadmin only)"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
               ))}
               {leads.length === 0 && (
                 <tr>
-                  <td colSpan={12} className="px-4 py-12 text-center text-slate-400">
+                  <td colSpan={11} className="px-4 py-12 text-center text-slate-400">
                     No leads found
                   </td>
                 </tr>

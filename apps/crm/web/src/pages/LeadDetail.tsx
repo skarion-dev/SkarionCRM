@@ -41,6 +41,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/utils.js';
 import { useEffect, useState } from 'react';
+import { useAuthStore } from '../stores/auth.js';
 import ActivityTimeline from '../components/ActivityTimeline.js';
 import ActivityForm from '../components/ActivityForm.js';
 import LeadForm from '../components/forms/LeadForm.js';
@@ -122,6 +123,7 @@ function getNextStatus(current: LeadJourneyStage): LeadJourneyStage | null {
 export default function LeadDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const isSuperadmin = useAuthStore((state) => state.user?.isSuperadmin ?? false);
   const { data, isLoading } = useLead(id ?? '');
   const { data: aiAssessmentData } = useLeadAiAssessment(id ?? '', Boolean(id));
   const generateAiAssessment = useGenerateLeadAiAssessment(id ?? '');
@@ -298,29 +300,31 @@ export default function LeadDetail() {
             >
               <Pencil size={16} />
             </button>
-            <button
-              onClick={() => {
-                if (
-                  window.confirm(
-                    'Are you sure you want to delete this lead? This action cannot be undone.'
-                  )
-                ) {
-                  deleteMutation.mutate(
-                    { type: 'leads', id: lead.id },
-                    {
-                      onSuccess: () => {
-                        showToast('Lead deleted', 'success');
-                        navigate('/leads');
-                      },
-                    }
-                  );
-                }
-              }}
-              className="p-1.5 rounded hover:bg-red-100 text-red-500"
-              title="Delete lead"
-            >
-              <Trash2 size={16} />
-            </button>
+            {isSuperadmin && (
+              <button
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      'Are you sure you want to delete this lead? This action cannot be undone.'
+                    )
+                  ) {
+                    deleteMutation.mutate(
+                      { type: 'leads', id: lead.id },
+                      {
+                        onSuccess: () => {
+                          showToast('Lead deleted', 'success');
+                          navigate('/leads');
+                        },
+                      }
+                    );
+                  }
+                }}
+                className="p-1.5 rounded hover:bg-red-100 text-red-500"
+                title="Delete lead (superadmin only)"
+              >
+                <Trash2 size={16} />
+              </button>
+            )}
           </div>
         </div>
 

@@ -43,8 +43,10 @@ describe('lead tags', () => {
   it('keeps the Future tag and journey stage aligned', () => {
     expect(hasLeadTag(['Batch 8', ' future '], 'Future')).toBe(true);
     expect(journeyStageForTags('new', ['Future'])).toBe('future');
+    expect(journeyStageForTags('new', ['Future Candidates'])).toBe('future');
     expect(syncFutureTagForJourney(['Batch 8'], 'future')).toEqual(['Batch 8', 'Future']);
     expect(syncFutureTagForJourney(['Future', 'Batch 8'], 'new')).toEqual(['Batch 8']);
+    expect(syncFutureTagForJourney(['Future Candidates', 'Batch 8'], 'new')).toEqual(['Batch 8']);
     expect(isLeadActivationStage('new')).toBe(true);
     expect(isLeadActivationStage('future')).toBe(false);
   });

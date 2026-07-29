@@ -88,7 +88,6 @@ import {
 } from './lib/ceo-reporting.js';
 import {
   formatBatchTag,
-  hasLeadTag,
   isLeadActivationStage,
   isLeadJourneyStage,
   journeyStageForTags,
@@ -3675,11 +3674,8 @@ app.put('/api/leads/:id', async (c) => {
     update.tags = syncedTags;
     updatedTags = syncedTags;
   } else if (updatedTags) {
-    const journeyStage = hasLeadTag(updatedTags, 'future')
-      ? 'future'
-      : existing.journeyStage === 'future'
-        ? 'new'
-        : existing.journeyStage;
+    const baseJourneyStage = existing.journeyStage === 'future' ? 'new' : existing.journeyStage;
+    const journeyStage = journeyStageForTags(baseJourneyStage, updatedTags);
     if (journeyStage !== existing.journeyStage) {
       const legacy = legacyFieldsForJourney(journeyStage);
       update.journeyStage = journeyStage;
@@ -3784,6 +3780,10 @@ app.delete('/api/leads/:id', async (c) => {
   const role = getRole(c);
   const isSuperadmin = c.get('isSuperadmin');
   const caller = { userId: c.get('userId'), isSuperadmin };
+
+  if (!isSuperadmin) {
+    return c.json({ error: 'Forbidden. Superadmin access is required to delete leads.' }, 403);
+  }
 
   const [existing] = await db
     .select()
@@ -4289,6 +4289,12 @@ app.post('/api/leads/bulk', async (c) => {
     return c.json({ error: 'Invalid action.' }, 400);
   }
 
+  // Lead deletion is deliberately stricter than ordinary editing. Other users
+  // keep records auditable by moving them to Disqualified or Lost.
+  if (action === 'delete' && !isSuperadmin) {
+    return c.json({ error: 'Forbidden. Superadmin access is required to delete leads.' }, 403);
+  }
+
   // update_tags requires manager or superadmin; assign_owner requires superadmin only.
   if (action === 'update_tags' && !isSuperadmin && role !== 'manager') {
     return c.json({ error: 'Forbidden. Manager role required to bulk-update tags.' }, 403);
@@ -4475,11 +4481,8 @@ app.post('/api/leads/bulk', async (c) => {
         const existing = Array.isArray(lead.tags) ? (lead.tags as string[]) : [];
         nextTags = [...new Set([...existing, ...tags])];
       }
-      const nextJourneyStage = hasLeadTag(nextTags, 'future')
-        ? 'future'
-        : lead.journeyStage === 'future'
-          ? 'new'
-          : lead.journeyStage;
+      const baseJourneyStage = lead.journeyStage === 'future' ? 'new' : lead.journeyStage;
+      const nextJourneyStage = journeyStageForTags(baseJourneyStage, nextTags);
       const nextLegacy = legacyFieldsForJourney(nextJourneyStage);
       await db
         .update(schema.leads)

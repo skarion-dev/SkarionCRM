@@ -167,12 +167,17 @@ export function hasLeadTag(values: unknown, expectedTag: string): boolean {
   return normalizeTagNames(values).some((tag) => tag.toLowerCase() === expected);
 }
 
+function isFutureTagName(tag: string): boolean {
+  const normalized = tag.trim().toLowerCase();
+  return normalized === 'future' || normalized.startsWith('future ');
+}
+
 export function journeyStageForTags(stage: LeadJourneyStage, tags: unknown): LeadJourneyStage {
-  return hasLeadTag(tags, 'future') ? 'future' : stage;
+  return normalizeTagNames(tags).some(isFutureTagName) ? 'future' : stage;
 }
 
 export function syncFutureTagForJourney(values: unknown, stage: LeadJourneyStage): string[] {
-  const withoutFuture = normalizeTagNames(values).filter((tag) => tag.toLowerCase() !== 'future');
+  const withoutFuture = normalizeTagNames(values).filter((tag) => !isFutureTagName(tag));
   return stage === 'future' ? normalizeTagNames([...withoutFuture, 'Future']) : withoutFuture;
 }
 
