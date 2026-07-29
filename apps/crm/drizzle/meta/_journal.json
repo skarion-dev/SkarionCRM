@@ -218,6 +218,13 @@
       "when": 1785368000000,
       "tag": "0030_recover_legacy_linkedin_message_dump",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1785369500000,
+      "tag": "0031_ai_usage_reasoning_tokens",
+      "breakpoints": true
     }
   ]
 }

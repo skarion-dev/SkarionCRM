@@ -691,16 +691,16 @@ function AiUsageDashboard({
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-5">
             {[
               {
-                label: 'Estimated cost',
+                label: 'CRM-estimated cost',
                 value: formatEstimatedUsd(data.totals.estimatedCostUsd),
-                detail: data.label,
+                detail: `${data.label} · tracked inference only`,
                 icon: Coins,
                 tone: 'text-emerald-700 bg-emerald-50',
               },
               {
                 label: 'Total tokens',
                 value: formatTokenCount(data.totals.totalTokens),
-                detail: `${formatTokenCount(data.totals.inputTokens)} in · ${formatTokenCount(data.totals.outputTokens)} out`,
+                detail: `${formatTokenCount(data.totals.inputTokens)} in · ${formatTokenCount(data.totals.outputTokens)} visible out · ${formatTokenCount(data.totals.reasoningTokens)} thinking`,
                 icon: Activity,
                 tone: 'text-blue-700 bg-blue-50',
               },
@@ -784,8 +784,9 @@ function AiUsageDashboard({
               </div>
             </div>
           ) : (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-5">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-5">
               {[
+                { title: 'Cost by provider', rows: data.byProvider },
                 { title: 'Cost by model', rows: data.byModel },
                 { title: 'Usage by agent', rows: data.byAgent },
               ].map((section) => (
@@ -822,9 +823,11 @@ function AiUsageDashboard({
           )}
 
           <p className="text-[11px] text-slate-400 mt-4">
-            Costs are estimates based on configured model list prices as of {data.pricingUpdatedAt}.
-            Provider token metadata is used when available; streaming or legacy calls without
-            metadata use a character-based token estimate.
+            CRM costs are inference estimates based on configured model list prices as of{' '}
+            {data.pricingUpdatedAt}. Google Cloud Billing is authoritative and may also include
+            other projects, Cloud Run, networking, legacy/direct API traffic, taxes, and
+            adjustments. Provider token metadata is used when available; streaming or legacy calls
+            without metadata use a character-based token estimate.
           </p>
         </>
       )}

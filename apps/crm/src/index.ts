@@ -2372,7 +2372,9 @@ async function getConfiguredAiEnv(db: CrmDb, env: Env, actorUserId?: string | nu
     AI_PROVIDER: settings.defaultProvider,
     AI_GATEWAY_BASE_URL: useVertex ? env.AI_GATEWAY_BASE_URL : undefined,
     AI_GATEWAY_API_KEY: useVertex ? env.AI_GATEWAY_API_KEY : undefined,
-    GOOGLE_API_KEY: env.GOOGLE_API_KEY,
+    // Keep provider projects isolated. A Vertex failure must not silently
+    // spend against the legacy/direct Google AI key (for example TalentOS).
+    GOOGLE_API_KEY: useVertex ? undefined : env.GOOGLE_API_KEY,
     AI_MODEL_REASONING: settings.tierModels.reasoning,
     AI_MODEL_DEFAULT: settings.tierModels.fast,
     AI_MODEL_CHEAP: settings.tierModels.cheap,
@@ -2402,6 +2404,7 @@ async function getConfiguredAiEnv(db: CrmDb, env: Env, actorUserId?: string | nu
         status: record.status,
         inputTokens: record.usage.inputTokens,
         outputTokens: record.usage.outputTokens,
+        reasoningTokens: record.usage.reasoningTokens ?? 0,
         totalTokens: record.usage.totalTokens,
         cachedInputTokens: record.usage.cachedInputTokens ?? 0,
         estimatedCostUsd: record.estimatedCostUsd.toFixed(8),
@@ -7524,6 +7527,7 @@ app.get('/api/ai/usage', async (c) => {
       status: schema.aiUsageEvents.status,
       inputTokens: schema.aiUsageEvents.inputTokens,
       outputTokens: schema.aiUsageEvents.outputTokens,
+      reasoningTokens: schema.aiUsageEvents.reasoningTokens,
       totalTokens: schema.aiUsageEvents.totalTokens,
       cachedInputTokens: schema.aiUsageEvents.cachedInputTokens,
       estimatedCostUsd: schema.aiUsageEvents.estimatedCostUsd,
@@ -7542,6 +7546,7 @@ app.get('/api/ai/usage', async (c) => {
     successfulRequests: number;
     inputTokens: number;
     outputTokens: number;
+    reasoningTokens: number;
     totalTokens: number;
     cachedInputTokens: number;
     estimatedCostUsd: number;
@@ -7554,6 +7559,7 @@ app.get('/api/ai/usage', async (c) => {
     successfulRequests: 0,
     inputTokens: 0,
     outputTokens: 0,
+    reasoningTokens: 0,
     totalTokens: 0,
     cachedInputTokens: 0,
     estimatedCostUsd: 0,
@@ -7565,6 +7571,7 @@ app.get('/api/ai/usage', async (c) => {
   let providerMeasuredRequests = 0;
   const byModel = new Map<string, UsageAggregate>();
   const byAgent = new Map<string, UsageAggregate>();
+  const byProvider = new Map<string, UsageAggregate>();
   const series = new Map<
     number,
     { timestamp: string; requests: number; tokens: number; estimatedCostUsd: number }
@@ -7588,6 +7595,7 @@ app.get('/api/ai/usage', async (c) => {
     if (row.status === 'success') aggregate.successfulRequests += 1;
     aggregate.inputTokens += row.inputTokens;
     aggregate.outputTokens += row.outputTokens;
+    aggregate.reasoningTokens += row.reasoningTokens;
     aggregate.totalTokens += row.totalTokens;
     aggregate.cachedInputTokens += row.cachedInputTokens;
     aggregate.estimatedCostUsd += cost;
@@ -7611,6 +7619,18 @@ app.get('/api/ai/usage', async (c) => {
       byModel.get(modelId) ?? makeAggregate(modelId, modelOption?.label ?? modelId);
     addRow(modelAggregate, row, cost);
     byModel.set(modelId, modelAggregate);
+
+    const providerId = row.provider;
+    const providerLabel =
+      providerId === 'vertex_proxy'
+        ? 'Vertex Agent API proxy'
+        : providerId === 'google_ai'
+          ? 'Direct Google AI'
+          : providerId;
+    const providerAggregate =
+      byProvider.get(providerId) ?? makeAggregate(providerId, providerLabel);
+    addRow(providerAggregate, row, cost);
+    byProvider.set(providerId, providerAggregate);
 
     const agentId = row.agentId || 'unattributed';
     const agent = AI_AGENTS.find((candidate) => candidate.id === row.agentId);
@@ -7652,6 +7672,9 @@ app.get('/api/ai/usage', async (c) => {
       estimatedCostUsd: roundedUsageCost(point.estimatedCostUsd),
     })),
     byModel: Array.from(byModel.values())
+      .map(finishAggregate)
+      .sort((left, right) => right.estimatedCostUsd - left.estimatedCostUsd),
+    byProvider: Array.from(byProvider.values())
       .map(finishAggregate)
       .sort((left, right) => right.estimatedCostUsd - left.estimatedCostUsd),
     byAgent: Array.from(byAgent.values())

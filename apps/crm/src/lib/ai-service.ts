@@ -35,8 +35,16 @@ export const DEFAULT_EMBEDDING_MODEL = 'text-embedding-004';
 export const AI_NOT_CONFIGURED_MSG =
   'AI assistant is not configured. Add AI gateway credentials or GOOGLE_API_KEY to enable AI features.';
 
+function canUseDirectGoogleAi(env: Env): env is Env & { GOOGLE_API_KEY: string } {
+  if (!env.GOOGLE_API_KEY) return false;
+  // An explicitly selected Vertex proxy must remain inside its own project.
+  // Direct Google AI is retained for the explicit google_ai provider and
+  // legacy environments that do not have a gateway configured.
+  return env.AI_PROVIDER === 'google_ai' || (!env.AI_PROVIDER && !hasAiGateway(env));
+}
+
 export function isAiConfigured(env: Env): boolean {
-  return hasAiGateway(env) || Boolean(env.GOOGLE_API_KEY);
+  return hasAiGateway(env) || canUseDirectGoogleAi(env);
 }
 
 function estimatedTokenUsage(input: string, output = ''): AiTokenUsage {
@@ -50,11 +58,14 @@ function googleUsageMetadata(value: unknown): AiTokenUsage | null {
   const usage = value as Record<string, unknown>;
   const inputTokens = Number(usage.promptTokenCount ?? 0);
   const outputTokens = Number(usage.candidatesTokenCount ?? 0);
-  const totalTokens = Number(usage.totalTokenCount ?? inputTokens + outputTokens);
-  if (![inputTokens, outputTokens, totalTokens].some((count) => count > 0)) return null;
+  const reasoningTokens = Number(usage.thoughtsTokenCount ?? 0);
+  const totalTokens = Number(usage.totalTokenCount ?? inputTokens + outputTokens + reasoningTokens);
+  if (![inputTokens, outputTokens, reasoningTokens, totalTokens].some((count) => count > 0))
+    return null;
   return {
     inputTokens: Math.max(0, Math.round(inputTokens)),
     outputTokens: Math.max(0, Math.round(outputTokens)),
+    reasoningTokens: Math.max(0, Math.round(reasoningTokens)),
     totalTokens: Math.max(0, Math.round(totalTokens)),
     cachedInputTokens: Math.max(0, Math.round(Number(usage.cachedContentTokenCount ?? 0))),
   };
@@ -102,7 +113,7 @@ export async function getEmbedding(
     const embedding = await gatewayEmbedding(text, env, { agent });
     if (embedding) return embedding;
   }
-  if (!env.GOOGLE_API_KEY) return null;
+  if (!canUseDirectGoogleAi(env)) return null;
   const model = env.GOOGLE_EMBEDDING_MODEL || DEFAULT_EMBEDDING_MODEL;
   const startedAt = Date.now();
   try {
@@ -268,7 +279,7 @@ export async function chatCompletion(
     }
   }
 
-  if (!env.GOOGLE_API_KEY) return null;
+  if (!canUseDirectGoogleAi(env)) return null;
   const preferredModel = env.GOOGLE_MODEL || env.GOOGLE_CHAT_MODEL || DEFAULT_CHAT_MODEL;
   const fallbackModel = env.GOOGLE_FALLBACK_MODEL || DEFAULT_FALLBACK_MODEL;
 
@@ -720,7 +731,7 @@ Return ONLY the JSON object, no markdown, no explanation.`;
   }
 
   if (text) return parseExtractedLead(text);
-  if (!env.GOOGLE_API_KEY) return null;
+  if (!canUseDirectGoogleAi(env)) return null;
 
   const preferredModel = env.GOOGLE_MODEL || DEFAULT_CHAT_MODEL;
   const fallbackModel = env.GOOGLE_FALLBACK_MODEL || DEFAULT_FALLBACK_MODEL;
@@ -847,7 +858,7 @@ export async function extractDocumentText(
     if (result) return result;
   }
 
-  if (!env.GOOGLE_API_KEY) return null;
+  if (!canUseDirectGoogleAi(env)) return null;
   const model = env.GOOGLE_MODEL || DEFAULT_FALLBACK_MODEL;
   const startedAt = Date.now();
   try {

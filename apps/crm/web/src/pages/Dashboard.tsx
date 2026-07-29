@@ -480,7 +480,7 @@ export default function Dashboard() {
                     <span className="text-xs font-semibold">{data.aiUsage.period} AI usage</span>
                   </div>
                   <span className="rounded bg-white/10 px-2 py-1 text-[10px] text-slate-300">
-                    {data.aiUsage.defaultModel}
+                    CRM-tracked
                   </span>
                 </div>
                 <div className="mt-3 grid grid-cols-3 gap-3">
@@ -496,7 +496,7 @@ export default function Dashboard() {
                     <div className="text-lg font-semibold">
                       ${Number(data.aiUsage.costUsd).toFixed(3)}
                     </div>
-                    <div className="text-[10px] text-slate-400">estimated cost</div>
+                    <div className="text-[10px] text-slate-400">inference estimate</div>
                   </div>
                 </div>
               </div>

@@ -169,10 +169,14 @@ describe('Vertex gateway client', () => {
       new Response(
         JSON.stringify({
           choices: [{ message: { content: 'Measured response' } }],
+          model: 'gemini-2.5-pro',
           usage: {
             prompt_tokens: 1_000,
             completion_tokens: 500,
             total_tokens: 1_500,
+            completion_tokens_details: {
+              reasoning_tokens: 200,
+            },
           },
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
@@ -196,17 +200,44 @@ describe('Vertex gateway client', () => {
     expect(recorder.mock.calls[0]?.[0]).toMatchObject({
       provider: 'vertex_proxy',
       model: 'coding-best',
-      backingModel: 'gemini-3.1-pro-preview',
+      backingModel: 'gemini-2.5-pro',
       agentId: 'reporting-ceo',
       requestType: 'chat',
       status: 'success',
       usageSource: 'provider',
       usage: {
         inputTokens: 1_000,
-        outputTokens: 500,
+        outputTokens: 300,
+        reasoningTokens: 200,
         totalTokens: 1_500,
       },
-      estimatedCostUsd: 0.008,
+      estimatedCostUsd: 0.00625,
     });
+  });
+
+  it('does not escape to a direct Google key when Vertex is the selected provider', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('gateway unavailable', { status: 503 }))
+      .mockResolvedValueOnce(new Response('fallback unavailable', { status: 503 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      chatCompletionSingle(
+        'hello',
+        {
+          ...env,
+          AI_PROVIDER: 'vertex_proxy',
+          GOOGLE_API_KEY: 'legacy-talentos-key',
+        },
+        { model: 'coding-best', agent: 'crm-copilot' }
+      )
+    ).resolves.toBeNull();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(
+      fetchMock.mock.calls.every(([url]) => String(url).includes('vertex-proxy.example'))
+    ).toBe(true);
   });
 });

@@ -1160,6 +1160,7 @@ export interface AiUsageAggregate {
   successfulRequests: number;
   inputTokens: number;
   outputTokens: number;
+  reasoningTokens: number;
   totalTokens: number;
   cachedInputTokens: number;
   estimatedCostUsd: number;
@@ -1184,6 +1185,7 @@ export interface AiUsageResponse {
   }>;
   byModel: AiUsageAggregate[];
   byAgent: AiUsageAggregate[];
+  byProvider: AiUsageAggregate[];
 }
 
 export function useAiUsage(period: AiUsagePeriod) {

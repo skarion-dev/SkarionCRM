@@ -1086,6 +1086,7 @@ export const aiUsageEvents = crmSchema.table(
     status: text('status').notNull(),
     inputTokens: integer('input_tokens').default(0).notNull(),
     outputTokens: integer('output_tokens').default(0).notNull(),
+    reasoningTokens: integer('reasoning_tokens').default(0).notNull(),
     totalTokens: integer('total_tokens').default(0).notNull(),
     cachedInputTokens: integer('cached_input_tokens').default(0).notNull(),
     estimatedCostUsd: decimal('estimated_cost_usd', { precision: 16, scale: 8 })

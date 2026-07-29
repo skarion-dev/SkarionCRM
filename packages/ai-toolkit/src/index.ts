@@ -27,7 +27,10 @@ export interface AiGatewayMessage {
 
 export interface AiTokenUsage {
   inputTokens: number;
+  /** Visible/generated response tokens, excluding hidden reasoning tokens when reported separately. */
   outputTokens: number;
+  /** Hidden model reasoning/thinking tokens. These are billed as output tokens. */
+  reasoningTokens?: number;
   totalTokens: number;
   cachedInputTokens?: number;
 }
@@ -177,10 +180,11 @@ export function estimateAiCostUsd(model: string, usage: AiTokenUsage): number {
   if (!pricing) return 0;
   const cachedInputTokens = Math.min(usage.inputTokens, usage.cachedInputTokens ?? 0);
   const uncachedInputTokens = usage.inputTokens - cachedInputTokens;
+  const billableOutputTokens = usage.outputTokens + (usage.reasoningTokens ?? 0);
   return (
     (uncachedInputTokens * pricing.inputPricePerMillion +
       cachedInputTokens * pricing.inputPricePerMillion * 0.1 +
-      usage.outputTokens * pricing.outputPricePerMillion) /
+      billableOutputTokens * pricing.outputPricePerMillion) /
     1_000_000
   );
 }
@@ -376,18 +380,37 @@ function parseOpenAiUsage(value: unknown): AiTokenUsage | null {
   const inputTokens = toNonNegativeInteger(
     usage.prompt_tokens ?? usage.input_tokens ?? usage.promptTokenCount
   );
-  const outputTokens = toNonNegativeInteger(
+  const reportedOutputTokens = toNonNegativeInteger(
     usage.completion_tokens ?? usage.output_tokens ?? usage.candidatesTokenCount
   );
+  const outputDetails = (usage.completion_tokens_details ?? usage.output_tokens_details) as
+    | Record<string, unknown>
+    | undefined;
+  const reasoningTokens = toNonNegativeInteger(
+    outputDetails?.reasoning_tokens ??
+      outputDetails?.reasoningTokens ??
+      usage.reasoning_tokens ??
+      usage.thoughtsTokenCount
+  );
+  // OpenAI-compatible completion/output counts include reasoning. Native
+  // Gemini candidatesTokenCount does not, so only subtract for the former.
+  const outputIncludesReasoning =
+    usage.completion_tokens !== undefined || usage.output_tokens !== undefined;
+  const outputTokens = outputIncludesReasoning
+    ? Math.max(0, reportedOutputTokens - reasoningTokens)
+    : reportedOutputTokens;
   const totalTokens =
-    toNonNegativeInteger(usage.total_tokens ?? usage.totalTokenCount) || inputTokens + outputTokens;
-  if (totalTokens === 0 && inputTokens === 0 && outputTokens === 0) return null;
+    toNonNegativeInteger(usage.total_tokens ?? usage.totalTokenCount) ||
+    inputTokens + outputTokens + reasoningTokens;
+  if (totalTokens === 0 && inputTokens === 0 && outputTokens === 0 && reasoningTokens === 0)
+    return null;
   const details = (usage.prompt_tokens_details ?? usage.input_tokens_details) as
     | Record<string, unknown>
     | undefined;
   return {
     inputTokens,
     outputTokens,
+    reasoningTokens,
     totalTokens,
     cachedInputTokens: toNonNegativeInteger(
       details?.cached_tokens ?? usage.cachedContentTokenCount
@@ -418,19 +441,26 @@ function estimateUsage(
 
 async function recordGatewayUsage(
   env: AiGatewayEnv,
-  record: Omit<AiUsageRecord, 'backingModel' | 'estimatedCostUsd'>
+  record: Omit<AiUsageRecord, 'backingModel' | 'estimatedCostUsd'> & { backingModel?: string }
 ): Promise<void> {
   if (!env.AI_USAGE_RECORDER) return;
+  const backingModel = record.backingModel || getAiBackingModel(record.model);
   const completeRecord: AiUsageRecord = {
     ...record,
-    backingModel: getAiBackingModel(record.model),
-    estimatedCostUsd: estimateAiCostUsd(record.model, record.usage),
+    backingModel,
+    estimatedCostUsd: estimateAiCostUsd(backingModel, record.usage),
   };
   try {
     await env.AI_USAGE_RECORDER(completeRecord);
   } catch (error) {
     console.error('AI usage recorder failed:', error);
   }
+}
+
+function gatewayResponseBackingModel(value: unknown, requestedModel: string): string {
+  if (typeof value !== 'string' || !value.trim()) return getAiBackingModel(requestedModel);
+  const normalized = value.trim().replace(/^vertex_ai\//, '');
+  return getAiBackingModel(normalized);
 }
 
 export async function gatewayChatCompletion(
@@ -486,6 +516,7 @@ export async function gatewayChatCompletion(
     const data = (await response.json()) as {
       choices?: { message?: { content?: string } }[];
       usage?: unknown;
+      model?: unknown;
     };
     const content = data.choices?.[0]?.message?.content ?? null;
     const providerUsage = parseOpenAiUsage(data.usage);
@@ -493,6 +524,7 @@ export async function gatewayChatCompletion(
     await recordGatewayUsage(env, {
       provider: 'vertex_proxy',
       model,
+      backingModel: gatewayResponseBackingModel(data.model, model),
       agentId: options.agent,
       requestType: 'chat',
       status: 'success',
@@ -597,12 +629,14 @@ export async function* gatewayChatCompletionStream(
     const data = (await response.json()) as {
       choices?: { message?: { content?: string } }[];
       usage?: unknown;
+      model?: unknown;
     };
     const content = data.choices?.[0]?.message?.content;
     const providerUsage = parseOpenAiUsage(data.usage);
     await recordGatewayUsage(env, {
       provider: 'vertex_proxy',
       model,
+      backingModel: gatewayResponseBackingModel(data.model, model),
       agentId: options.agent,
       requestType: 'chat',
       status: 'success',
@@ -621,6 +655,7 @@ export async function* gatewayChatCompletionStream(
   let completed = false;
   let outputText = '';
   let providerUsage: AiTokenUsage | null = null;
+  let responseBackingModel = getAiBackingModel(model);
 
   try {
     while (true) {
@@ -638,7 +673,9 @@ export async function* gatewayChatCompletionStream(
             const data = JSON.parse(payload) as {
               choices?: { delta?: { content?: string } }[];
               usage?: unknown;
+              model?: unknown;
             };
+            responseBackingModel = gatewayResponseBackingModel(data.model, responseBackingModel);
             providerUsage = parseOpenAiUsage(data.usage) ?? providerUsage;
             const content = data.choices?.[0]?.delta?.content;
             if (content) {
@@ -662,6 +699,7 @@ export async function* gatewayChatCompletionStream(
     await recordGatewayUsage(env, {
       provider: 'vertex_proxy',
       model,
+      backingModel: responseBackingModel,
       agentId: options.agent,
       requestType: 'chat',
       status: completed ? 'success' : 'cancelled',
