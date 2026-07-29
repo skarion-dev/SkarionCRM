@@ -482,6 +482,59 @@
         background: #004182;
       }
 
+      .scrape-progress {
+        display: none;
+        background: white;
+        border: 1px solid #bfdbfe;
+        border-radius: 8px;
+        padding: 10px 12px;
+      }
+      .scrape-progress.open {
+        display: block;
+      }
+      .scrape-progress.failed {
+        border-color: #fecaca;
+      }
+      .scrape-progress.complete {
+        border-color: #bbf7d0;
+      }
+      .scrape-progress-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 11px;
+        font-weight: 700;
+      }
+      .scrape-progress-percent {
+        color: #0a66c2;
+      }
+      .scrape-progress-track {
+        height: 7px;
+        background: #dbeafe;
+        border-radius: 999px;
+        overflow: hidden;
+        margin-top: 7px;
+      }
+      .scrape-progress-fill {
+        height: 100%;
+        width: 0;
+        background: #0a66c2;
+        border-radius: inherit;
+        transition: width 180ms ease;
+      }
+      .scrape-progress.complete .scrape-progress-fill {
+        background: #16a34a;
+      }
+      .scrape-progress.failed .scrape-progress-fill {
+        background: #dc2626;
+      }
+      .scrape-progress-detail {
+        color: #64748b;
+        font-size: 10px;
+        margin-top: 6px;
+      }
+
       .tip {
         font-size: 10px;
         color: #aaa;
@@ -538,6 +591,17 @@
       </div>
 
       <button class="btn btn-capture" id="btnCaptureNow">📸 Capture Current Profile Now</button>
+
+      <div class="scrape-progress" id="scrapeProgress">
+        <div class="scrape-progress-head">
+          <span id="scrapeProgressMessage">Preparing profile scan</span>
+          <span class="scrape-progress-percent" id="scrapeProgressPercent">0%</span>
+        </div>
+        <div class="scrape-progress-track">
+          <div class="scrape-progress-fill" id="scrapeProgressFill"></div>
+        </div>
+        <div class="scrape-progress-detail" id="scrapeProgressDetail"></div>
+      </div>
 
       <div class="search-box">
         <input type="text" id="searchInput" placeholder="Search by name, headline, location…" />

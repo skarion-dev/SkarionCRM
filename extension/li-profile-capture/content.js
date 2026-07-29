@@ -8,8 +8,11 @@
 // page (duplicate captures, doubled scroll/observer overhead) and both
 // copies would race scrollAndCapture against each other. Guard on a property
 // of `window` (not a top-level const/let) so re-injection reads it as
-// already-true and returns instead of throwing a redeclaration error.
-if (typeof window.__liProfileCaptureInitialized === 'undefined') {
+// already-current and returns instead of throwing a redeclaration error.
+// Comparing the manifest version also lets a newly reloaded extension replace
+// an orphaned listener from the prior version without requiring a tab refresh.
+if (window.__liProfileCaptureVersion !== chrome.runtime.getManifest().version) {
+  window.__liProfileCaptureVersion = chrome.runtime.getManifest().version;
   window.__liProfileCaptureInitialized = true;
   window.__liProfileCaptureRunning = false;
   initLiProfileCapture();
@@ -17,9 +20,34 @@ if (typeof window.__liProfileCaptureInitialized === 'undefined') {
 
 function initLiProfileCapture() {
   const CAPTURE_DELAY = 3000; // wait for lazy sections to render
+  let currentProgress = {
+    status: 'waiting',
+    percent: 5,
+    message: 'Waiting for LinkedIn to finish loading',
+    detail: 'The scraper will start automatically.',
+  };
 
   function delay(ms) {
     return new Promise((r) => setTimeout(r, ms));
+  }
+
+  function profileIdFromUrl() {
+    return window.location.href.split('/in/')[1]?.split('?')[0]?.replace(/\/$/, '') || '';
+  }
+
+  function reportProgress(status, percent, message, detail = '') {
+    currentProgress = { status, percent, message, detail };
+    chrome.runtime.sendMessage(
+      {
+        action: 'scrapeProgress',
+        status,
+        percent,
+        message,
+        detail,
+        profileId: profileIdFromUrl(),
+      },
+      () => void chrome.runtime.lastError
+    );
   }
 
   // Thorough multi-pass scroller: LinkedIn only renders Experience/Education/Skills
@@ -31,6 +59,7 @@ function initLiProfileCapture() {
     let lastHeight = 0;
     let lastSectionCount = 0;
     const maxRounds = 40; // hard cap so we never loop forever
+    let highestPercent = 15;
 
     for (let round = 0; round < maxRounds; round++) {
       // Scroll down in a modest step so LinkedIn's intersection observers fire
@@ -39,7 +68,20 @@ function initLiProfileCapture() {
 
       const height = document.body.scrollHeight;
       const sectionCount = document.querySelectorAll('section').length;
+      const visibleSectionNames = Array.from(document.querySelectorAll('section h2'))
+        .map((heading) => heading.innerText.trim())
+        .filter(Boolean)
+        .slice(-3);
       const atBottom = window.scrollY + window.innerHeight >= height - 100;
+      const scrollableHeight = Math.max(1, height - window.innerHeight);
+      const pageProgress = Math.min(1, window.scrollY / scrollableHeight);
+      highestPercent = Math.max(highestPercent, Math.round(15 + pageProgress * 55));
+      reportProgress(
+        'running',
+        highestPercent,
+        'Loading LinkedIn profile sections',
+        `Scroll pass ${round + 1} · ${sectionCount} sections${visibleSectionNames.length ? ` · ${visibleSectionNames.join(', ')}` : ''}`
+      );
 
       // Consider things "stable" once neither page height nor section count
       // has grown for two consecutive rounds AND we've reached the bottom
@@ -57,15 +99,29 @@ function initLiProfileCapture() {
         // We hit the bottom but content is still growing — pause a bit longer
         // to let lazy sections (Experience/Education/Skills) finish rendering
         await delay(700);
+        reportProgress(
+          'running',
+          Math.max(highestPercent, 72),
+          'Waiting for lazy-loaded sections',
+          'LinkedIn is still adding profile content.'
+        );
       }
     }
 
     // Extra settle time, then click any expanders and give the DOM one more beat
+    reportProgress('running', 78, 'Expanding profile details', 'Opening “see more” sections.');
     await delay(400);
-    clickExpanders();
+    const expanded = clickExpanders();
+    reportProgress(
+      'running',
+      84,
+      'Expanded profile details',
+      `${expanded} expandable section${expanded === 1 ? '' : 's'} opened`
+    );
     await delay(400);
 
     // Scroll back to top for a clean state
+    reportProgress('running', 88, 'Finalizing page scan', 'Returning the profile to the top.');
     window.scrollTo({ top: 0, behavior: 'instant' });
     await delay(300);
   }
@@ -195,14 +251,26 @@ function initLiProfileCapture() {
     // Auto-capture (on load) and the popup's manual re-injection can both call
     // run() close together; without this lock they'd scroll/observe the same
     // page concurrently.
-    if (window.__liProfileCaptureRunning) return;
+    if (window.__liProfileCaptureRunning) {
+      reportProgress(
+        currentProgress.status,
+        currentProgress.percent,
+        currentProgress.message,
+        currentProgress.detail
+      );
+      return;
+    }
     window.__liProfileCaptureRunning = true;
 
     try {
+      reportProgress('running', 10, 'Starting profile scan', 'Preparing the LinkedIn page.');
       await scrollAndCapture();
 
+      reportProgress('running', 92, 'Reading profile data', 'Extracting visible profile fields.');
       const profile = extractProfile();
-      if (!profile.name || profile.name === 'LinkedIn') return;
+      if (!profile.name || profile.name === 'LinkedIn') {
+        throw new Error('LinkedIn profile name was not available.');
+      }
 
       // Preserve the idempotency key across re-captures of the same profile so
       // repeated sends to the CRM stay recognizable as the same intent.
@@ -214,18 +282,44 @@ function initLiProfileCapture() {
       // Refresh scraped LinkedIn fields without erasing the persistent CRM
       // delivery receipt added by popup.js after the server confirms a send.
       existing[profile.profileId] = { ...prior, ...profile };
+      reportProgress('running', 97, 'Saving captured profile', 'Writing to extension storage.');
       chrome.storage.local.set({ profiles: existing });
       console.log(`[LI Capture] Saved: ${profile.name} (${profile.profileId})`);
 
       // Badge the extension icon with count
       const count = Object.keys(existing).length;
       chrome.runtime.sendMessage({ action: 'updateBadge', count });
+      reportProgress(
+        'complete',
+        100,
+        'Profile captured',
+        `${profile.name} is saved locally and ready for CRM review.`
+      );
+    } catch (error) {
+      reportProgress(
+        'failed',
+        currentProgress.percent,
+        'Capture failed',
+        error instanceof Error ? error.message : 'Unknown capture error.'
+      );
     } finally {
       window.__liProfileCaptureRunning = false;
     }
   }
 
+  chrome.runtime.onMessage.addListener((message) => {
+    if (message.action === 'captureProfileNow') {
+      void run();
+    }
+  });
+
   // Run after page is stable
+  reportProgress(
+    'waiting',
+    5,
+    'Waiting for LinkedIn to finish loading',
+    'Automatic capture starts in about 3 seconds.'
+  );
   setTimeout(run, CAPTURE_DELAY);
 
   // Also listen for SPA navigation within the same tab
@@ -233,6 +327,12 @@ function initLiProfileCapture() {
   new MutationObserver(() => {
     if (window.location.href !== lastUrl && window.location.href.includes('/in/')) {
       lastUrl = window.location.href;
+      reportProgress(
+        'waiting',
+        5,
+        'New LinkedIn profile detected',
+        'Automatic capture starts in about 3 seconds.'
+      );
       setTimeout(run, CAPTURE_DELAY);
     }
   }).observe(document.body, { childList: true, subtree: true });

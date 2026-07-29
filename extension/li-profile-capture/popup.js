@@ -24,6 +24,13 @@ const detail = document.getElementById('detail');
 const btnReviewSend = document.getElementById('btnReviewSend');
 const btnClear = document.getElementById('btnClear');
 const btnCapture = document.getElementById('btnCaptureNow');
+const scrapeProgress = document.getElementById('scrapeProgress');
+const scrapeProgressMessage = document.getElementById('scrapeProgressMessage');
+const scrapeProgressPercent = document.getElementById('scrapeProgressPercent');
+const scrapeProgressFill = document.getElementById('scrapeProgressFill');
+const scrapeProgressDetail = document.getElementById('scrapeProgressDetail');
+let activeTabId = null;
+let activeProfileId = null;
 
 // --- Settings (CRM URL + API key), saved per-device ---
 const btnSettings = document.getElementById('btnSettings');
@@ -177,6 +184,32 @@ function render(filter = '') {
   profileList.querySelectorAll('.profile-item').forEach((el) => {
     el.addEventListener('click', () => showDetail(el.dataset.id));
   });
+}
+
+function renderScrapeProgress(progress) {
+  if (!progress || !activeProfileId || (activeTabId !== null && progress.tabId !== activeTabId)) {
+    scrapeProgress.classList.remove('open');
+    return;
+  }
+
+  const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
+  scrapeProgress.className = `scrape-progress open ${progress.status || ''}`;
+  scrapeProgressMessage.textContent = progress.message || 'Capturing profile';
+  scrapeProgressPercent.textContent = `${percent}%`;
+  scrapeProgressFill.style.width = `${percent}%`;
+  scrapeProgressDetail.textContent = progress.detail || '';
+
+  const inProgress = progress.status === 'running' || progress.status === 'waiting';
+  btnCapture.disabled = inProgress;
+  if (progress.status === 'complete') {
+    btnCapture.textContent = '✓ Profile captured';
+  } else if (progress.status === 'failed') {
+    btnCapture.textContent = '↻ Try capture again';
+  } else if (inProgress) {
+    btnCapture.textContent = `⏳ ${progress.message}`;
+  } else {
+    btnCapture.textContent = '📸 Capture Current Profile Now';
+  }
 }
 
 function showDetail(id) {
@@ -534,6 +567,28 @@ chrome.storage.local.get(['profiles'], (data) => {
   render();
 });
 
+void chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+  activeTabId = tab?.id ?? null;
+  activeProfileId = tab?.url?.split('/in/')[1]?.split('?')[0]?.replace(/\/$/, '') || null;
+  chrome.storage.local.get(['scrapeProgress'], (data) => {
+    renderScrapeProgress(data.scrapeProgress);
+  });
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local') return;
+  if (changes.scrapeProgress) {
+    renderScrapeProgress(changes.scrapeProgress.newValue);
+  }
+  if (changes.profiles) {
+    allProfiles = changes.profiles.newValue || {};
+    render(searchInput.value);
+    if (activeProfileId && allProfiles[activeProfileId]) {
+      showDetail(activeProfileId);
+    }
+  }
+});
+
 // Search
 searchInput.addEventListener('input', () => {
   selectedId = null;
@@ -551,45 +606,34 @@ btnCapture.addEventListener('click', async () => {
     }, 2000);
     return;
   }
-  btnCapture.textContent = '⏳ Scrolling & capturing…';
-  btnCapture.disabled = true;
-
-  const profileId = tab.url.split('/in/')[1]?.split('?')[0]?.replace(/\/$/, '');
-
-  // Snapshot the existing capturedAt for this profile (if any) so we can
-  // detect a genuinely NEW capture rather than matching stale stored data
-  const before = await new Promise((resolve) => {
-    chrome.storage.local.get(['profiles'], (data) =>
-      resolve((data.profiles || {})[profileId]?.capturedAt)
-    );
+  activeTabId = tab.id;
+  activeProfileId = tab.url.split('/in/')[1]?.split('?')[0]?.replace(/\/$/, '') || null;
+  renderScrapeProgress({
+    tabId: tab.id,
+    status: 'running',
+    percent: 2,
+    message: 'Starting capture',
+    detail: 'Connecting to the LinkedIn profile page.',
   });
 
   try {
-    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
-  } catch (e) {}
-
-  // Thorough scrolling can take 15–30s on long profiles, so poll for up to 45s
-  let attempts = 0;
-  const maxAttempts = 90; // 90 * 500ms = 45s
-  const poll = setInterval(() => {
-    chrome.storage.local.get(['profiles'], (data) => {
-      const profiles = data.profiles || {};
-      const current = profiles[profileId];
-      const isNew = current && current.capturedAt !== before;
-
-      if (isNew || attempts++ > maxAttempts) {
-        clearInterval(poll);
-        allProfiles = profiles;
-        render();
-        if (isNew) showDetail(profileId);
-        btnCapture.textContent = isNew ? '✓ Captured!' : '⚠ Try again';
-        btnCapture.disabled = false;
-        setTimeout(() => {
-          btnCapture.textContent = '📸 Capture Current Profile Now';
-        }, 2000);
-      }
-    });
-  }, 500);
+    await chrome.tabs.sendMessage(tab.id, { action: 'captureProfileNow' });
+  } catch {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+      await chrome.tabs.sendMessage(tab.id, { action: 'captureProfileNow' });
+    } catch (error) {
+      renderScrapeProgress({
+        tabId: tab.id,
+        status: 'failed',
+        percent: 2,
+        message: 'Could not start capture',
+        detail:
+          error instanceof Error ? error.message : 'Reload the LinkedIn profile and try again.',
+      });
+      btnCapture.disabled = false;
+    }
+  }
 });
 
 // Clear

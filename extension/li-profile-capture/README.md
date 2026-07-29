@@ -21,6 +21,9 @@ profiles straight into Skarion CRM as leads.
 - Browsing `linkedin.com/in/*` auto-captures the profile ~3s after the page
   settles (it scrolls through the page first so lazy-loaded sections like
   Experience actually render before scraping).
+- The popup shows the scraper's live stage, percentage, scroll pass, section
+  count, and recently detected LinkedIn section names. The progress comes
+  directly from the content script rather than an estimated timer.
 - Click the extension icon to see everything captured so far. **Captured**
   means saved locally in Chrome; it has not reached CRM until the profile
   displays the green **Sent to CRM** badge.
