@@ -90,6 +90,7 @@ import {
 } from './lib/linkedinExport.js';
 import {
   invitationExternalKey,
+  linkedinConversationHasReply,
   linkedinMessageClassificationPrompt,
   linkedinMessageKey,
   sanitizeLinkedInMessageClassification,
@@ -2059,8 +2060,9 @@ async function drainLinkedinMessageSyncQueue(db: CrmDb, env: Env, limit: number)
             const outboundCount = conversationMessages.filter(
               (message) => message.direction === 'outbound'
             ).length;
+            const hasInboundReply = linkedinConversationHasReply(payload.fullConversationExcerpt);
             await upsertImportedLinkedInChannel(db, lead, {
-              stage: last.direction === 'outbound' ? 'awaiting_reply' : 'replied',
+              stage: hasInboundReply ? 'replied' : 'awaiting_reply',
               lastAttemptAt: last.sentAt,
               attemptCount: outboundCount,
             });
@@ -8885,8 +8887,9 @@ app.post('/api/ceo-chat/import-linkedin', async (c) => {
       if (conversation.otherPartyProfileUrl) {
         handledProfileUrls.add(conversation.otherPartyProfileUrl);
       }
+      const hasInboundReply = linkedinConversationHasReply(conversation.messages);
       await upsertImportedLinkedInChannel(db, lead, {
-        stage: conversation.lastMessageFromUs ? 'awaiting_reply' : 'replied',
+        stage: hasInboundReply ? 'replied' : 'awaiting_reply',
         lastAttemptAt: conversation.lastMessageAt,
         attemptCount: conversation.outboundCount,
       });

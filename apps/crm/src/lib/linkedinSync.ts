@@ -59,6 +59,12 @@ export function shouldClassifyUnmatchedConversation(
   );
 }
 
+export function linkedinConversationHasReply(
+  messages: Array<Pick<LinkedInConversationMessage, 'direction'>>
+): boolean {
+  return messages.some((message) => message.direction === 'inbound');
+}
+
 export function sanitizeLinkedInMessageClassification(
   value: unknown
 ): LinkedInMessageClassification | null {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   invitationExternalKey,
+  linkedinConversationHasReply,
   linkedinMessageKey,
   sanitizeLinkedInMessageClassification,
   shouldClassifyUnmatchedConversation,
@@ -83,5 +84,16 @@ describe('linkedin sync helpers', () => {
     expect(invitationExternalKey('https://linkedin.com/in/example', 'accepted')).toBe(
       'accepted:https://linkedin.com/in/example'
     );
+  });
+
+  it('keeps a conversation engaged after the owner answers a reply', () => {
+    expect(
+      linkedinConversationHasReply([
+        { direction: 'outbound' },
+        { direction: 'inbound' },
+        { direction: 'outbound' },
+      ])
+    ).toBe(true);
+    expect(linkedinConversationHasReply([{ direction: 'outbound' }])).toBe(false);
   });
 });

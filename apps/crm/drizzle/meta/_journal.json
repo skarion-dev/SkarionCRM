@@ -197,6 +197,13 @@
       "when": 1785363500000,
       "tag": "0027_linkedin_sync_agents",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1785365000000,
+      "tag": "0028_linkedin_replies_are_engaged",
+      "breakpoints": true
     }
   ]
 }
