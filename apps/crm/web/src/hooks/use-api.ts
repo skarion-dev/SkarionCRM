@@ -213,6 +213,9 @@ export interface ProspectsResponse {
   pageSize: number;
   total: number;
   totalPages: number;
+  matchingTotal: number;
+  availableTotal: number;
+  awaitingReviewTotal: number;
 }
 
 function prospectQueryString(filters: ProspectFilters): string {
@@ -312,6 +315,7 @@ export function useReviewProspect() {
           total: Math.max(0, current.total - 1),
         };
       });
+      qc.invalidateQueries({ queryKey: ['prospects'] });
       qc.invalidateQueries({ queryKey: ['leads-infinite'] });
     },
   });
@@ -339,7 +343,8 @@ export function useProspectEvents(enabled = true) {
         for (const event of data.events) {
           if (
             event.eventType === 'prospect.import.completed' ||
-            event.eventType === 'prospect.reviewed'
+            event.eventType === 'prospect.reviewed' ||
+            event.eventType === 'prospect.claimed'
           ) {
             await qc.invalidateQueries({ queryKey: ['prospects'] });
             await qc.invalidateQueries({ queryKey: ['leads-infinite'] });

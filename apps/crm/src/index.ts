@@ -19,6 +19,7 @@ import {
   eq,
   and,
   isNull,
+  isNotNull,
   like,
   sql,
   desc,
@@ -2610,7 +2611,7 @@ app.get('/api/prospects', async (c) => {
   if (!getRole(c)) return c.json({ error: 'Forbidden.' }, 403);
   const page = Math.max(1, Number.parseInt(c.req.query('page') || '1', 10));
   const pageSize = Math.min(
-    200,
+    500,
     Math.max(1, Number.parseInt(c.req.query('pageSize') || '100', 10))
   );
   const search = c.req.query('search')?.trim().toLowerCase();
@@ -2622,9 +2623,8 @@ app.get('/api/prospects', async (c) => {
   const leadFrom = Number.parseInt(c.req.query('leadFrom') || '', 10);
   const leadTo = Number.parseInt(c.req.query('leadTo') || '', 10);
   const userId = c.get('userId');
-  const conditions = [
+  const commonConditions = [
     eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
-    eq(schema.leads.reviewState, reviewState),
     isNull(schema.leads.deletedAt),
   ];
   if (search) {
@@ -2635,12 +2635,12 @@ app.get('/api/prospects', async (c) => {
       like(sql`lower(${schema.leads.linkedinUrl})`, `%${search}%`),
       like(sql`lower(${schema.leads.leadNumber})`, `%${search}%`)
     );
-    if (searchCondition) conditions.push(searchCondition);
+    if (searchCondition) commonConditions.push(searchCondition);
   }
-  if (Number.isFinite(leadFrom)) conditions.push(gte(schema.leads.leadSequence, leadFrom));
-  if (Number.isFinite(leadTo)) conditions.push(lte(schema.leads.leadSequence, leadTo));
+  if (Number.isFinite(leadFrom)) commonConditions.push(gte(schema.leads.leadSequence, leadFrom));
+  if (Number.isFinite(leadTo)) commonConditions.push(lte(schema.leads.leadSequence, leadTo));
   if (batchId) {
-    conditions.push(
+    commonConditions.push(
       sql`EXISTS (
         SELECT 1 FROM ${schema.leadImportMemberships} membership
         WHERE membership.lead_id = ${schema.leads.id}
@@ -2652,8 +2652,10 @@ app.get('/api/prospects', async (c) => {
     captureStatus &&
     ['not_captured', 'processing', 'captured', 'partial', 'failed'].includes(captureStatus)
   ) {
-    conditions.push(eq(schema.leads.profileCaptureStatus, captureStatus as never));
+    commonConditions.push(eq(schema.leads.profileCaptureStatus, captureStatus as never));
   }
+  const matchingConditions = [...commonConditions, eq(schema.leads.reviewState, reviewState)];
+  const conditions = [...matchingConditions];
   if (claimed === 'mine') {
     conditions.push(
       sql`${schema.prospectReviewClaims.claimedBy} = ${userId}
@@ -2694,41 +2696,87 @@ app.get('/api/prospects', async (c) => {
       ? sql`${sortColumn as never} desc nulls last`
       : sql`${sortColumn as never} asc nulls last`;
 
-  const [{ count = 0 } = { count: 0 }] = await db
-    .select({ count: sql<number>`count(*)` })
-    .from(schema.leads)
-    .leftJoin(schema.prospectReviewClaims, eq(schema.prospectReviewClaims.leadId, schema.leads.id))
-    .where(and(...conditions));
-  const prospects = await db
-    .select({
-      ...getTableColumns(schema.leads),
-      claimedBy: schema.prospectReviewClaims.claimedBy,
-      claimExpiresAt: schema.prospectReviewClaims.expiresAt,
-      aiScore: displayedScore,
-      aiClassification: sql<string>`CASE
-        WHEN ${phdProfile} THEN 'REJECT OR LOW PRIORITY'
-        ELSE ${schema.leadAiAssessments.classification}
-      END`,
-      aiReasoningSummary: displayedRemark,
-      aiRecommendedAction: schema.leadAiAssessments.recommendedAction,
-      scoreJobStatus: schema.leadScoreJobs.status,
-      scoreJobError: schema.leadScoreJobs.lastError,
-      isPhd: phdProfile,
-    })
-    .from(schema.leads)
-    .leftJoin(schema.prospectReviewClaims, eq(schema.prospectReviewClaims.leadId, schema.leads.id))
-    .leftJoin(schema.leadAiAssessments, eq(schema.leadAiAssessments.leadId, schema.leads.id))
-    .leftJoin(schema.leadScoreJobs, eq(schema.leadScoreJobs.leadId, schema.leads.id))
-    .where(and(...conditions))
-    .orderBy(ordering)
-    .limit(pageSize)
-    .offset((page - 1) * pageSize);
+  const availableConditions = [
+    ...commonConditions,
+    eq(schema.leads.reviewState, 'pending'),
+    isNotNull(schema.leads.linkedinUrl),
+    sql`(${schema.prospectReviewClaims.leadId} IS NULL
+      OR ${schema.prospectReviewClaims.expiresAt} <= now())`,
+  ];
+  const [filteredCountRows, matchingCountRows, availableCountRows, awaitingCountRows, prospects] =
+    await Promise.all([
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(schema.leads)
+        .leftJoin(
+          schema.prospectReviewClaims,
+          eq(schema.prospectReviewClaims.leadId, schema.leads.id)
+        )
+        .where(and(...conditions)),
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(schema.leads)
+        .leftJoin(
+          schema.prospectReviewClaims,
+          eq(schema.prospectReviewClaims.leadId, schema.leads.id)
+        )
+        .where(and(...matchingConditions)),
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(schema.leads)
+        .leftJoin(
+          schema.prospectReviewClaims,
+          eq(schema.prospectReviewClaims.leadId, schema.leads.id)
+        )
+        .where(and(...availableConditions)),
+      db
+        .select({ count: sql<number>`count(*)` })
+        .from(schema.leads)
+        .where(
+          and(
+            eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
+            eq(schema.leads.reviewState, 'pending'),
+            isNull(schema.leads.deletedAt)
+          )
+        ),
+      db
+        .select({
+          ...getTableColumns(schema.leads),
+          claimedBy: schema.prospectReviewClaims.claimedBy,
+          claimExpiresAt: schema.prospectReviewClaims.expiresAt,
+          aiScore: displayedScore,
+          aiClassification: sql<string>`CASE
+            WHEN ${phdProfile} THEN 'REJECT OR LOW PRIORITY'
+            ELSE ${schema.leadAiAssessments.classification}
+          END`,
+          aiReasoningSummary: displayedRemark,
+          aiRecommendedAction: schema.leadAiAssessments.recommendedAction,
+          scoreJobStatus: schema.leadScoreJobs.status,
+          scoreJobError: schema.leadScoreJobs.lastError,
+          isPhd: phdProfile,
+        })
+        .from(schema.leads)
+        .leftJoin(
+          schema.prospectReviewClaims,
+          eq(schema.prospectReviewClaims.leadId, schema.leads.id)
+        )
+        .leftJoin(schema.leadAiAssessments, eq(schema.leadAiAssessments.leadId, schema.leads.id))
+        .leftJoin(schema.leadScoreJobs, eq(schema.leadScoreJobs.leadId, schema.leads.id))
+        .where(and(...conditions))
+        .orderBy(ordering)
+        .limit(pageSize)
+        .offset((page - 1) * pageSize),
+    ]);
+  const count = Number(filteredCountRows[0]?.count ?? 0);
   return c.json({
     prospects,
     page,
     pageSize,
-    total: Number(count),
-    totalPages: Math.ceil(Number(count) / pageSize),
+    total: count,
+    totalPages: Math.ceil(count / pageSize),
+    matchingTotal: Number(matchingCountRows[0]?.count ?? 0),
+    availableTotal: Number(availableCountRows[0]?.count ?? 0),
+    awaitingReviewTotal: Number(awaitingCountRows[0]?.count ?? 0),
   });
 });
 
@@ -2846,8 +2894,8 @@ app.post('/api/prospects/claim-next', async (c) => {
     );
   }
   const body = await c.req.json();
-  const requested = Number(body.limit ?? 10);
-  const limit = Math.min(10, Math.max(1, Number.isFinite(requested) ? requested : 10));
+  const requested = Number(body.limit ?? 5);
+  const limit = Math.min(5, Math.max(1, Number.isFinite(requested) ? requested : 5));
   const leadFrom = Number(body.leadFrom);
   const leadTo = Number(body.leadTo);
   const search = typeof body.search === 'string' ? body.search.trim().toLowerCase() : '';

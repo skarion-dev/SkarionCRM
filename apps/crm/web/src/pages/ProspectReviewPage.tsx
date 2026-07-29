@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -26,6 +26,9 @@ import { cn } from '../lib/utils.js';
 const PHD_ZERO_SCORE_REASON =
   'PhD profile — excluded by the current prospecting policy. Score forced to 0.';
 const PHD_PATTERN = /\bph\.?\s*d\b\.?|\bdoctor of philosophy\b/i;
+const CLAIM_BATCH_SIZE = 5;
+const LINKEDIN_OPEN_DELAY_MS = 8_000;
+const PAGE_SIZE_OPTIONS = [25, 50, 100, 200, 500] as const;
 
 function prospectHasPhd(prospect: Prospect): boolean {
   if (prospect.isPhd) return true;
@@ -96,6 +99,10 @@ export default function ProspectReviewPage() {
   const [sortBy, setSortBy] = useState('leadSequence');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(100);
+  const [openingProgress, setOpeningProgress] = useState<{ opened: number; total: number } | null>(
+    null
+  );
   const [importName, setImportName] = useState('');
   const [importCsv, setImportCsv] = useState('');
   const [importJobId, setImportJobId] = useState<string | null>(null);
@@ -113,7 +120,7 @@ export default function ProspectReviewPage() {
       sortBy,
       sortOrder,
       page,
-      pageSize: 100,
+      pageSize,
     }),
     [
       search,
@@ -126,6 +133,7 @@ export default function ProspectReviewPage() {
       sortBy,
       sortOrder,
       page,
+      pageSize,
     ]
   );
   const { data, isLoading, error } = useProspects(filters);
@@ -137,6 +145,13 @@ export default function ProspectReviewPage() {
   useProspectEvents(true);
 
   const prospects = data?.prospects ?? [];
+  const totalPages = Math.max(1, data?.totalPages ?? 1);
+  const firstVisible = data?.total ? (page - 1) * pageSize + 1 : 0;
+  const lastVisible = data?.total ? Math.min(page * pageSize, data.total) : 0;
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
 
   const handleFile = async (file: File | undefined) => {
     if (!file) return;
@@ -170,10 +185,21 @@ export default function ProspectReviewPage() {
   };
 
   const claimAndOpen = () => {
-    const placeholderTabs = Array.from({ length: 10 }, () => window.open('about:blank', '_blank'));
+    const placeholderTabs = Array.from({ length: CLAIM_BATCH_SIZE }, () =>
+      window.open('about:blank', '_blank')
+    );
+    const openedTabs = placeholderTabs.filter((tab): tab is Window => tab !== null);
+    if (openedTabs.length !== CLAIM_BATCH_SIZE) {
+      openedTabs.forEach((tab) => tab.close());
+      showToast(
+        'Chrome blocked the review tabs. Allow pop-ups for Skarion, then try again; no prospects were claimed.',
+        'warning'
+      );
+      return;
+    }
     claimNext.mutate(
       {
-        limit: 10,
+        limit: CLAIM_BATCH_SIZE,
         leadFrom,
         leadTo,
         search,
@@ -184,15 +210,40 @@ export default function ProspectReviewPage() {
       },
       {
         onSuccess: ({ prospects: claimedProspects }) => {
-          placeholderTabs.forEach((tab, index) => {
-            const prospect = claimedProspects[index];
-            if (tab && prospect?.linkedinUrl) tab.location.href = prospect.linkedinUrl;
-            else tab?.close();
-          });
+          const openableProspects = claimedProspects.filter((prospect) => prospect.linkedinUrl);
+          openedTabs
+            .slice(openableProspects.length)
+            .forEach((unusedPlaceholder) => unusedPlaceholder?.close());
           setClaimed('mine');
+          setPage(1);
+          setOpeningProgress(
+            openableProspects.length ? { opened: 0, total: openableProspects.length } : null
+          );
+          openableProspects.forEach((prospect, index) => {
+            window.setTimeout(
+              () => {
+                const tab = openedTabs[index];
+                if (tab && !tab.closed && prospect.linkedinUrl)
+                  tab.location.href = prospect.linkedinUrl;
+                setOpeningProgress((current) => {
+                  const opened = Math.min((current?.opened ?? index) + 1, openableProspects.length);
+                  return opened === openableProspects.length
+                    ? null
+                    : { opened, total: openableProspects.length };
+                });
+                if (index === openableProspects.length - 1) {
+                  showToast(
+                    `Opened ${openableProspects.length} claimed prospects, spaced 8 seconds apart.`,
+                    'success'
+                  );
+                }
+              },
+              (index + 1) * LINKEDIN_OPEN_DELAY_MS
+            );
+          });
           showToast(
             claimedProspects.length
-              ? `Claimed and opened ${claimedProspects.length} prospects for 15 minutes.`
+              ? `Claimed ${claimedProspects.length}. LinkedIn tabs will open one every 8 seconds.`
               : 'No available prospects matched these filters.',
             claimedProspects.length ? 'success' : 'warning'
           );
@@ -287,10 +338,14 @@ export default function ProspectReviewPage() {
           )}
           <button
             onClick={claimAndOpen}
-            disabled={claimNext.isPending}
+            disabled={claimNext.isPending || Boolean(openingProgress) || data?.availableTotal === 0}
             className="px-4 py-2 rounded-md bg-blue-600 text-white text-sm font-medium disabled:opacity-50"
           >
-            {claimNext.isPending ? 'Claiming…' : 'Claim & Open Next 10'}
+            {claimNext.isPending
+              ? 'Claiming…'
+              : openingProgress
+                ? `Opening ${openingProgress.opened}/${openingProgress.total} · 8s apart`
+                : 'Claim & Open Next 5'}
           </button>
         </div>
       </div>
@@ -324,74 +379,117 @@ export default function ProspectReviewPage() {
         </div>
       )}
 
-      <div className="border rounded-lg bg-white p-3 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-8 gap-2">
-        <label className="xl:col-span-2 relative">
-          <Search size={15} className="absolute left-3 top-3 text-slate-400" />
-          <input
-            value={search}
+      <div className="border rounded-lg bg-white p-3 space-y-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-8 gap-2">
+          <label className="xl:col-span-2 relative">
+            <Search size={15} className="absolute left-3 top-3 text-slate-400" />
+            <input
+              value={search}
+              onChange={(event) => {
+                setSearch(event.target.value);
+                setPage(1);
+              }}
+              className="w-full pl-9 pr-3 py-2 border rounded-md text-sm"
+              placeholder="Name, company, URL or lead number"
+            />
+          </label>
+          <label className="relative">
+            <span className="absolute left-3 top-2.5 text-xs font-medium text-slate-400">SK</span>
+            <input
+              value={leadFrom}
+              onChange={(event) => {
+                setLeadFrom(event.target.value.replace(/\D/g, ''));
+                setPage(1);
+              }}
+              className="w-full pl-9 pr-3 py-2 border rounded-md text-sm"
+              placeholder="Lead # from"
+              aria-label="Lead number from"
+            />
+          </label>
+          <label className="relative">
+            <span className="absolute left-3 top-2.5 text-xs font-medium text-slate-400">SK</span>
+            <input
+              value={leadTo}
+              onChange={(event) => {
+                setLeadTo(event.target.value.replace(/\D/g, ''));
+                setPage(1);
+              }}
+              className="w-full pl-9 pr-3 py-2 border rounded-md text-sm"
+              placeholder="Lead # to"
+              aria-label="Lead number to"
+            />
+          </label>
+          <select
+            value={reviewState}
             onChange={(event) => {
-              setSearch(event.target.value);
+              setReviewState(event.target.value as typeof reviewState);
+              setClaimed(event.target.value === 'pending' ? 'unclaimed' : 'all');
               setPage(1);
             }}
-            className="w-full pl-9 pr-3 py-2 border rounded-md text-sm"
-            placeholder="Name, company, URL or lead number"
-          />
-        </label>
-        <input
-          value={leadFrom}
-          onChange={(event) => setLeadFrom(event.target.value.replace(/\D/g, ''))}
-          className="px-3 py-2 border rounded-md text-sm"
-          placeholder="Lead # from"
-        />
-        <input
-          value={leadTo}
-          onChange={(event) => setLeadTo(event.target.value.replace(/\D/g, ''))}
-          className="px-3 py-2 border rounded-md text-sm"
-          placeholder="Lead # to"
-        />
-        <select
-          value={reviewState}
-          onChange={(event) => {
-            setReviewState(event.target.value as typeof reviewState);
-            setClaimed(event.target.value === 'pending' ? 'unclaimed' : 'all');
-          }}
-          className="px-3 py-2 border rounded-md text-sm"
-        >
-          <option value="pending">Awaiting review</option>
-          <option value="rejected">Disqualified</option>
-        </select>
-        <select
-          value={batchId}
-          onChange={(event) => setBatchId(event.target.value)}
-          className="px-3 py-2 border rounded-md text-sm"
-        >
-          <option value="">All batches</option>
-          {(batches ?? []).map((batch) => (
-            <option key={batch.id} value={batch.id}>
-              {batch.name}
-            </option>
-          ))}
-        </select>
-        <select
-          value={captureStatus}
-          onChange={(event) => setCaptureStatus(event.target.value)}
-          className="px-3 py-2 border rounded-md text-sm"
-        >
-          <option value="">All capture states</option>
-          <option value="not_captured">Needs capture</option>
-          <option value="captured">Captured</option>
-          <option value="processing">Processing</option>
-          <option value="failed">Failed</option>
-        </select>
-        <select
-          value={claimed}
-          onChange={(event) => setClaimed(event.target.value as typeof claimed)}
-          className="px-3 py-2 border rounded-md text-sm"
-        >
-          <option value="unclaimed">Available</option>
-          <option value="mine">Claimed by me</option>
-          <option value="all">All prospects</option>
-        </select>
+            className="px-3 py-2 border rounded-md text-sm"
+          >
+            <option value="pending">Awaiting review</option>
+            <option value="rejected">Disqualified</option>
+          </select>
+          <select
+            value={batchId}
+            onChange={(event) => {
+              setBatchId(event.target.value);
+              setPage(1);
+            }}
+            className="px-3 py-2 border rounded-md text-sm"
+          >
+            <option value="">All batches</option>
+            {(batches ?? []).map((batch) => (
+              <option key={batch.id} value={batch.id}>
+                {batch.name}
+              </option>
+            ))}
+          </select>
+          <select
+            value={captureStatus}
+            onChange={(event) => {
+              setCaptureStatus(event.target.value);
+              setPage(1);
+            }}
+            className="px-3 py-2 border rounded-md text-sm"
+          >
+            <option value="">All capture states</option>
+            <option value="not_captured">Needs capture</option>
+            <option value="captured">Captured</option>
+            <option value="partial">Partial capture</option>
+            <option value="processing">Processing</option>
+            <option value="failed">Failed</option>
+          </select>
+          <select
+            value={claimed}
+            onChange={(event) => {
+              setClaimed(event.target.value as typeof claimed);
+              setPage(1);
+            }}
+            className="px-3 py-2 border rounded-md text-sm"
+          >
+            <option value="unclaimed">Available</option>
+            <option value="mine">Claimed by me</option>
+            <option value="all">All prospects</option>
+          </select>
+        </div>
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t pt-3 text-sm">
+          <span className="font-medium text-slate-700">
+            {data?.matchingTotal ?? 0} match search/range filters
+          </span>
+          <span className="text-emerald-700">
+            <strong>{data?.availableTotal ?? 0}</strong> available to review now
+          </span>
+          <span className="text-slate-500">
+            {data?.awaitingReviewTotal ?? 0} awaiting review overall
+          </span>
+          {(leadFrom || leadTo) && (
+            <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700">
+              Range SK{leadFrom || 'start'}–SK{leadTo || 'end'}
+            </span>
+          )}
+        </div>
       </div>
 
       <div className="border rounded-lg bg-white overflow-x-auto">
@@ -539,7 +637,8 @@ export default function ProspectReviewPage() {
               {prospects.length === 0 && (
                 <tr>
                   <td colSpan={8} className="p-12 text-center text-slate-500">
-                    No pending prospects match these filters.
+                    No {reviewState === 'pending' ? 'pending' : 'disqualified'} prospects match
+                    these filters.
                   </td>
                 </tr>
               )}
@@ -548,11 +647,41 @@ export default function ProspectReviewPage() {
         )}
       </div>
 
-      <div className="flex items-center justify-between text-sm">
-        <span className="text-slate-500">
-          {data?.total ?? 0} {reviewState === 'pending' ? 'pending' : 'disqualified'} prospects
-        </span>
-        <div className="flex gap-2">
+      <div className="flex flex-col gap-3 border rounded-lg bg-white px-4 py-3 text-sm lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex flex-wrap items-center gap-4 text-slate-500">
+          <span>
+            Showing{' '}
+            <strong className="text-slate-700">
+              {firstVisible}–{lastVisible}
+            </strong>{' '}
+            of <strong className="text-slate-700">{data?.total ?? 0}</strong>
+          </span>
+          <label className="flex items-center gap-2">
+            Rows per page
+            <select
+              value={pageSize}
+              onChange={(event) => {
+                setPageSize(Number(event.target.value));
+                setPage(1);
+              }}
+              className="rounded border px-2 py-1.5 text-slate-700"
+            >
+              {PAGE_SIZE_OPTIONS.map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            disabled={page <= 1}
+            onClick={() => setPage(1)}
+            className="px-3 py-1.5 border rounded disabled:opacity-40"
+          >
+            First
+          </button>
           <button
             disabled={page <= 1}
             onClick={() => setPage((current) => Math.max(1, current - 1))}
@@ -560,15 +689,33 @@ export default function ProspectReviewPage() {
           >
             Previous
           </button>
-          <span className="px-2 py-1.5">
-            Page {page} of {Math.max(1, data?.totalPages ?? 1)}
-          </span>
+          <label className="flex items-center gap-1 px-1">
+            Page
+            <input
+              type="number"
+              min={1}
+              max={totalPages}
+              value={page}
+              onChange={(event) =>
+                setPage(Math.min(totalPages, Math.max(1, Number(event.target.value) || 1)))
+              }
+              className="w-16 rounded border px-2 py-1.5 text-center"
+            />
+            of {totalPages}
+          </label>
           <button
-            disabled={page >= (data?.totalPages ?? 1)}
+            disabled={page >= totalPages}
             onClick={() => setPage((current) => current + 1)}
             className="px-3 py-1.5 border rounded disabled:opacity-40"
           >
             Next
+          </button>
+          <button
+            disabled={page >= totalPages}
+            onClick={() => setPage(totalPages)}
+            className="px-3 py-1.5 border rounded disabled:opacity-40"
+          >
+            Last
           </button>
         </div>
       </div>
