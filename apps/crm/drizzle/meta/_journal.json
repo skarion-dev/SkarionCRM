@@ -176,6 +176,13 @@
       "when": 1785359000000,
       "tag": "0024_default_all_text_agents_to_cheap",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1785360500000,
+      "tag": "0025_flash_profile_education_backfill",
+      "breakpoints": true
     }
   ]
 }

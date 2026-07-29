@@ -699,6 +699,8 @@ export default function LeadDetail() {
           </div>
 
           {(lead.profileSummary ||
+            lead.mostRecentDegree ||
+            lead.mostRecentSchool ||
             (Array.isArray(lead.educationEntries) && lead.educationEntries.length > 0) ||
             (Array.isArray(lead.experienceEntries) && lead.experienceEntries.length > 0) ||
             (Array.isArray(lead.skillNames) && lead.skillNames.length > 0) ||
@@ -722,6 +724,34 @@ export default function LeadDetail() {
                   </span>
                 )}
               </div>
+
+              {(lead.mostRecentDegree ||
+                lead.mostRecentFieldOfStudy ||
+                lead.mostRecentSchool ||
+                lead.mostRecentGraduationDate) && (
+                <div className="mb-5 rounded-lg border border-blue-200 bg-blue-50/70 p-4">
+                  <div className="flex items-start gap-3">
+                    <div className="rounded-lg bg-white p-2 text-blue-600 shadow-sm">
+                      <GraduationCap size={18} />
+                    </div>
+                    <div>
+                      <h3 className="text-xs font-semibold uppercase tracking-wider text-blue-700">
+                        Most recent education
+                      </h3>
+                      <p className="mt-1 text-sm font-semibold text-slate-900">
+                        {[lead.mostRecentDegree, lead.mostRecentFieldOfStudy]
+                          .filter(Boolean)
+                          .join(' · ') || 'Degree not stated'}
+                      </p>
+                      <p className="mt-1 text-sm text-slate-600">
+                        {[lead.mostRecentSchool, lead.mostRecentGraduationDate]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {lead.profileSummary && (
                 <div className="mb-5 rounded-lg border border-slate-200 bg-slate-50/60 p-4">

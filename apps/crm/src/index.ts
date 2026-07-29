@@ -119,6 +119,7 @@ import {
   phdZeroScoreAssessment,
   PHD_ZERO_SCORE_REASON,
 } from './lib/leadQualificationPolicy.js';
+import { graduationYear, mostRecentEducation } from './lib/profileEducation.js';
 
 async function ensureTagDefinitions(
   db: CrmDb,
@@ -182,7 +183,26 @@ function profileBoolean(profile: Record<string, unknown>, key: string): boolean 
   return null;
 }
 
-const PROFILE_NORMALIZATION_VERSION = 1;
+const PROFILE_NORMALIZATION_VERSION = 2;
+const AI_QUEUE_BATCH_SIZE = 30;
+const AI_QUEUE_CONCURRENCY = 10;
+
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>
+): Promise<void> {
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(1, concurrency), items.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const item = items[nextIndex++];
+        if (item !== undefined) await worker(item);
+      }
+    })
+  );
+}
 
 function hasLeadProfileEvidence(lead: {
   source?: string | null;
@@ -369,11 +389,18 @@ async function normalizeAndSaveLeadProfile(
   if (!normalized) throw new Error(ai.AI_NOT_CONFIGURED_MSG);
 
   const now = new Date();
+  const latestEducation = mostRecentEducation(normalized.education);
   const [updated] = await db
     .update(schema.leads)
     .set({
       profileSummary: normalized.summary,
       educationEntries: normalized.education,
+      mostRecentSchool: latestEducation?.institution ?? null,
+      mostRecentDegree: latestEducation?.degree ?? null,
+      mostRecentFieldOfStudy: latestEducation?.fieldOfStudy ?? null,
+      mostRecentEducationStartDate: latestEducation?.startDate ?? null,
+      mostRecentGraduationDate: latestEducation?.endDate ?? null,
+      mostRecentGraduationYear: graduationYear(latestEducation?.endDate),
       experienceEntries: normalized.experience,
       skillNames: normalized.skills,
       profileNormalizationWarnings: normalized.warnings,
@@ -1784,8 +1811,11 @@ app.post('/internal/lead-score-queue/drain', async (c) => {
     return c.json({ error: 'Unauthorized.' }, 401);
   }
 
-  const requestedLimit = Number(c.req.query('limit') ?? 10);
-  const limit = Math.min(10, Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : 10));
+  const requestedLimit = Number(c.req.query('limit') ?? AI_QUEUE_BATCH_SIZE);
+  const limit = Math.min(
+    50,
+    Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : AI_QUEUE_BATCH_SIZE)
+  );
   const db = getDb(c.env, schema) as CrmDb;
   const result = await drainLeadScoreQueue(db, c.env, limit);
   return c.json(result);
@@ -1798,8 +1828,11 @@ app.post('/internal/lead-profile-queue/drain', async (c) => {
     return c.json({ error: 'Unauthorized.' }, 401);
   }
 
-  const requestedLimit = Number(c.req.query('limit') ?? 10);
-  const limit = Math.min(10, Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : 10));
+  const requestedLimit = Number(c.req.query('limit') ?? AI_QUEUE_BATCH_SIZE);
+  const limit = Math.min(
+    50,
+    Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : AI_QUEUE_BATCH_SIZE)
+  );
   const db = getDb(c.env, schema) as CrmDb;
   return c.json(await drainLeadProfileQueue(db, c.env, limit));
 });
@@ -1874,7 +1907,11 @@ async function getConfiguredAiEnv(db: CrmDb, env: Env, actorUserId?: string | nu
         AI_AGENTS.map((agent) => [
           agent.id,
           settings.agentModels[agent.id] ??
-            (agent.tier === 'embedding' ? DEFAULT_AI_MODELS.embedding : DEFAULT_AI_MODELS.cheap),
+            (agent.tier === 'embedding'
+              ? DEFAULT_AI_MODELS.embedding
+              : agent.tier === 'fast'
+                ? DEFAULT_AI_MODELS.fast
+                : DEFAULT_AI_MODELS.cheap),
         ])
       )
     ),
@@ -2408,7 +2445,7 @@ async function drainLeadProfileQueue(db: CrmDb, env: Env, limit: number) {
     .limit(limit);
 
   const result = { claimed: 0, normalized: 0, skipped: 0, failed: 0 };
-  for (const job of jobs) {
+  await runWithConcurrency(jobs, AI_QUEUE_CONCURRENCY, async (job) => {
     const [claimed] = await db
       .update(schema.leadProfileJobs)
       .set({
@@ -2425,7 +2462,7 @@ async function drainLeadProfileQueue(db: CrmDb, env: Env, limit: number) {
         )
       )
       .returning();
-    if (!claimed) continue;
+    if (!claimed) return;
     result.claimed += 1;
 
     try {
@@ -2484,7 +2521,7 @@ async function drainLeadProfileQueue(db: CrmDb, env: Env, limit: number) {
       ]);
       result.failed += 1;
     }
-  }
+  });
   return result;
 }
 
@@ -2551,7 +2588,7 @@ async function drainLeadScoreQueue(db: CrmDb, env: Env, limit: number) {
     .limit(limit);
 
   const result = { claimed: 0, scored: 0, deferred: 0, skipped: 0, failed: 0 };
-  for (const job of jobs) {
+  await runWithConcurrency(jobs, AI_QUEUE_CONCURRENCY, async (job) => {
     const [claimed] = await db
       .update(schema.leadScoreJobs)
       .set({
@@ -2568,7 +2605,7 @@ async function drainLeadScoreQueue(db: CrmDb, env: Env, limit: number) {
         )
       )
       .returning();
-    if (!claimed) continue;
+    if (!claimed) return;
     result.claimed += 1;
 
     try {
@@ -2590,7 +2627,7 @@ async function drainLeadScoreQueue(db: CrmDb, env: Env, limit: number) {
           })
           .where(eq(schema.leadScoreJobs.id, job.id));
         result.skipped += 1;
-        continue;
+        return;
       }
 
       const phdProfile = hasPhdProfileEvidence(lead);
@@ -2612,7 +2649,7 @@ async function drainLeadScoreQueue(db: CrmDb, env: Env, limit: number) {
           })
           .where(eq(schema.leadScoreJobs.id, job.id));
         result.deferred += 1;
-        continue;
+        return;
       }
 
       const assessment = await generateAndSaveLeadScore(db, lead, env);
@@ -2649,7 +2686,7 @@ async function drainLeadScoreQueue(db: CrmDb, env: Env, limit: number) {
         .where(eq(schema.leadScoreJobs.id, job.id));
       result.failed += 1;
     }
-  }
+  });
   return result;
 }
 
@@ -3258,7 +3295,7 @@ app.get('/api/prospects/profile-cleanup-status', async (c) => {
   const active = waiting + processing + retrying;
   const allCrmActive = Number(allCrmActiveRows[0]?.active ?? 0);
   const cadenceMinutes = 1;
-  const batchSize = 10;
+  const batchSize = AI_QUEUE_BATCH_SIZE;
   const now = Date.now();
   const nextScheduledRunAt = new Date(
     Math.ceil(now / (cadenceMinutes * 60_000)) * cadenceMinutes * 60_000
@@ -3282,7 +3319,9 @@ app.get('/api/prospects/profile-cleanup-status', async (c) => {
     queue,
     cadence: {
       batchSize,
+      concurrency: AI_QUEUE_CONCURRENCY,
       cadenceMinutes,
+      model: DEFAULT_AI_MODELS.fast,
       nextScheduledRunAt,
     },
     observedAt: new Date(),
@@ -3370,6 +3409,7 @@ app.get('/api/prospects', async (c) => {
     createdAt: schema.leads.createdAt,
     updatedAt: schema.leads.updatedAt,
     companyName: schema.leads.companyName,
+    mostRecentGraduationYear: schema.leads.mostRecentGraduationYear,
     profileCaptureStatus: schema.leads.profileCaptureStatus,
     dataCompleteness: schema.leads.dataCompleteness,
   };
@@ -3599,6 +3639,7 @@ app.post('/api/prospects/claim-next', async (c) => {
       'createdAt',
       'updatedAt',
       'companyName',
+      'mostRecentGraduationYear',
       'profileCaptureStatus',
       'dataCompleteness',
     ].includes(body.sortBy)
@@ -3698,6 +3739,10 @@ app.post('/api/prospects/claim-next', async (c) => {
           THEN lower(lead.company_name) END ASC NULLS LAST,
         CASE WHEN ${sortBy} = 'companyName' AND ${sortOrder} = 'desc'
           THEN lower(lead.company_name) END DESC NULLS LAST,
+        CASE WHEN ${sortBy} = 'mostRecentGraduationYear' AND ${sortOrder} = 'asc'
+          THEN lead.most_recent_graduation_year END ASC NULLS LAST,
+        CASE WHEN ${sortBy} = 'mostRecentGraduationYear' AND ${sortOrder} = 'desc'
+          THEN lead.most_recent_graduation_year END DESC NULLS LAST,
         CASE WHEN ${sortBy} = 'profileCaptureStatus' AND ${sortOrder} = 'asc'
           THEN lead.profile_capture_status::text END ASC NULLS LAST,
         CASE WHEN ${sortBy} = 'profileCaptureStatus' AND ${sortOrder} = 'desc'

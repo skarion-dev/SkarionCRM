@@ -268,7 +268,9 @@ export interface ProfileCleanupStatus {
   }>;
   cadence: {
     batchSize: number;
+    concurrency: number;
     cadenceMinutes: number;
+    model: string;
     nextScheduledRunAt: string;
   };
   observedAt: string;

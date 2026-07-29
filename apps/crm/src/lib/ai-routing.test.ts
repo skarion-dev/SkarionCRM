@@ -2,12 +2,21 @@ import { describe, expect, it } from 'vitest';
 import { AI_AGENTS, AI_MODELS, selectAiAgentModel, selectAiModel } from '@skarion/ai-toolkit';
 
 describe('AI model routing', () => {
-  it('uses cheap models for every text agent by default', () => {
+  it('uses fast Flash for enrichment queues and cheap models for routine text agents', () => {
     expect(selectAiModel({}, 'cheap')).toBe('coding-cheap');
+    expect(AI_AGENTS.filter((agent) => agent.tier === 'fast').map((agent) => agent.id)).toEqual([
+      'prospect-profile',
+      'profile-normalizer',
+      'lead-scorer',
+    ]);
+    expect(selectAiAgentModel({}, 'profile-normalizer', 'fast')).toBe('coding-fast');
+    expect(selectAiAgentModel({}, 'lead-scorer', 'fast')).toBe('coding-fast');
     expect(
-      AI_AGENTS.filter((agent) => agent.tier !== 'embedding').every(
-        (agent) => agent.tier === 'cheap'
-      )
+      AI_AGENTS.filter(
+        (agent) =>
+          agent.tier !== 'embedding' &&
+          !['prospect-profile', 'profile-normalizer', 'lead-scorer'].includes(agent.id)
+      ).every((agent) => agent.tier === 'cheap')
     ).toBe(true);
     expect(
       AI_AGENTS.filter((agent) => agent.tier === 'embedding').map((agent) => agent.id)

@@ -485,6 +485,12 @@ export interface Lead {
   prospectSourceContext: Record<string, string | null> | null;
   profileSummary: string | null;
   educationEntries: LeadEducationEntry[] | null;
+  mostRecentSchool: string | null;
+  mostRecentDegree: string | null;
+  mostRecentFieldOfStudy: string | null;
+  mostRecentEducationStartDate: string | null;
+  mostRecentGraduationDate: string | null;
+  mostRecentGraduationYear: number | null;
   experienceEntries: LeadExperienceEntry[] | null;
   skillNames: string[] | null;
   profileNormalizationStatus: 'not_queued' | 'pending' | 'processing' | 'completed' | 'failed';

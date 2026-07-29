@@ -232,14 +232,14 @@ export const AI_AGENTS: ReadonlyArray<{
     name: 'Prospect Profile Agent',
     description:
       'Normalizes extension captures, measures profile completeness, and hands structured profiles to the separate scoring queue.',
-    tier: 'cheap',
+    tier: 'fast',
   },
   {
     id: 'profile-normalizer',
     name: 'Profile Cleanup Agent',
     description:
       'Converts raw LinkedIn summaries, education, experience, and skills into clean structured CRM data.',
-    tier: 'cheap',
+    tier: 'fast',
   },
   {
     id: 'document-ocr',
@@ -265,7 +265,7 @@ export const AI_AGENTS: ReadonlyArray<{
     name: 'Lead Scoring Agent',
     description:
       'Independently scores a cleaned lead profile and returns a sortable score plus an AI remark.',
-    tier: 'cheap',
+    tier: 'fast',
   },
   {
     id: 'next-best-action',

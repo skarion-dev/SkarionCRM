@@ -409,7 +409,7 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-5">
         <Section
           title="AI operations"
-          description="Live Neon queues · all text agents default to coding-cheap"
+          description="Live Neon queues · enrichment uses coding-fast, routine agents stay cheap"
           action={
             <div className="flex items-center gap-1.5 text-xs font-medium text-emerald-700">
               <Sparkles size={13} />

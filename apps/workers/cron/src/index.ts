@@ -9,7 +9,7 @@ export interface Env {
   WORKFLOW_RUNNER_SERVICE: Fetcher;
 }
 
-const QUEUE_BATCH_SIZE = 10;
+const QUEUE_BATCH_SIZE = 30;
 
 type QueueDrainResult = {
   profileCleanup: unknown;

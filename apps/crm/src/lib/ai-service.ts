@@ -1155,6 +1155,8 @@ RULES
   background, and notable skills using neutral language.
 - Preserve partial dates exactly when full dates are unavailable.
 - Put each distinct school and role in its own record.
+- Sort education records from most recent to oldest using the stated end date.
+  An expected graduation date is an end date, not a completed credential.
 - Skills must be specific, deduplicated names rather than sentences.
 - Add a warning when text is ambiguous or a record cannot be separated
   confidently. Empty arrays are valid.
@@ -1204,7 +1206,7 @@ Return ONLY valid JSON:
 
   const result = await extractStructured<unknown>(prompt, env, {
     agent: 'profile-normalizer',
-    tier: 'cheap',
+    tier: 'fast',
   });
   return sanitizeNormalizedLeadProfile(result);
 }
@@ -1448,7 +1450,7 @@ questions that resolve the highest-impact missing information.`;
 
   const assessment = await extractStructured<LeadQualificationAssessment>(prompt, env, {
     agent: 'lead-scorer',
-    tier: 'cheap',
+    tier: 'fast',
   });
   if (!assessment) return null;
 

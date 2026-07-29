@@ -449,9 +449,11 @@ export default function ProspectReviewPage() {
               ))}
             </div>
             <p className="mt-3 text-xs text-slate-400">
-              Processes up to {cleanupStatus?.cadence.batchSize ?? 10} profiles every{' '}
-              {cleanupStatus?.cadence.cadenceMinutes ?? 1} minute. Failed jobs stay visible and
-              retry with backoff.
+              Processes up to {cleanupStatus?.cadence.batchSize ?? 30} profiles every{' '}
+              {cleanupStatus?.cadence.cadenceMinutes ?? 1} minute with{' '}
+              {cleanupStatus?.cadence.concurrency ?? 10} parallel Flash workers (
+              {cleanupStatus?.cadence.model ?? 'coding-fast'}). Failed jobs stay visible and retry
+              with backoff.
               {(cleanup?.otherCrmActive ?? 0) > 0 &&
                 ` ${cleanup?.otherCrmActive} accepted CRM leads are queued separately and do not inflate this Prospect Review count.`}
             </p>
@@ -664,6 +666,7 @@ export default function ProspectReviewPage() {
                     ['leadSequence', 'Lead #'],
                     ['aiScore', 'Score'],
                     ['name', 'Prospect'],
+                    ['mostRecentGraduationYear', 'Latest education'],
                     ['aiRemark', 'AI remark'],
                     ['companyName', 'Company'],
                     ['profileCaptureStatus', 'Capture'],
@@ -752,6 +755,30 @@ export default function ProspectReviewPage() {
                         </span>
                       )}
                     </td>
+                    <td className="min-w-64 px-3 py-3">
+                      {prospect.mostRecentDegree ||
+                      prospect.mostRecentFieldOfStudy ||
+                      prospect.mostRecentSchool ? (
+                        <>
+                          <div className="text-xs font-medium text-slate-800">
+                            {[prospect.mostRecentDegree, prospect.mostRecentFieldOfStudy]
+                              .filter(Boolean)
+                              .join(' · ') || 'Degree not stated'}
+                          </div>
+                          <div className="mt-1 text-xs text-slate-500">
+                            {[prospect.mostRecentSchool, prospect.mostRecentGraduationDate]
+                              .filter(Boolean)
+                              .join(' · ')}
+                          </div>
+                        </>
+                      ) : (
+                        <span className="text-xs text-slate-400">
+                          {prospect.profileNormalizationStatus === 'completed'
+                            ? 'No education captured'
+                            : 'Waiting for cleanup'}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-3 py-3 min-w-80">
                       <div
                         className={cn(
@@ -790,7 +817,7 @@ export default function ProspectReviewPage() {
               })}
               {prospects.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="p-12 text-center text-slate-500">
+                  <td colSpan={9} className="p-12 text-center text-slate-500">
                     No {reviewState === 'pending' ? 'pending' : 'disqualified'} prospects match
                     these filters.
                   </td>

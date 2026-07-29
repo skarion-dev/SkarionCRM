@@ -293,6 +293,12 @@ export const leads = crmSchema.table(
     prospectSourceContext: jsonb('prospect_source_context'),
     profileSummary: text('profile_summary'),
     educationEntries: jsonb('education_entries'),
+    mostRecentSchool: text('most_recent_school'),
+    mostRecentDegree: text('most_recent_degree'),
+    mostRecentFieldOfStudy: text('most_recent_field_of_study'),
+    mostRecentEducationStartDate: text('most_recent_education_start_date'),
+    mostRecentGraduationDate: text('most_recent_graduation_date'),
+    mostRecentGraduationYear: integer('most_recent_graduation_year'),
     experienceEntries: jsonb('experience_entries'),
     skillNames: jsonb('skill_names'),
     profileNormalizationStatus: profileNormalizationStatusEnum('profile_normalization_status')
