@@ -231,7 +231,7 @@ export const AI_AGENTS: ReadonlyArray<{
     id: 'prospect-profile',
     name: 'Prospect Profile Agent',
     description:
-      'Normalizes extension captures, measures profile completeness, and prepares accepted prospects for scoring.',
+      'Normalizes extension captures, measures profile completeness, and hands structured profiles to the separate scoring queue.',
     tier: 'cheap',
   },
   {
@@ -263,7 +263,8 @@ export const AI_AGENTS: ReadonlyArray<{
   {
     id: 'lead-scorer',
     name: 'Lead Scoring Agent',
-    description: 'Scores lead quality and returns structured reasoning.',
+    description:
+      'Independently scores a cleaned lead profile and returns a sortable score plus an AI remark.',
     tier: 'cheap',
   },
   {

@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
+  ArrowUpDown,
   ExternalLink,
   FileUp,
   Loader2,
@@ -18,8 +19,55 @@ import {
   useReviewProspect,
   type ProspectDisposition,
 } from '../hooks/use-api.js';
+import type { Prospect } from '../api.js';
 import { showToast } from '../stores/toast.js';
 import { cn } from '../lib/utils.js';
+
+const PHD_ZERO_SCORE_REASON =
+  'PhD profile — excluded by the current prospecting policy. Score forced to 0.';
+const PHD_PATTERN = /\bph\.?\s*d\b\.?|\bdoctor of philosophy\b/i;
+
+function prospectHasPhd(prospect: Prospect): boolean {
+  if (prospect.isPhd) return true;
+  return PHD_PATTERN.test(
+    [
+      prospect.firstName,
+      prospect.lastName,
+      prospect.headline,
+      prospect.about,
+      prospect.experience,
+      prospect.education,
+      prospect.skills,
+      prospect.currentRole,
+      prospect.currentRoleDates,
+      prospect.profileSummary,
+      prospect.educationEntries,
+      prospect.experienceEntries,
+      prospect.notes,
+    ]
+      .map((value) => (typeof value === 'string' ? value : value ? JSON.stringify(value) : ''))
+      .filter(Boolean)
+      .join(' ')
+  );
+}
+
+function prospectAiRemark(prospect: Prospect, isPhd: boolean): string {
+  if (isPhd) return PHD_ZERO_SCORE_REASON;
+  if (prospect.aiReasoningSummary) return prospect.aiReasoningSummary;
+  if (prospect.scoreJobStatus === 'processing') return 'Lead Scoring Agent is working…';
+  if (prospect.scoreJobStatus === 'pending') {
+    if (prospect.profileNormalizationStatus === 'pending') {
+      return 'Profile Cleanup Agent is structuring the profile before scoring.';
+    }
+    return prospect.scoreJobError || 'Lead scoring is queued.';
+  }
+  if (prospect.scoreJobStatus === 'failed') {
+    return prospect.scoreJobError || 'Scoring will retry automatically.';
+  }
+  return prospect.profileCaptureStatus === 'not_captured'
+    ? 'Waiting for a LinkedIn profile capture.'
+    : 'Lead scoring is queued.';
+}
 
 const DECISIONS: Array<{
   id: ProspectDisposition;
@@ -184,7 +232,15 @@ export default function ProspectReviewPage() {
   };
 
   const sortIcon = (field: string) =>
-    field === sortBy ? sortOrder === 'asc' ? <ArrowUp size={13} /> : <ArrowDown size={13} /> : null;
+    field === sortBy ? (
+      sortOrder === 'asc' ? (
+        <ArrowUp size={13} />
+      ) : (
+        <ArrowDown size={13} />
+      )
+    ) : (
+      <ArrowUpDown size={13} className="opacity-35" />
+    );
 
   return (
     <div className="p-4 md:p-6 space-y-5">
@@ -354,7 +410,9 @@ export default function ProspectReviewPage() {
                 {(
                   [
                     ['leadSequence', 'Lead #'],
+                    ['aiScore', 'Score'],
                     ['name', 'Prospect'],
+                    ['aiRemark', 'AI remark'],
                     ['companyName', 'Company'],
                     ['profileCaptureStatus', 'Capture'],
                     ['dataCompleteness', 'Complete'],
@@ -370,68 +428,117 @@ export default function ProspectReviewPage() {
                     </span>
                   </th>
                 ))}
-                <th className="text-left px-3 py-3 font-medium text-slate-600">LinkedIn</th>
                 <th className="text-left px-3 py-3 font-medium text-slate-600">Review</th>
               </tr>
             </thead>
             <tbody>
-              {prospects.map((prospect) => (
-                <tr key={prospect.id} className="border-b last:border-0 align-top">
-                  <td className="px-3 py-3 font-mono text-xs">{prospect.leadNumber}</td>
-                  <td className="px-3 py-3 min-w-52">
-                    <div className="font-medium">
-                      {prospect.firstName} {prospect.lastName}
-                    </div>
-                    <div className="text-xs text-slate-500 mt-1 line-clamp-2">
-                      {prospect.headline || prospect.location || 'Profile details not captured yet'}
-                    </div>
-                    {prospect.claimedBy && (
-                      <span className="inline-block mt-1 text-[11px] rounded bg-amber-50 text-amber-700 px-1.5 py-0.5">
-                        Claimed
-                      </span>
+              {prospects.map((prospect) => {
+                const isPhd = prospectHasPhd(prospect);
+                const remark = prospectAiRemark(prospect, isPhd);
+                return (
+                  <tr
+                    key={prospect.id}
+                    className={cn(
+                      'border-b last:border-0 align-top',
+                      isPhd && 'bg-red-50 border-l-4 border-l-red-600'
                     )}
-                  </td>
-                  <td className="px-3 py-3">{prospect.companyName || '—'}</td>
-                  <td className="px-3 py-3 capitalize">
-                    {prospect.profileCaptureStatus.replace('_', ' ')}
-                  </td>
-                  <td className="px-3 py-3">{prospect.dataCompleteness}%</td>
-                  <td className="px-3 py-3">
-                    {prospect.linkedinUrl ? (
-                      <a
-                        href={prospect.linkedinUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1 text-blue-600 hover:underline"
-                      >
-                        Open <ExternalLink size={13} />
-                      </a>
-                    ) : (
-                      '—'
-                    )}
-                  </td>
-                  <td className="px-3 py-3 min-w-[430px]">
-                    <div className="flex flex-wrap gap-1.5">
-                      {DECISIONS.map((decision) => (
-                        <button
-                          key={decision.id}
-                          onClick={() => decide(prospect.id, prospect.rowVersion, decision.id)}
-                          disabled={review.isPending}
+                  >
+                    <td className="px-3 py-3 font-mono text-xs">{prospect.leadNumber}</td>
+                    <td className="px-3 py-3">
+                      {isPhd ? (
+                        <span className="inline-flex min-w-8 justify-center rounded bg-red-600 px-2 py-1 font-bold text-white">
+                          0
+                        </span>
+                      ) : prospect.aiScore != null ? (
+                        <span className="font-semibold tabular-nums">{prospect.aiScore}</span>
+                      ) : (
+                        <span
+                          className="text-xs text-slate-400"
+                          title={prospect.scoreJobStatus || 'queued'}
+                        >
+                          …
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-3 min-w-56">
+                      {prospect.linkedinUrl ? (
+                        <a
+                          href={prospect.linkedinUrl}
+                          target="_blank"
+                          rel="noreferrer"
                           className={cn(
-                            'px-2.5 py-1.5 rounded text-xs font-medium disabled:opacity-40',
-                            decision.className
+                            'inline-flex items-center gap-1 font-medium hover:underline',
+                            isPhd ? 'text-red-800' : 'text-blue-700'
                           )}
                         >
-                          {decision.label}
-                        </button>
-                      ))}
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                          {prospect.firstName} {prospect.lastName}
+                          <ExternalLink size={13} />
+                        </a>
+                      ) : (
+                        <div className="font-medium">
+                          {prospect.firstName} {prospect.lastName}
+                        </div>
+                      )}
+                      <div
+                        className={cn(
+                          'text-xs mt-1 line-clamp-2',
+                          isPhd ? 'text-red-700' : 'text-slate-500'
+                        )}
+                      >
+                        {prospect.headline ||
+                          prospect.location ||
+                          'Profile details not captured yet'}
+                      </div>
+                      {isPhd && (
+                        <span className="inline-block mt-1 rounded bg-red-600 px-1.5 py-0.5 text-[11px] font-semibold text-white">
+                          PhD — score 0
+                        </span>
+                      )}
+                      {prospect.claimedBy && (
+                        <span className="inline-block mt-1 ml-1 text-[11px] rounded bg-amber-50 text-amber-700 px-1.5 py-0.5">
+                          Claimed
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-3 min-w-80">
+                      <div
+                        className={cn(
+                          'text-xs leading-5 line-clamp-3',
+                          isPhd ? 'font-medium text-red-800' : 'text-slate-600'
+                        )}
+                        title={remark}
+                      >
+                        {remark}
+                      </div>
+                    </td>
+                    <td className="px-3 py-3">{prospect.companyName || '—'}</td>
+                    <td className="px-3 py-3 capitalize">
+                      {prospect.profileCaptureStatus.replace('_', ' ')}
+                    </td>
+                    <td className="px-3 py-3">{prospect.dataCompleteness}%</td>
+                    <td className="px-3 py-3 min-w-[430px]">
+                      <div className="flex flex-wrap gap-1.5">
+                        {DECISIONS.map((decision) => (
+                          <button
+                            key={decision.id}
+                            onClick={() => decide(prospect.id, prospect.rowVersion, decision.id)}
+                            disabled={review.isPending}
+                            className={cn(
+                              'px-2.5 py-1.5 rounded text-xs font-medium disabled:opacity-40',
+                              decision.className
+                            )}
+                          >
+                            {decision.label}
+                          </button>
+                        ))}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
               {prospects.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="p-12 text-center text-slate-500">
+                  <td colSpan={8} className="p-12 text-center text-slate-500">
                     No pending prospects match these filters.
                   </td>
                 </tr>

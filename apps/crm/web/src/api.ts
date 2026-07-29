@@ -524,7 +524,11 @@ export interface Lead {
   batchId?: string | null;
   aiScore?: number | null;
   aiClassification?: string | null;
+  aiReasoningSummary?: string | null;
+  aiRecommendedAction?: string | null;
   scoreJobStatus?: string | null;
+  scoreJobError?: string | null;
+  isPhd?: boolean;
 }
 
 export interface Prospect extends Lead {

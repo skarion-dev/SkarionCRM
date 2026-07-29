@@ -110,6 +110,11 @@ import {
   type ProspectDisposition,
   type ProspectCsvRow,
 } from './lib/prospects.js';
+import {
+  hasPhdProfileEvidence,
+  phdZeroScoreAssessment,
+  PHD_ZERO_SCORE_REASON,
+} from './lib/leadQualificationPolicy.js';
 
 async function ensureTagDefinitions(
   db: CrmDb,
@@ -198,6 +203,47 @@ function hasLeadProfileEvidence(lead: {
     lead.currentRoleDates?.trim() ||
     (lead.source === 'linkedin' && lead.notes?.trim())
   );
+}
+
+function prospectHasPhdSql() {
+  const document = sql<string>`lower(concat_ws(
+    ' ',
+    ${schema.leads.firstName},
+    ${schema.leads.lastName},
+    ${schema.leads.headline},
+    ${schema.leads.about},
+    ${schema.leads.experience},
+    ${schema.leads.education},
+    ${schema.leads.skills},
+    ${schema.leads.currentRole},
+    ${schema.leads.currentRoleDates},
+    ${schema.leads.profileSummary},
+    ${schema.leads.educationEntries}::text,
+    ${schema.leads.experienceEntries}::text,
+    ${schema.leads.notes}
+  ))`;
+  return sql<boolean>`(
+    ${document} ~ '(^|[^[:alpha:]])ph[.]?[[:space:]]*d[.]?([^[:alpha:]]|$)'
+    OR ${document} LIKE '%doctor of philosophy%'
+  )`;
+}
+
+async function enqueueLeadScoring(db: CrmDb, leadId: string): Promise<void> {
+  const now = new Date();
+  await db
+    .insert(schema.leadScoreJobs)
+    .values({ leadId, status: 'pending', nextAttemptAt: now })
+    .onConflictDoUpdate({
+      target: schema.leadScoreJobs.leadId,
+      set: {
+        status: 'pending',
+        nextAttemptAt: now,
+        lockedAt: null,
+        completedAt: null,
+        lastError: null,
+        updatedAt: now,
+      },
+    });
 }
 
 async function enqueueLeadProfileCleanup(db: CrmDb, leadId: string): Promise<void> {
@@ -322,6 +368,9 @@ async function normalizeAndSaveLeadProfile(
     .returning();
   if (!updated) return lead;
   await publishLeadEvent(db, 'lead.profile_normalized', null, updated);
+  // Profile cleanup and qualification are intentionally separate agents.
+  // A completed cleanup hands the freshest structured profile to the scorer.
+  await enqueueLeadScoring(db, updated.id);
   return updated;
 }
 
@@ -1747,11 +1796,17 @@ async function generateAndSaveLeadScore(
   lead: typeof schema.leads.$inferSelect,
   env: Env
 ) {
-  const normalizedLead = await normalizeAndSaveLeadProfile(db, lead, env);
-  const aiEnv = await getConfiguredAiEnv(db, env, normalizedLead.ownerId);
-  if (!ai.isAiConfigured(aiEnv)) return null;
-
-  const assessment = await ai.qualifyLead(structuredLeadQualificationInput(normalizedLead), aiEnv);
+  // This is deliberately independent from the Profile Cleanup Agent. Queue
+  // orchestration ensures the scorer receives the structured profile after
+  // cleanup; the PhD exclusion is a deterministic CRM policy and costs no AI
+  // tokens.
+  const assessment = hasPhdProfileEvidence(lead)
+    ? phdZeroScoreAssessment()
+    : await (async () => {
+        const aiEnv = await getConfiguredAiEnv(db, env, lead.ownerId);
+        if (!ai.isAiConfigured(aiEnv)) return null;
+        return ai.qualifyLead(structuredLeadQualificationInput(lead), aiEnv);
+      })();
   if (!assessment) return null;
 
   const scoreValues = leadQualificationValues(lead.id, assessment);
@@ -1768,6 +1823,26 @@ async function generateAndSaveLeadScore(
       set: scoreValues,
     })
     .returning();
+  if (saved) {
+    await db.insert(schema.leadEventOutbox).values({
+      workspaceId: lead.workspaceId,
+      leadId: lead.id,
+      eventType: 'lead.scored',
+      actorUserId: null,
+      payload: {
+        lead: {
+          ...lead,
+          aiScore: saved.overallScore,
+          aiClassification: saved.classification,
+          aiReasoningSummary: saved.reasoningSummary,
+          aiRecommendedAction: saved.recommendedAction,
+          isPhd: hasPhdProfileEvidence(lead),
+          scoreJobStatus: 'completed',
+        },
+        occurredAt: new Date().toISOString(),
+      },
+    });
+  }
   return saved ?? null;
 }
 
@@ -1912,7 +1987,7 @@ async function drainLeadScoreQueue(db: CrmDb, env: Env, limit: number) {
     .orderBy(asc(schema.leadScoreJobs.nextAttemptAt))
     .limit(limit);
 
-  const result = { claimed: 0, scored: 0, alreadyScored: 0, failed: 0 };
+  const result = { claimed: 0, scored: 0, deferred: 0, skipped: 0, failed: 0 };
   for (const job of jobs) {
     const [claimed] = await db
       .update(schema.leadScoreJobs)
@@ -1934,26 +2009,13 @@ async function drainLeadScoreQueue(db: CrmDb, env: Env, limit: number) {
     result.claimed += 1;
 
     try {
-      const [[lead], [existingAssessment]] = await Promise.all([
-        db
-          .select()
-          .from(schema.leads)
-          .where(
-            and(
-              eq(schema.leads.id, job.leadId),
-              eq(schema.leads.reviewState, 'accepted'),
-              isNull(schema.leads.deletedAt)
-            )
-          )
-          .limit(1),
-        db
-          .select({ leadId: schema.leadAiAssessments.leadId })
-          .from(schema.leadAiAssessments)
-          .where(eq(schema.leadAiAssessments.leadId, job.leadId))
-          .limit(1),
-      ]);
+      const [lead] = await db
+        .select()
+        .from(schema.leads)
+        .where(and(eq(schema.leads.id, job.leadId), isNull(schema.leads.deletedAt)))
+        .limit(1);
 
-      if (!lead || existingAssessment) {
+      if (!lead || lead.reviewState === 'rejected') {
         await db
           .update(schema.leadScoreJobs)
           .set({
@@ -1964,7 +2026,29 @@ async function drainLeadScoreQueue(db: CrmDb, env: Env, limit: number) {
             updatedAt: new Date(),
           })
           .where(eq(schema.leadScoreJobs.id, job.id));
-        result.alreadyScored += 1;
+        result.skipped += 1;
+        continue;
+      }
+
+      const phdProfile = hasPhdProfileEvidence(lead);
+      if (!phdProfile && lead.profileNormalizationStatus !== 'completed') {
+        const hasProfile = hasLeadProfileEvidence(lead);
+        if (hasProfile && lead.profileNormalizationStatus === 'not_queued') {
+          await enqueueLeadProfileCleanup(db, lead.id);
+        }
+        await db
+          .update(schema.leadScoreJobs)
+          .set({
+            status: 'pending',
+            nextAttemptAt: new Date(Date.now() + (hasProfile ? 5 * 60_000 : 24 * 60 * 60_000)),
+            lockedAt: null,
+            lastError: hasProfile
+              ? 'Waiting for the separate Profile Cleanup Agent.'
+              : 'Waiting for a LinkedIn profile capture.',
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.leadScoreJobs.id, job.id));
+        result.deferred += 1;
         continue;
       }
 
@@ -2012,6 +2096,9 @@ async function generateAndSaveLeadAiAssessment(
   env: Env
 ) {
   const normalizedLead = await normalizeAndSaveLeadProfile(db, lead, env);
+  if (hasPhdProfileEvidence(normalizedLead)) {
+    return generateAndSaveLeadScore(db, normalizedLead, env);
+  }
   const aiEnv = await getConfiguredAiEnv(db, env, normalizedLead.ownerId);
   if (!ai.isAiConfigured(aiEnv)) return null;
 
@@ -2582,8 +2669,19 @@ app.get('/api/prospects', async (c) => {
 
   const sortBy = c.req.query('sortBy') || 'leadSequence';
   const sortOrder = c.req.query('sortOrder') === 'desc' ? 'desc' : 'asc';
+  const phdProfile = prospectHasPhdSql();
+  const displayedScore = sql<number>`CASE
+    WHEN ${phdProfile} THEN 0
+    ELSE ${schema.leadAiAssessments.overallScore}
+  END`;
+  const displayedRemark = sql<string>`CASE
+    WHEN ${phdProfile} THEN ${PHD_ZERO_SCORE_REASON}
+    ELSE ${schema.leadAiAssessments.reasoningSummary}
+  END`;
   const sortColumns: Record<string, unknown> = {
     leadSequence: schema.leads.leadSequence,
+    aiScore: displayedScore,
+    aiRemark: sql`lower(${displayedRemark})`,
     name: sql`lower(${schema.leads.firstName} || ' ' || ${schema.leads.lastName})`,
     createdAt: schema.leads.createdAt,
     updatedAt: schema.leads.updatedAt,
@@ -2607,9 +2705,21 @@ app.get('/api/prospects', async (c) => {
       ...getTableColumns(schema.leads),
       claimedBy: schema.prospectReviewClaims.claimedBy,
       claimExpiresAt: schema.prospectReviewClaims.expiresAt,
+      aiScore: displayedScore,
+      aiClassification: sql<string>`CASE
+        WHEN ${phdProfile} THEN 'REJECT OR LOW PRIORITY'
+        ELSE ${schema.leadAiAssessments.classification}
+      END`,
+      aiReasoningSummary: displayedRemark,
+      aiRecommendedAction: schema.leadAiAssessments.recommendedAction,
+      scoreJobStatus: schema.leadScoreJobs.status,
+      scoreJobError: schema.leadScoreJobs.lastError,
+      isPhd: phdProfile,
     })
     .from(schema.leads)
     .leftJoin(schema.prospectReviewClaims, eq(schema.prospectReviewClaims.leadId, schema.leads.id))
+    .leftJoin(schema.leadAiAssessments, eq(schema.leadAiAssessments.leadId, schema.leads.id))
+    .leftJoin(schema.leadScoreJobs, eq(schema.leadScoreJobs.leadId, schema.leads.id))
     .where(and(...conditions))
     .orderBy(ordering)
     .limit(pageSize)
@@ -2753,6 +2863,8 @@ app.post('/api/prospects/claim-next', async (c) => {
     typeof body.sortBy === 'string' &&
     [
       'leadSequence',
+      'aiScore',
+      'aiRemark',
       'name',
       'createdAt',
       'updatedAt',
@@ -2768,6 +2880,7 @@ app.post('/api/prospects/claim-next', async (c) => {
       SELECT lead.id
       FROM crm.leads lead
       LEFT JOIN crm.prospect_review_claims claim ON claim.lead_id = lead.id
+      LEFT JOIN crm.lead_ai_assessments assessment ON assessment.lead_id = lead.id
       WHERE lead.workspace_id = ${DEFAULT_WORKSPACE_ID}::uuid
         AND lead.review_state = 'pending'
         AND lead.deleted_at IS NULL
@@ -2797,6 +2910,48 @@ app.post('/api/prospects/claim-next', async (c) => {
           THEN lead.lead_sequence END ASC NULLS LAST,
         CASE WHEN ${sortBy} = 'leadSequence' AND ${sortOrder} = 'desc'
           THEN lead.lead_sequence END DESC NULLS LAST,
+        CASE WHEN ${sortBy} = 'aiScore' AND ${sortOrder} = 'asc' THEN
+          CASE
+            WHEN (
+              lower(concat_ws(
+                ' ', lead.first_name, lead.last_name, lead.headline, lead.about,
+                lead.experience, lead.education, lead.skills, lead.current_role,
+                lead.current_role_dates, lead.profile_summary,
+                lead.education_entries::text, lead.experience_entries::text, lead.notes
+              )) ~ '(^|[^[:alpha:]])ph[.]?[[:space:]]*d[.]?([^[:alpha:]]|$)'
+              OR lower(concat_ws(
+                ' ', lead.first_name, lead.last_name, lead.headline, lead.about,
+                lead.experience, lead.education, lead.skills, lead.current_role,
+                lead.current_role_dates, lead.profile_summary,
+                lead.education_entries::text, lead.experience_entries::text, lead.notes
+              )) LIKE '%doctor of philosophy%'
+            ) THEN 0
+            ELSE assessment.overall_score
+          END
+        END ASC NULLS LAST,
+        CASE WHEN ${sortBy} = 'aiScore' AND ${sortOrder} = 'desc' THEN
+          CASE
+            WHEN (
+              lower(concat_ws(
+                ' ', lead.first_name, lead.last_name, lead.headline, lead.about,
+                lead.experience, lead.education, lead.skills, lead.current_role,
+                lead.current_role_dates, lead.profile_summary,
+                lead.education_entries::text, lead.experience_entries::text, lead.notes
+              )) ~ '(^|[^[:alpha:]])ph[.]?[[:space:]]*d[.]?([^[:alpha:]]|$)'
+              OR lower(concat_ws(
+                ' ', lead.first_name, lead.last_name, lead.headline, lead.about,
+                lead.experience, lead.education, lead.skills, lead.current_role,
+                lead.current_role_dates, lead.profile_summary,
+                lead.education_entries::text, lead.experience_entries::text, lead.notes
+              )) LIKE '%doctor of philosophy%'
+            ) THEN 0
+            ELSE assessment.overall_score
+          END
+        END DESC NULLS LAST,
+        CASE WHEN ${sortBy} = 'aiRemark' AND ${sortOrder} = 'asc'
+          THEN lower(assessment.reasoning_summary) END ASC NULLS LAST,
+        CASE WHEN ${sortBy} = 'aiRemark' AND ${sortOrder} = 'desc'
+          THEN lower(assessment.reasoning_summary) END DESC NULLS LAST,
         CASE WHEN ${sortBy} = 'name' AND ${sortOrder} = 'asc'
           THEN lower(lead.first_name || ' ' || lead.last_name) END ASC NULLS LAST,
         CASE WHEN ${sortBy} = 'name' AND ${sortOrder} = 'desc'

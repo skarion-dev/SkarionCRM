@@ -141,6 +141,13 @@
       "when": 1785351859804,
       "tag": "0019_curly_living_tribunal",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1785353000000,
+      "tag": "0020_phd_prospect_scoring_policy",
+      "breakpoints": true
     }
   ]
 }
