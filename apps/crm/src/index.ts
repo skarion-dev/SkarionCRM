@@ -1174,6 +1174,11 @@ app.post('/extension/prospects/resolve', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const resolved = await resolveExtensionKeyOwner(db, readExtensionKey(c));
   if (!resolved) return c.json({ error: 'Invalid or missing API key.' }, 401);
+  const rateLimit = checkRateLimit(`extension:prospects:resolve:${resolved.userId}`, 180, 60_000);
+  if (!rateLimit.allowed) {
+    c.header('Retry-After', String(rateLimit.retryAfter));
+    return c.json({ error: 'Too many extension requests. Please wait and retry.' }, 429);
+  }
   const body = await c.req.json();
   const profileKey = linkedinProfileKey(body.linkedinUrl);
   if (!profileKey) return c.json({ error: 'A valid LinkedIn profile URL is required.' }, 400);
@@ -1196,6 +1201,11 @@ app.post('/extension/prospects/review', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const resolved = await resolveExtensionKeyOwner(db, readExtensionKey(c));
   if (!resolved) return c.json({ error: 'Invalid or missing API key.' }, 401);
+  const rateLimit = checkRateLimit(`extension:prospects:review:${resolved.userId}`, 120, 60_000);
+  if (!rateLimit.allowed) {
+    c.header('Retry-After', String(rateLimit.retryAfter));
+    return c.json({ error: 'Too many extension reviews. Please wait and retry.' }, 429);
+  }
   const body = (await c.req.json()) as Record<string, unknown>;
   if (!isProspectDisposition(body.disposition)) {
     return c.json({ error: 'Choose a valid review decision.' }, 400);
@@ -2204,6 +2214,14 @@ app.post('/api/prospects/import', async (c) => {
   const role = getRole(c);
   if (!role) return c.json({ error: 'Forbidden.' }, 403);
   const userId = c.get('userId');
+  const rateLimit = checkRateLimit(`prospects:import:${userId}`, 5, 60_000);
+  if (!rateLimit.allowed) {
+    c.header('Retry-After', String(rateLimit.retryAfter));
+    return c.json(
+      { error: `Too many prospect imports. Try again in ${rateLimit.retryAfter} seconds.` },
+      429
+    );
+  }
   const body = await c.req.json();
   const csv = typeof body.csv === 'string' ? body.csv : '';
   const name =
@@ -2296,6 +2314,14 @@ app.post('/api/prospects/claim-next', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   if (!getRole(c)) return c.json({ error: 'Forbidden.' }, 403);
   const userId = c.get('userId');
+  const rateLimit = checkRateLimit(`prospects:claim:${userId}`, 30, 60_000);
+  if (!rateLimit.allowed) {
+    c.header('Retry-After', String(rateLimit.retryAfter));
+    return c.json(
+      { error: `Too many claim requests. Try again in ${rateLimit.retryAfter} seconds.` },
+      429
+    );
+  }
   const body = await c.req.json();
   const requested = Number(body.limit ?? 10);
   const limit = Math.min(10, Math.max(1, Number.isFinite(requested) ? requested : 10));
@@ -2431,6 +2457,15 @@ app.post('/api/prospects/claim-next', async (c) => {
 app.put('/api/prospects/:id/review', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   if (!getRole(c)) return c.json({ error: 'Forbidden.' }, 403);
+  const userId = c.get('userId');
+  const rateLimit = checkRateLimit(`prospects:review:${userId}`, 120, 60_000);
+  if (!rateLimit.allowed) {
+    c.header('Retry-After', String(rateLimit.retryAfter));
+    return c.json(
+      { error: `Too many review updates. Try again in ${rateLimit.retryAfter} seconds.` },
+      429
+    );
+  }
   const body = await c.req.json();
   if (!isProspectDisposition(body.disposition)) {
     return c.json({ error: 'Choose a valid review decision.' }, 400);
@@ -2451,7 +2486,7 @@ app.put('/api/prospects/:id/review', async (c) => {
     const updated = await reviewProspect(
       db,
       lead,
-      c.get('userId'),
+      userId,
       body.disposition,
       null,
       typeof body.rowVersion === 'number' ? body.rowVersion : undefined
@@ -5559,7 +5594,7 @@ async function buildCeoReportingSnapshot(db: CrmDb): Promise<CeoReportingSnapsho
     db
       .select({ count: sql<number>`count(*)::int` })
       .from(schema.leads)
-      .where(isNull(schema.leads.deletedAt)),
+      .where(and(isNull(schema.leads.deletedAt), eq(schema.leads.reviewState, 'accepted'))),
     db
       .select({ count: sql<number>`count(*)::int` })
       .from(schema.contacts)
@@ -5595,6 +5630,7 @@ async function buildCeoReportingSnapshot(db: CrmDb): Promise<CeoReportingSnapsho
       .where(
         and(
           isNull(schema.leads.deletedAt),
+          eq(schema.leads.reviewState, 'accepted'),
           sql`${schema.leads.createdAt} >= now() - (${reportingWindowDays} * interval '1 day')`
         )
       ),
@@ -5617,7 +5653,7 @@ async function buildCeoReportingSnapshot(db: CrmDb): Promise<CeoReportingSnapsho
         count: sql<number>`count(*)::int`,
       })
       .from(schema.leads)
-      .where(isNull(schema.leads.deletedAt))
+      .where(and(isNull(schema.leads.deletedAt), eq(schema.leads.reviewState, 'accepted')))
       .groupBy(schema.leads.journeyStage),
     db
       .select({
@@ -5625,7 +5661,7 @@ async function buildCeoReportingSnapshot(db: CrmDb): Promise<CeoReportingSnapsho
         count: sql<number>`count(*)::int`,
       })
       .from(schema.leads)
-      .where(isNull(schema.leads.deletedAt))
+      .where(and(isNull(schema.leads.deletedAt), eq(schema.leads.reviewState, 'accepted')))
       .groupBy(schema.leads.source),
     db
       .select({
@@ -5662,7 +5698,7 @@ async function buildCeoReportingSnapshot(db: CrmDb): Promise<CeoReportingSnapsho
         createdAt: schema.leads.createdAt,
       })
       .from(schema.leads)
-      .where(isNull(schema.leads.deletedAt))
+      .where(and(isNull(schema.leads.deletedAt), eq(schema.leads.reviewState, 'accepted')))
       .orderBy(desc(schema.leads.createdAt))
       .limit(10),
     db
@@ -7210,6 +7246,7 @@ app.get('/api/search', async (c) => {
       .where(
         and(
           isNull(schema.leads.deletedAt),
+          eq(schema.leads.reviewState, 'accepted'),
           or(
             like(sql`LOWER(${schema.leads.firstName})`, query),
             like(sql`LOWER(${schema.leads.lastName})`, query),
