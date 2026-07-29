@@ -44,6 +44,8 @@ into Skarion CRM as a lead.
   extension and CRM do not manufacture placeholder addresses.
 - Sending the same LinkedIn URL twice does not create a duplicate lead — the
   CRM returns the existing one instead.
+- Version 1.5 cancels the duplicate pre-check as soon as a send begins, so a
+  newly created lead cannot be mistaken for its own pre-existing duplicate.
 - After a new LinkedIn lead is saved, the Vertex-backed qualification workflow
   scores it, stores the detailed assessment, and generates a personalized
   connection-request note capped at 300 characters. The extension keeps the

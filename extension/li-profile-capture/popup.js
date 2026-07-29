@@ -466,8 +466,27 @@ function currentLeadFormPayload() {
 // Preflight — calls /extension/leads/check so the user sees "already
 // exists" (with a link to the real record) before deciding whether to send
 // at all, rather than only finding out after (or, previously, never).
+let dupeCheckTimer = null;
+let dupeCheckController = null;
+let sendInProgress = false;
+
+function clearDupeBanner() {
+  lfDupeBanner.style.display = 'none';
+  lfDupeBanner.innerHTML = '';
+}
+
+function cancelDuplicateCheck() {
+  clearTimeout(dupeCheckTimer);
+  dupeCheckTimer = null;
+  dupeCheckController?.abort();
+  dupeCheckController = null;
+}
+
 async function checkDuplicate() {
-  if (!crmSettings.crmUrl || !crmSettings.apiKey) return;
+  if (sendInProgress || !crmSettings.crmUrl || !crmSettings.apiKey) return;
+  const controller = new AbortController();
+  dupeCheckController?.abort();
+  dupeCheckController = controller;
   try {
     const headers = {
       'Content-Type': 'application/json',
@@ -477,9 +496,14 @@ async function checkDuplicate() {
       method: 'POST',
       headers,
       body: JSON.stringify(currentLeadFormPayload()),
+      signal: controller.signal,
     });
     if (!res.ok) return;
     const result = await res.json();
+    // The send request can create the lead while this slower preflight is
+    // still returning. Ignore that stale response so the lead never detects
+    // the record it just created as a pre-existing duplicate.
+    if (controller.signal.aborted || sendInProgress || dupeCheckController !== controller) return;
     if (result.status === 'exact_duplicate') {
       const record = result.record;
       const label = result.entityType === 'contact' ? 'an existing contact' : 'an existing lead';
@@ -494,24 +518,30 @@ async function checkDuplicate() {
         `⚠ Possible duplicate — same name + company already in leads: ${names}. Review before sending.`
       );
     } else {
-      lfDupeBanner.style.display = 'none';
-      lfDupeBanner.innerHTML = '';
+      clearDupeBanner();
     }
-  } catch {
+  } catch (error) {
+    if (error?.name === 'AbortError') return;
     // Best-effort — a failed preflight shouldn't block the form from being usable.
+  } finally {
+    if (dupeCheckController === controller) dupeCheckController = null;
   }
 }
 
-let dupeCheckTimer = null;
 function scheduleDuplicateCheck() {
-  clearTimeout(dupeCheckTimer);
-  dupeCheckTimer = setTimeout(checkDuplicate, 400);
+  cancelDuplicateCheck();
+  if (sendInProgress) return;
+  dupeCheckTimer = setTimeout(() => {
+    dupeCheckTimer = null;
+    void checkDuplicate();
+  }, 400);
 }
 [lfLinkedinUrl, lfEmail, lfFirstName, lfLastName, lfCompanyName].forEach((el) => {
   el.addEventListener('input', scheduleDuplicateCheck);
 });
 
 btnCancelLead.addEventListener('click', () => {
+  cancelDuplicateCheck();
   leadForm.classList.remove('open');
 });
 
@@ -555,6 +585,9 @@ async function sendLeadToCrm(removeAfterSend = false) {
   btnSendLead.textContent = 'Sending…';
   lfStatusLine.textContent = '';
   lfStatusLine.className = 'status-line';
+  sendInProgress = true;
+  cancelDuplicateCheck();
+  clearDupeBanner();
   let succeeded = false;
 
   try {
@@ -594,6 +627,7 @@ async function sendLeadToCrm(removeAfterSend = false) {
       );
       showAiAssessment(result.aiAssessment);
     } else {
+      clearDupeBanner();
       showCrmConfirmation(
         result.aiAssessment
           ? 'Sent to CRM and qualified ✓'
@@ -627,6 +661,7 @@ async function sendLeadToCrm(removeAfterSend = false) {
       });
     }
   } finally {
+    sendInProgress = false;
     btnSendLead.disabled = false;
     btnSendLead.textContent = 'Send to CRM';
   }

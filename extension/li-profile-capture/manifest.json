@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LinkedIn Profile Capture",
-  "version": "1.4",
+  "version": "1.5",
   "description": "Captures LinkedIn profiles and sends qualified leads straight into Skarion CRM.",
   "permissions": ["activeTab", "scripting", "storage", "tabs"],
   "host_permissions": [
