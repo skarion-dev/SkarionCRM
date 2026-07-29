@@ -29,7 +29,7 @@ import { showToast } from '../stores/toast.js';
 import { cn } from '../lib/utils.js';
 
 const PHD_ZERO_SCORE_REASON =
-  'PhD profile — excluded by the current prospecting policy. Score forced to 0.';
+  'PhD profile — automatically disqualified by prospecting policy. Score forced to 0; no AI tokens used.';
 const PHD_PATTERN = /\bph\.?\s*d\b\.?|\bdoctor of philosophy\b/i;
 const CLAIM_BATCH_SIZE = 5;
 const LINKEDIN_OPEN_DELAY_MS = 8_000;

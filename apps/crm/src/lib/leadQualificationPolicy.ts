@@ -17,7 +17,7 @@ type ProspectProfileEvidence = {
 };
 
 export const PHD_ZERO_SCORE_REASON =
-  'PhD profile — excluded by the current prospecting policy. Score forced to 0.';
+  'PhD profile — automatically disqualified by prospecting policy. Score forced to 0; no AI tokens used.';
 
 const PHD_PATTERN = /\bph\.?\s*d\b\.?|\bdoctor of philosophy\b/i;
 

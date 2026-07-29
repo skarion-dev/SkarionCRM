@@ -194,6 +194,7 @@ function hasLeadProfileEvidence(lead: {
   notes?: string | null;
 }): boolean {
   return Boolean(
+    hasPhdProfileEvidence(lead) ||
     lead.headline?.trim() ||
     lead.location?.trim() ||
     lead.about?.trim() ||
@@ -248,6 +249,16 @@ async function enqueueLeadScoring(db: CrmDb, leadId: string): Promise<void> {
 }
 
 async function enqueueLeadProfileCleanup(db: CrmDb, leadId: string): Promise<void> {
+  const [lead] = await db
+    .select()
+    .from(schema.leads)
+    .where(and(eq(schema.leads.id, leadId), isNull(schema.leads.deletedAt)))
+    .limit(1);
+  if (lead && hasPhdProfileEvidence(lead)) {
+    await enforcePhdAutoDisqualification(db, lead, null);
+    return;
+  }
+
   const now = new Date();
   await db
     .insert(schema.leadProfileJobs)
@@ -320,6 +331,9 @@ async function normalizeAndSaveLeadProfile(
   env: Env
 ): Promise<typeof schema.leads.$inferSelect> {
   if (!hasLeadProfileEvidence(lead)) return lead;
+  if (hasPhdProfileEvidence(lead)) {
+    return (await enforcePhdAutoDisqualification(db, lead, null)) ?? lead;
+  }
   const current =
     lead.profileNormalizationStatus === 'completed' &&
     lead.profileNormalizationVersion >= PROFILE_NORMALIZATION_VERSION &&
@@ -401,16 +415,6 @@ async function reviewProspect(
   }
 
   const now = new Date();
-  const accepted = disposition !== 'disqualified';
-  const journeyStage: LeadJourneyStage =
-    disposition === 'disqualified'
-      ? 'disqualified'
-      : disposition === 'future'
-        ? 'future'
-        : disposition === 'foreign_national'
-          ? 'foreign_national'
-          : 'new';
-  const legacy = legacyFieldsForJourney(journeyStage);
   const profileName = profileString(profile ?? {}, 'name');
   const name = profileName ? deriveProspectName(profileName, lead.linkedinUrl ?? '') : null;
   const companyName =
@@ -430,8 +434,39 @@ async function reviewProspect(
   const openToWork = profileBoolean(profile ?? {}, 'openToWork');
   const yearsExperience = profileString(profile ?? {}, 'yearsExperience');
   const connectionDegree = profileString(profile ?? {}, 'connectionDegree');
+  const phdDetected = hasPhdProfileEvidence({
+    ...lead,
+    firstName: name?.firstName ?? lead.firstName,
+    lastName: name?.lastName ?? lead.lastName,
+    headline: headline ?? lead.headline,
+    about: about ?? lead.about,
+    experience: experience ?? lead.experience,
+    education: education ?? lead.education,
+    skills: skills ?? lead.skills,
+    currentRole: currentRole ?? lead.currentRole,
+    currentRoleDates: currentRoleDates ?? lead.currentRoleDates,
+  });
+  const effectiveDisposition: ProspectDisposition = phdDetected ? 'disqualified' : disposition;
+  const accepted = effectiveDisposition !== 'disqualified';
+  const journeyStage: LeadJourneyStage =
+    effectiveDisposition === 'disqualified'
+      ? 'disqualified'
+      : effectiveDisposition === 'future'
+        ? 'future'
+        : effectiveDisposition === 'foreign_national'
+          ? 'foreign_national'
+          : 'new';
+  const legacy = legacyFieldsForJourney(journeyStage);
   const profileEvidence = Boolean(
-    headline || location || about || experience || education || skills || currentRole || lead.notes
+    phdDetected ||
+    headline ||
+    location ||
+    about ||
+    experience ||
+    education ||
+    skills ||
+    currentRole ||
+    lead.notes
   );
   const linkedinUrl =
     canonicalizeLinkedinUrl(profileString(profile ?? {}, 'profileUrl')) ?? lead.linkedinUrl;
@@ -440,7 +475,7 @@ async function reviewProspect(
     db,
     mergeLeadTags(
       lead.tags,
-      [dispositionTag(disposition)],
+      [dispositionTag(effectiveDisposition)],
       [
         'Excellent Fit',
         'Worth Trying',
@@ -496,13 +531,19 @@ async function reviewProspect(
       connectionDegree: connectionDegree ?? lead.connectionDegree,
       companyName: companyName ?? lead.companyName,
       reviewState: accepted ? 'accepted' : 'rejected',
-      reviewDisposition: disposition,
+      reviewDisposition: effectiveDisposition,
       reviewedAt: now,
       reviewedBy: actorUserId,
       profileCaptureStatus: captureReceived ? 'captured' : lead.profileCaptureStatus,
       lastCapturedAt: captureReceived ? now : lead.lastCapturedAt,
-      profileNormalizationStatus:
-        captureReceived && profileEvidence ? 'pending' : lead.profileNormalizationStatus,
+      profileNormalizationStatus: phdDetected
+        ? 'not_queued'
+        : captureReceived && profileEvidence
+          ? 'pending'
+          : lead.profileNormalizationStatus,
+      profileNormalizationWarnings: phdDetected
+        ? [PHD_ZERO_SCORE_REASON]
+        : lead.profileNormalizationWarnings,
       dataCompleteness: completeness,
       rowVersion: sql`${schema.leads.rowVersion} + 1`,
       journeyStage,
@@ -519,7 +560,9 @@ async function reviewProspect(
     )
     .returning();
   if (!updated) throw new Error('PROSPECT_VERSION_CONFLICT');
-  if (captureReceived && profileEvidence) {
+  if (phdDetected) {
+    await enforcePhdAutoDisqualification(db, updated, actorUserId);
+  } else if (captureReceived && profileEvidence) {
     await enqueueLeadProfileCleanup(db, lead.id);
   }
 
@@ -1184,17 +1227,23 @@ async function enrichExtensionLead(
     .returning();
   if (!lead) return { lead: existing, enrichedFields: [] };
 
-  await linkImportedLinkedInConversationsToLead(db, lead);
+  let finalLead = lead;
+  if (hasPhdProfileEvidence(lead)) {
+    finalLead = (await enforcePhdAutoDisqualification(db, lead, actorUserId)) ?? lead;
+  } else if (hasLeadProfileEvidence(lead)) {
+    await enqueueLeadProfileCleanup(db, lead.id);
+  }
+  await linkImportedLinkedInConversationsToLead(db, finalLead);
   await withAudit(db, schema.auditLog, {
     actorUserId,
     action: 'enrich',
     resourceType: 'lead',
     resourceId: lead.id,
     before: existing,
-    after: { ...lead, enrichedFields, source: 'linkedin-extension' },
+    after: { ...finalLead, enrichedFields, source: 'linkedin-extension' },
     app: 'crm',
   });
-  return { lead, enrichedFields };
+  return { lead: finalLead, enrichedFields };
 }
 
 async function linkImportedLinkedInConversationsToLead(
@@ -1509,18 +1558,22 @@ app.post('/extension/leads', async (c) => {
     after: { ...data, capturedVia: 'linkedin-extension', keyAttributed: !!resolved },
     app: 'crm',
   });
-  await linkImportedLinkedInConversationsToLead(db, result);
+  let finalResult = result;
+  if (hasPhdProfileEvidence(result)) {
+    finalResult = (await enforcePhdAutoDisqualification(db, result, ownerId)) ?? result;
+  }
+  await linkImportedLinkedInConversationsToLead(db, finalResult);
 
   // Keep lead_channels in step with the lead — the Leads UI derives its
   // outreach tabs from these rows.
-  if (!isLeadHoldingStage(result.journeyStage)) {
-    c.executionCtx.waitUntil(autoCreateLeadChannels(db, result).catch(() => {}));
+  if (finalResult.reviewState !== 'rejected' && !isLeadHoldingStage(finalResult.journeyStage)) {
+    c.executionCtx.waitUntil(autoCreateLeadChannels(db, finalResult).catch(() => {}));
   }
 
   let aiAssessment = null;
-  if (shouldAutoGenerateLinkedinConnectionNote(result)) {
+  if (shouldAutoGenerateLinkedinConnectionNote(finalResult)) {
     try {
-      aiAssessment = await generateAndSaveLeadAiAssessment(db, result, c.env);
+      aiAssessment = await generateAndSaveLeadAiAssessment(db, finalResult, c.env);
     } catch (error) {
       console.error('LinkedIn lead AI assessment failed:', error);
     }
@@ -1528,7 +1581,7 @@ app.post('/extension/leads', async (c) => {
 
   return c.json(
     {
-      lead: result,
+      lead: finalResult,
       aiAssessment,
       ownerId,
       keyAttributed: !!resolved,
@@ -1638,11 +1691,7 @@ app.post('/extension/prospects/review', async (c) => {
       profile,
       typeof body.rowVersion === 'number' ? body.rowVersion : undefined
     );
-    if (
-      body.disposition !== 'future' &&
-      body.disposition !== 'foreign_national' &&
-      body.disposition !== 'disqualified'
-    ) {
+    if (reviewed.reviewState === 'accepted' && !isLeadHoldingStage(reviewed.journeyStage)) {
       c.executionCtx.waitUntil(
         generateAndSaveLeadAiAssessment(db, reviewed, c.env).catch((error) =>
           console.error('Accepted prospect AI assessment failed:', error)
@@ -1803,24 +1852,11 @@ function leadQualificationValues(leadId: string, assessment: ai.LeadQualificatio
   };
 }
 
-async function generateAndSaveLeadScore(
+async function saveLeadQualificationAssessment(
   db: CrmDb,
   lead: typeof schema.leads.$inferSelect,
-  env: Env
+  assessment: ai.LeadQualificationAssessment
 ) {
-  // This is deliberately independent from the Profile Cleanup Agent. Queue
-  // orchestration ensures the scorer receives the structured profile after
-  // cleanup; the PhD exclusion is a deterministic CRM policy and costs no AI
-  // tokens.
-  const assessment = hasPhdProfileEvidence(lead)
-    ? phdZeroScoreAssessment()
-    : await (async () => {
-        const aiEnv = await getConfiguredAiEnv(db, env, lead.ownerId);
-        if (!ai.isAiConfigured(aiEnv)) return null;
-        return ai.qualifyLead(structuredLeadQualificationInput(lead), aiEnv);
-      })();
-  if (!assessment) return null;
-
   const scoreValues = leadQualificationValues(lead.id, assessment);
   const [saved] = await db
     .insert(schema.leadAiAssessments)
@@ -1856,6 +1892,120 @@ async function generateAndSaveLeadScore(
     });
   }
   return saved ?? null;
+}
+
+async function enforcePhdAutoDisqualification(
+  db: CrmDb,
+  lead: typeof schema.leads.$inferSelect,
+  actorUserId: string | null
+): Promise<typeof schema.leads.$inferSelect | null> {
+  if (!hasPhdProfileEvidence(lead)) return null;
+  await ensureTagDefinitions(db, ['Disqualified'], actorUserId ?? lead.ownerId, true);
+
+  const alreadyApplied =
+    lead.reviewState === 'rejected' &&
+    lead.reviewDisposition === 'disqualified' &&
+    lead.journeyStage === 'disqualified' &&
+    lead.profileNormalizationStatus === 'not_queued';
+  let disqualifiedLead = lead;
+  if (!alreadyApplied) {
+    const now = new Date();
+    const legacy = legacyFieldsForJourney('disqualified');
+    const [updated] = await db
+      .update(schema.leads)
+      .set({
+        reviewState: 'rejected',
+        reviewDisposition: 'disqualified',
+        reviewedAt: now,
+        reviewedBy: actorUserId,
+        journeyStage: 'disqualified',
+        status: legacy.status,
+        outreachStatus: legacy.outreachStatus,
+        tags: mergeLeadTags(
+          lead.tags,
+          ['Disqualified'],
+          [
+            'Excellent Fit',
+            'Worth Trying',
+            'Maybe',
+            'Future',
+            'Foreign National',
+            'needs profile capture',
+          ]
+        ),
+        profileNormalizationStatus: 'not_queued',
+        profileNormalizationWarnings: [PHD_ZERO_SCORE_REASON],
+        rowVersion: sql`${schema.leads.rowVersion} + 1`,
+        updatedAt: now,
+      })
+      .where(eq(schema.leads.id, lead.id))
+      .returning();
+    if (updated) {
+      disqualifiedLead = updated;
+      await withAudit(db, schema.auditLog, {
+        actorUserId: actorUserId ?? lead.ownerId,
+        action: 'auto_disqualify_phd',
+        resourceType: 'lead',
+        resourceId: lead.id,
+        before: lead,
+        after: updated,
+        app: 'crm',
+      });
+      await publishLeadEvent(db, 'prospect.reviewed', actorUserId, updated);
+    }
+  }
+
+  await saveLeadQualificationAssessment(db, disqualifiedLead, phdZeroScoreAssessment());
+  const now = new Date();
+  await Promise.all([
+    db
+      .update(schema.leadProfileJobs)
+      .set({
+        status: 'completed',
+        completedAt: now,
+        lockedAt: null,
+        lastError: PHD_ZERO_SCORE_REASON,
+        updatedAt: now,
+      })
+      .where(eq(schema.leadProfileJobs.leadId, lead.id)),
+    db
+      .update(schema.leadScoreJobs)
+      .set({
+        status: 'completed',
+        completedAt: now,
+        lockedAt: null,
+        lastError: PHD_ZERO_SCORE_REASON,
+        updatedAt: now,
+      })
+      .where(eq(schema.leadScoreJobs.leadId, lead.id)),
+    db.delete(schema.prospectReviewClaims).where(eq(schema.prospectReviewClaims.leadId, lead.id)),
+  ]);
+  return disqualifiedLead;
+}
+
+async function generateAndSaveLeadScore(
+  db: CrmDb,
+  lead: typeof schema.leads.$inferSelect,
+  env: Env
+) {
+  // This is deliberately independent from the Profile Cleanup Agent. Queue
+  // orchestration ensures the scorer receives the structured profile after
+  // cleanup; the PhD exclusion is a deterministic CRM policy and costs no AI
+  // tokens.
+  if (hasPhdProfileEvidence(lead)) {
+    await enforcePhdAutoDisqualification(db, lead, null);
+    const [saved] = await db
+      .select()
+      .from(schema.leadAiAssessments)
+      .where(eq(schema.leadAiAssessments.leadId, lead.id))
+      .limit(1);
+    return saved ?? null;
+  }
+  const aiEnv = await getConfiguredAiEnv(db, env, lead.ownerId);
+  if (!ai.isAiConfigured(aiEnv)) return null;
+  const assessment = await ai.qualifyLead(structuredLeadQualificationInput(lead), aiEnv);
+  if (!assessment) return null;
+  return saveLeadQualificationAssessment(db, lead, assessment);
 }
 
 async function drainLeadProfileQueue(db: CrmDb, env: Env, limit: number) {
@@ -3224,11 +3374,7 @@ app.put('/api/prospects/:id/review', async (c) => {
       null,
       typeof body.rowVersion === 'number' ? body.rowVersion : undefined
     );
-    if (
-      body.disposition !== 'future' &&
-      body.disposition !== 'foreign_national' &&
-      body.disposition !== 'disqualified'
-    ) {
+    if (updated.reviewState === 'accepted' && !isLeadHoldingStage(updated.journeyStage)) {
       c.executionCtx.waitUntil(
         generateAndSaveLeadAiAssessment(db, updated, c.env).catch((error) =>
           console.error('Accepted prospect AI assessment failed:', error)
@@ -3449,7 +3595,10 @@ app.post('/api/leads', async (c) => {
 
   const [result] = await db.insert(schema.leads).values(data).returning();
   if (!result) return c.json({ error: 'Internal error' }, 500);
-  if (hasLeadProfileEvidence(result)) {
+  let finalResult = result;
+  if (hasPhdProfileEvidence(result)) {
+    finalResult = (await enforcePhdAutoDisqualification(db, result, caller.userId)) ?? result;
+  } else if (hasLeadProfileEvidence(result)) {
     await enqueueLeadProfileCleanup(db, result.id);
   }
   await withAudit(db, schema.auditLog, {
@@ -3462,24 +3611,24 @@ app.post('/api/leads', async (c) => {
   });
 
   // Auto-create lead_channels rows for the standard channels present on the lead
-  if (!isLeadHoldingStage(result.journeyStage)) {
-    c.executionCtx.waitUntil(autoCreateLeadChannels(db, result).catch(() => {}));
+  if (finalResult.reviewState !== 'rejected' && !isLeadHoldingStage(finalResult.journeyStage)) {
+    c.executionCtx.waitUntil(autoCreateLeadChannels(db, finalResult).catch(() => {}));
   }
 
   // Trigger workflow event for lead_created rules
-  if (!isLeadHoldingStage(result.journeyStage)) {
+  if (finalResult.reviewState !== 'rejected' && !isLeadHoldingStage(finalResult.journeyStage)) {
     c.executionCtx.waitUntil(
       triggerWorkflowEvent(c.env, 'lead_created', {
-        id: result.id,
-        source: result.source,
-        ownerId: result.ownerId,
+        id: finalResult.id,
+        source: finalResult.source,
+        ownerId: finalResult.ownerId,
       })
     );
   }
 
   // Basic email stub — will be wired to Resend in a future ticket
-  if (result.email) {
-    sendEmail(c.env, result.email, 'New lead in Skarion CRM', 'Welcome to Skarion CRM');
+  if (finalResult.email && finalResult.reviewState !== 'rejected') {
+    sendEmail(c.env, finalResult.email, 'New lead in Skarion CRM', 'Welcome to Skarion CRM');
   }
 
   // Auto-embed for RAG chatbot
@@ -3489,8 +3638,8 @@ app.post('/api/leads', async (c) => {
         db,
         schema,
         'lead',
-        result.id,
-        `${result.firstName} ${result.lastName} ${result.email ?? ''} ${result.companyName ?? ''} ${result.notes ?? ''}`,
+        finalResult.id,
+        `${finalResult.firstName} ${finalResult.lastName} ${finalResult.email ?? ''} ${finalResult.companyName ?? ''} ${finalResult.notes ?? ''}`,
         caller.userId,
         c.env
       )
@@ -3505,22 +3654,22 @@ app.post('/api/leads', async (c) => {
       caller.userId,
       'lead_created',
       'New lead created',
-      `${result.firstName} ${result.lastName} was added to the CRM.`,
+      `${finalResult.firstName} ${finalResult.lastName} was added to the CRM.`,
       'lead',
-      result.id
+      finalResult.id
     ).catch(() => {})
   );
 
   let aiAssessment = null;
-  if (shouldAutoGenerateLinkedinConnectionNote(result)) {
+  if (shouldAutoGenerateLinkedinConnectionNote(finalResult)) {
     try {
-      aiAssessment = await generateAndSaveLeadAiAssessment(db, result, c.env);
+      aiAssessment = await generateAndSaveLeadAiAssessment(db, finalResult, c.env);
     } catch (error) {
       console.error('LinkedIn lead AI assessment failed:', error);
     }
   }
 
-  return c.json({ lead: result, aiAssessment }, 201);
+  return c.json({ lead: finalResult, aiAssessment }, 201);
 });
 
 function escapeCsv(val: unknown): string {
@@ -5966,14 +6115,17 @@ app.post('/api/import/leads', async (c) => {
       })
       .returning();
     if (!result) return c.json({ error: 'Internal error' }, 500);
-    created.push(result);
-    if (hasLeadProfileEvidence(result)) {
+    let finalResult = result;
+    if (hasPhdProfileEvidence(result)) {
+      finalResult = (await enforcePhdAutoDisqualification(db, result, caller.userId)) ?? result;
+    } else if (hasLeadProfileEvidence(result)) {
       await enqueueLeadProfileCleanup(db, result.id);
     }
+    created.push(finalResult);
 
     // Holding-stage leads intentionally have no outreach channels until activated.
-    if (!isLeadHoldingStage(result.journeyStage)) {
-      await autoCreateLeadChannels(db, result);
+    if (finalResult.reviewState !== 'rejected' && !isLeadHoldingStage(finalResult.journeyStage)) {
+      await autoCreateLeadChannels(db, finalResult);
     }
   }
 
@@ -7982,6 +8134,7 @@ app.post('/api/leads/import/document/confirm', async (c) => {
       phone: leadData.phone ?? null,
       companyName: leadData.companyName ?? null,
       companyDomain: leadData.website ?? null,
+      headline: leadData.title ?? null,
       source: leadData.source ?? 'pdf_upload',
       status: documentLegacy.status,
       journeyStage: documentJourneyStage,
@@ -7992,6 +8145,12 @@ app.post('/api/leads/import/document/confirm', async (c) => {
     })
     .returning();
   if (!lead) return c.json({ error: 'Internal error' }, 500);
+  let finalLead = lead;
+  if (hasPhdProfileEvidence(lead)) {
+    finalLead = (await enforcePhdAutoDisqualification(db, lead, caller.userId)) ?? lead;
+  } else if (hasLeadProfileEvidence(lead)) {
+    await enqueueLeadProfileCleanup(db, lead.id);
+  }
 
   // Link the most recent pending document import for this user to the new lead
   // Using raw SQL because Drizzle update builder doesn't support orderBy + limit in one chain
@@ -8013,11 +8172,11 @@ app.post('/api/leads/import/document/confirm', async (c) => {
     action: 'create',
     resourceType: 'lead',
     resourceId: lead.id,
-    after: lead,
+    after: finalLead,
     app: 'crm',
   });
 
-  return c.json({ lead, contactId, companyId }, 201);
+  return c.json({ lead: finalLead, contactId, companyId }, 201);
 });
 
 // Keep old route as alias for backward compatibility
