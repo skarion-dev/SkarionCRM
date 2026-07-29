@@ -446,6 +446,28 @@ export interface Lead {
   batchId?: string | null;
 }
 
+export interface LeadAiAssessment {
+  leadId: string;
+  overallScore: number;
+  rawScore: number;
+  classification: string;
+  confidenceLevel: string;
+  scoreBreakdown: Record<string, number>;
+  verifiedPositiveSignals: string[];
+  risksOrMissingInformation: string[];
+  hardDisqualifier: boolean;
+  hardDisqualifierReason: string | null;
+  campaignMatches: string[];
+  recommendedAction: string;
+  bestOutreachAngle: string;
+  qualificationQuestions: string[];
+  reasoningSummary: string;
+  connectionNote: string;
+  connectionNoteCharacterCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type OpportunityStage =
   | 'prospecting'
   | 'qualification'

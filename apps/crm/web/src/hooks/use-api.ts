@@ -5,6 +5,7 @@ import {
   type Company,
   type Contact,
   type Lead,
+  type LeadAiAssessment,
   type Opportunity,
   type Task,
   type Activity,
@@ -249,6 +250,27 @@ export function useClaimTask() {
 
 export function useLead(id: string, enabled = true) {
   return useCrmQuery(['leads', id], () => crmFetch<{ lead: Lead }>(`/api/leads/${id}`), enabled);
+}
+
+export function useLeadAiAssessment(id: string, enabled = true) {
+  return useCrmQuery(
+    ['leads', id, 'ai-assessment'],
+    () => crmFetch<{ assessment: LeadAiAssessment | null }>(`/api/leads/${id}/ai-assessment`),
+    enabled
+  );
+}
+
+export function useGenerateLeadAiAssessment(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () =>
+      crmFetch<{ assessment: LeadAiAssessment }>(`/api/leads/${id}/ai-assessment`, {
+        method: 'POST',
+      }),
+    onSuccess: (data) => {
+      qc.setQueryData(['leads', id, 'ai-assessment'], data);
+    },
+  });
 }
 
 export function useCompany(id: string, enabled = true) {

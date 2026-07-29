@@ -1,5 +1,12 @@
 import { useNavigate, useParams } from 'react-router-dom';
-import { useLead, useDeleteEntity, useUpdateEntity, useImportBatches } from '../hooks/use-api.js';
+import {
+  useLead,
+  useDeleteEntity,
+  useUpdateEntity,
+  useImportBatches,
+  useLeadAiAssessment,
+  useGenerateLeadAiAssessment,
+} from '../hooks/use-api.js';
 import { showToast } from '../stores/toast.js';
 import {
   ArrowLeft,
@@ -26,6 +33,9 @@ import {
   ArrowRight,
   Send,
   Video,
+  Copy,
+  Check,
+  LoaderCircle,
 } from 'lucide-react';
 import { cn } from '../lib/utils.js';
 import { useState } from 'react';
@@ -159,12 +169,15 @@ export default function LeadDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { data, isLoading } = useLead(id ?? '');
+  const { data: aiAssessmentData } = useLeadAiAssessment(id ?? '', Boolean(id));
+  const generateAiAssessment = useGenerateLeadAiAssessment(id ?? '');
   const deleteMutation = useDeleteEntity();
   const updateLead = useUpdateEntity('leads');
   const { data: batches } = useImportBatches();
   const [editOpen, setEditOpen] = useState(false);
   const [activityType, setActivityType] = useState<ActivityType | null>(null);
   const [statusDropdownOpen, setStatusDropdownOpen] = useState(false);
+  const [connectionNoteCopied, setConnectionNoteCopied] = useState(false);
 
   if (isLoading) return <div className="text-slate-500">Loading lead...</div>;
   if (!data?.lead)
@@ -193,6 +206,7 @@ export default function LeadDetail() {
     );
 
   const lead = data.lead;
+  const aiAssessment = generateAiAssessment.data?.assessment ?? aiAssessmentData?.assessment;
   const nextStatus = getNextStatus(lead.status);
   const isPlaceholderEmail = (lead.email ?? '').includes('@placeholder.skarion');
   const batch = lead.batchId ? batches?.find((b) => b.id === lead.batchId) : undefined;
@@ -220,6 +234,29 @@ export default function LeadDetail() {
         onError: () => showToast('Failed to update outreach', 'error'),
       }
     );
+  };
+
+  const handleGenerateConnectionNote = () => {
+    generateAiAssessment.mutate(undefined, {
+      onSuccess: () => showToast('Connection note and lead score generated', 'success'),
+      onError: (error) =>
+        showToast(
+          error instanceof Error ? error.message : 'Failed to generate the connection note',
+          'error'
+        ),
+    });
+  };
+
+  const handleCopyConnectionNote = async () => {
+    if (!aiAssessment?.connectionNote) return;
+    try {
+      await navigator.clipboard.writeText(aiAssessment.connectionNote);
+      setConnectionNoteCopied(true);
+      showToast('Connection note copied', 'success');
+      window.setTimeout(() => setConnectionNoteCopied(false), 2000);
+    } catch {
+      showToast('Could not copy the connection note', 'error');
+    }
   };
 
   return (
@@ -402,6 +439,24 @@ export default function LeadDetail() {
               </a>
             )}
 
+            <button
+              onClick={handleGenerateConnectionNote}
+              disabled={generateAiAssessment.isPending}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-md text-sm font-medium bg-violet-600 text-white hover:bg-violet-700 disabled:bg-violet-300 disabled:cursor-wait transition-colors"
+              title="Read the saved LinkedIn profile details, score this lead, and draft a connection request note"
+            >
+              {generateAiAssessment.isPending ? (
+                <LoaderCircle size={16} className="animate-spin" />
+              ) : (
+                <Sparkles size={16} />
+              )}
+              {generateAiAssessment.isPending
+                ? 'Reading Profile…'
+                : aiAssessment
+                  ? 'Regenerate Connection Note'
+                  : 'Generate Connection Note'}
+            </button>
+
             {lead.outreachStatus === 'connected' && (
               <button
                 onClick={() => handleOutreachChange('replied')}
@@ -487,6 +542,62 @@ export default function LeadDetail() {
               )}
             </div>
           </div>
+
+          {aiAssessment && (
+            <div className="mb-6 rounded-xl border border-violet-200 bg-violet-50/60 p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="font-semibold text-violet-950">AI Lead Qualification</h2>
+                    <span className="rounded-full bg-violet-600 px-2.5 py-1 text-xs font-semibold text-white">
+                      {aiAssessment.overallScore}/100
+                    </span>
+                    <span className="rounded-full border border-violet-200 bg-white px-2.5 py-1 text-xs font-medium text-violet-800">
+                      {aiAssessment.classification}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-violet-700">
+                    Generated from the LinkedIn profile details saved on this lead.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCopyConnectionNote}
+                  className="flex items-center gap-1.5 rounded-md bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-700 transition-colors"
+                >
+                  {connectionNoteCopied ? <Check size={15} /> : <Copy size={15} />}
+                  {connectionNoteCopied ? 'Copied' : 'Copy Note'}
+                </button>
+              </div>
+
+              {aiAssessment.reasoningSummary && (
+                <p className="mb-3 text-sm leading-relaxed text-slate-700">
+                  {aiAssessment.reasoningSummary}
+                </p>
+              )}
+
+              <div className="rounded-lg border border-violet-200 bg-white p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-violet-700">
+                    LinkedIn connection note
+                  </span>
+                  <span
+                    className={cn(
+                      'text-xs font-medium',
+                      aiAssessment.connectionNoteCharacterCount <= 300
+                        ? 'text-slate-500'
+                        : 'text-red-600'
+                    )}
+                  >
+                    {aiAssessment.connectionNoteCharacterCount}/300 characters
+                  </span>
+                </div>
+                <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-800">
+                  {aiAssessment.connectionNote}
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* Outreach Progress */}
           {lead.outreachStatus &&
