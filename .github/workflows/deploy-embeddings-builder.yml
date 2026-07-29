@@ -64,7 +64,12 @@ jobs:
           AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
       - name: Set GOOGLE_EMBEDDING_MODEL secret
         working-directory: apps/workers/embeddings-builder
-        run: printf '%s' "$GOOGLE_EMBEDDING_MODEL" | wrangler secret put GOOGLE_EMBEDDING_MODEL
+        run: |
+          if [ -n "$GOOGLE_EMBEDDING_MODEL" ]; then
+            printf '%s' "$GOOGLE_EMBEDDING_MODEL" | wrangler secret put GOOGLE_EMBEDDING_MODEL
+          else
+            echo "GOOGLE_EMBEDDING_MODEL not set, skipping legacy fallback"
+          fi
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
