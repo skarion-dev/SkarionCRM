@@ -1826,8 +1826,8 @@ type AiRuntimeSettings = {
 const DEFAULT_AI_RUNTIME_SETTINGS: AiRuntimeSettings = {
   defaultProvider: 'vertex_proxy',
   tierModels: {
-    reasoning: DEFAULT_AI_MODELS.reasoning,
-    fast: DEFAULT_AI_MODELS.fast,
+    reasoning: DEFAULT_AI_MODELS.cheap,
+    fast: DEFAULT_AI_MODELS.cheap,
     cheap: DEFAULT_AI_MODELS.cheap,
     embedding: DEFAULT_AI_MODELS.embedding,
   },
@@ -1869,14 +1869,15 @@ async function getConfiguredAiEnv(db: CrmDb, env: Env, actorUserId?: string | nu
     AI_MODEL_CHEAP: settings.tierModels.cheap,
     AI_MODEL_FALLBACK: settings.tierModels.cheap,
     AI_EMBEDDING_MODEL: settings.tierModels.embedding,
-    AI_AGENT_MODELS: JSON.stringify({
-      ...settings.agentModels,
-      // Lead scoring is intentionally pinned to the cheapest Flash route.
-      'lead-scorer': DEFAULT_AI_MODELS.cheap,
-      'prospect-profile': DEFAULT_AI_MODELS.cheap,
-      'profile-normalizer': DEFAULT_AI_MODELS.cheap,
-      'linkedin-connection-writer': DEFAULT_AI_MODELS.cheap,
-    }),
+    AI_AGENT_MODELS: JSON.stringify(
+      Object.fromEntries(
+        AI_AGENTS.map((agent) => [
+          agent.id,
+          settings.agentModels[agent.id] ??
+            (agent.tier === 'embedding' ? DEFAULT_AI_MODELS.embedding : DEFAULT_AI_MODELS.cheap),
+        ])
+      )
+    ),
     AI_USAGE_RECORDER: async (record) => {
       await db.insert(schema.aiUsageEvents).values({
         actorUserId: actorUserId ?? null,
@@ -1897,6 +1898,272 @@ async function getConfiguredAiEnv(db: CrmDb, env: Env, actorUserId?: string | nu
     },
   };
 }
+
+app.get('/api/dashboard', async (c) => {
+  const role = getRole(c);
+  if (!role) return c.json({ error: 'Forbidden.' }, 403);
+
+  const db = getDb(c.env, schema) as CrmDb;
+  const userId = c.get('userId');
+  const isSuperadmin = c.get('isSuperadmin');
+  const canViewAiSpend = isSuperadmin || role === 'manager';
+  const result = await db.execute(sql`
+    WITH
+    accepted_leads AS (
+      SELECT lead.*
+      FROM crm.leads lead
+      WHERE lead.workspace_id = ${DEFAULT_WORKSPACE_ID}::uuid
+        AND lead.review_state = 'accepted'
+        AND lead.deleted_at IS NULL
+        AND (${isSuperadmin}::boolean OR lead.owner_id = ${userId}::uuid)
+    ),
+    pending_prospects AS (
+      SELECT lead.*
+      FROM crm.leads lead
+      WHERE lead.workspace_id = ${DEFAULT_WORKSPACE_ID}::uuid
+        AND lead.review_state = 'pending'
+        AND lead.deleted_at IS NULL
+    ),
+    lead_kpis AS (
+      SELECT
+        count(*) filter (
+          where journey_stage::text not in ('converted', 'disqualified', 'lost')
+        )::int AS active_leads,
+        count(*) filter (where journey_stage = 'ready_to_reach_out')::int AS ready_to_reach_out,
+        count(*) filter (where journey_stage = 'connection_sent')::int AS connection_sent,
+        count(*) filter (where journey_stage = 'engaged')::int AS engaged
+      FROM accepted_leads
+    ),
+    prospect_kpis AS (
+      SELECT
+        count(*)::int AS pending,
+        count(*) filter (
+          where claim.lead_id is null or claim.expires_at <= now()
+        )::int AS available,
+        count(*) filter (
+          where prospect.profile_capture_status in ('captured', 'partial')
+        )::int AS captured,
+        count(*) filter (
+          where prospect.profile_capture_status in ('not_captured', 'failed')
+        )::int AS needs_capture,
+        count(*) filter (where assessment.lead_id is null)::int AS unscored,
+        coalesce(round(avg(assessment.overall_score) filter (
+          where assessment.hard_disqualifier = false
+        )), 0)::int AS average_score
+      FROM pending_prospects prospect
+      LEFT JOIN crm.prospect_review_claims claim ON claim.lead_id = prospect.id
+      LEFT JOIN crm.lead_ai_assessments assessment ON assessment.lead_id = prospect.id
+    ),
+    task_kpis AS (
+      SELECT
+        count(*)::int AS open_tasks,
+        count(*) filter (where task.due_date < now())::int AS overdue_tasks
+      FROM crm.tasks task
+      WHERE task.deleted_at IS NULL
+        AND task.completed_at IS NULL
+        AND (
+          ${isSuperadmin}::boolean
+          OR task.assignee_id = ${userId}::uuid
+          OR task.assignee_id IS NULL
+        )
+    ),
+    journey_counts AS (
+      SELECT journey_stage::text AS stage, count(*)::int AS count
+      FROM accepted_leads
+      GROUP BY journey_stage
+    ),
+    journey_json AS (
+      SELECT coalesce(
+        jsonb_agg(
+          jsonb_build_object('stage', stages.stage, 'count', coalesce(counts.count, 0))
+          ORDER BY stages.position
+        ),
+        '[]'::jsonb
+      ) AS value
+      FROM unnest(ARRAY[
+        'future', 'foreign_national', 'new', 'ready_to_reach_out', 'connection_sent',
+        'connected', 'engaged', 'qualified', 'meeting_booked', 'opportunity',
+        'follow_up', 'converted', 'nurture', 'no_response', 'disqualified', 'lost'
+      ]::text[]) WITH ORDINALITY AS stages(stage, position)
+      LEFT JOIN journey_counts counts ON counts.stage = stages.stage
+    ),
+    profile_queue AS (
+      SELECT
+        count(*) filter (where job.status in ('pending', 'processing', 'failed'))::int AS active,
+        count(*) filter (where job.status = 'pending')::int AS waiting,
+        count(*) filter (where job.status = 'processing')::int AS processing,
+        count(*) filter (where job.status = 'failed')::int AS retrying,
+        count(*) filter (
+          where job.status = 'completed'
+            and job.completed_at >= now() - interval '24 hours'
+        )::int AS completed_24h,
+        max(job.completed_at) AS latest_completed_at
+      FROM crm.lead_profile_jobs job
+      INNER JOIN pending_prospects prospect ON prospect.id = job.lead_id
+    ),
+    score_queue AS (
+      SELECT
+        count(*) filter (where job.status in ('pending', 'processing', 'failed'))::int AS active,
+        count(*) filter (where job.status = 'pending')::int AS waiting,
+        count(*) filter (where job.status = 'processing')::int AS processing,
+        count(*) filter (where job.status = 'failed')::int AS retrying,
+        count(*) filter (
+          where job.status = 'completed'
+            and job.completed_at >= now() - interval '24 hours'
+        )::int AS completed_24h,
+        max(job.completed_at) AS latest_completed_at
+      FROM crm.lead_score_jobs job
+      INNER JOIN pending_prospects prospect ON prospect.id = job.lead_id
+    ),
+    priority_leads AS (
+      SELECT coalesce(jsonb_agg(row_to_json(priority_row)), '[]'::jsonb) AS value
+      FROM (
+        SELECT
+          lead.id,
+          lead.lead_number AS "leadNumber",
+          lead.first_name AS "firstName",
+          lead.last_name AS "lastName",
+          lead.headline,
+          lead.linkedin_url AS "linkedinUrl",
+          lead.journey_stage::text AS "journeyStage",
+          assessment.overall_score AS score,
+          assessment.reasoning_summary AS "reasoningSummary",
+          assessment.recommended_action AS "recommendedAction"
+        FROM accepted_leads lead
+        INNER JOIN crm.lead_ai_assessments assessment ON assessment.lead_id = lead.id
+        WHERE assessment.hard_disqualifier = false
+          AND lead.journey_stage in ('new', 'ready_to_reach_out', 'connection_sent', 'connected')
+        ORDER BY assessment.overall_score DESC, lead.updated_at DESC
+        LIMIT 6
+      ) priority_row
+    ),
+    recent_leads AS (
+      SELECT coalesce(jsonb_agg(row_to_json(recent_row)), '[]'::jsonb) AS value
+      FROM (
+        SELECT
+          lead.id,
+          lead.lead_number AS "leadNumber",
+          lead.first_name AS "firstName",
+          lead.last_name AS "lastName",
+          lead.linkedin_url AS "linkedinUrl",
+          lead.journey_stage::text AS "journeyStage",
+          lead.created_at AS "createdAt",
+          assessment.overall_score AS "aiScore"
+        FROM accepted_leads lead
+        LEFT JOIN crm.lead_ai_assessments assessment ON assessment.lead_id = lead.id
+        ORDER BY lead.created_at DESC
+        LIMIT 6
+      ) recent_row
+    ),
+    open_task_list AS (
+      SELECT coalesce(jsonb_agg(row_to_json(task_row)), '[]'::jsonb) AS value
+      FROM (
+        SELECT
+          task.id,
+          task.title,
+          task.priority,
+          task.due_date AS "dueDate",
+          task.assignee_id AS "assigneeId"
+        FROM crm.tasks task
+        WHERE task.deleted_at IS NULL
+          AND task.completed_at IS NULL
+          AND (
+            ${isSuperadmin}::boolean
+            OR task.assignee_id = ${userId}::uuid
+            OR task.assignee_id IS NULL
+          )
+        ORDER BY task.due_date ASC NULLS LAST, task.created_at DESC
+        LIMIT 6
+      ) task_row
+    ),
+    ai_usage AS (
+      SELECT
+        count(*)::int AS requests,
+        count(*) filter (where event.status <> 'success')::int AS failed_requests,
+        coalesce(sum(event.total_tokens), 0)::bigint AS tokens,
+        coalesce(sum(event.estimated_cost_usd), 0)::numeric(16, 6) AS cost_usd
+      FROM crm.ai_usage_events event
+      WHERE event.created_at >= now() - interval '7 days'
+        AND ${canViewAiSpend}::boolean
+    )
+    SELECT jsonb_build_object(
+      'observedAt', now(),
+      'kpis', jsonb_build_object(
+        'pendingProspects', prospect.pending,
+        'availableProspects', prospect.available,
+        'activeLeads', leads.active_leads,
+        'readyToReachOut', leads.ready_to_reach_out,
+        'connectionSent', leads.connection_sent,
+        'engaged', leads.engaged,
+        'openTasks', tasks.open_tasks,
+        'overdueTasks', tasks.overdue_tasks
+      ),
+      'prospectReview', jsonb_build_object(
+        'pending', prospect.pending,
+        'available', prospect.available,
+        'captured', prospect.captured,
+        'needsCapture', prospect.needs_capture,
+        'unscored', prospect.unscored,
+        'averageScore', prospect.average_score
+      ),
+      'journey', journey.value,
+      'queues', jsonb_build_object(
+        'profile', jsonb_build_object(
+          'active', profile.active,
+          'waiting', profile.waiting,
+          'processing', profile.processing,
+          'retrying', profile.retrying,
+          'completed24h', profile.completed_24h,
+          'latestCompletedAt', profile.latest_completed_at
+        ),
+        'scoring', jsonb_build_object(
+          'active', scoring.active,
+          'waiting', scoring.waiting,
+          'processing', scoring.processing,
+          'retrying', scoring.retrying,
+          'completed24h', scoring.completed_24h,
+          'latestCompletedAt', scoring.latest_completed_at
+        )
+      ),
+      'priorityLeads', priority.value,
+      'recentLeads', recent.value,
+      'tasks', task_list.value,
+      'aiUsage', CASE WHEN ${canViewAiSpend}::boolean THEN jsonb_build_object(
+        'period', 'Last 7 days',
+        'requests', usage.requests,
+        'failedRequests', usage.failed_requests,
+        'tokens', usage.tokens,
+        'costUsd', usage.cost_usd,
+        'defaultModel', ${DEFAULT_AI_MODELS.cheap}
+      ) ELSE NULL END
+    ) AS dashboard
+    FROM lead_kpis leads
+    CROSS JOIN prospect_kpis prospect
+    CROSS JOIN task_kpis tasks
+    CROSS JOIN journey_json journey
+    CROSS JOIN profile_queue profile
+    CROSS JOIN score_queue scoring
+    CROSS JOIN priority_leads priority
+    CROSS JOIN recent_leads recent
+    CROSS JOIN open_task_list task_list
+    CROSS JOIN ai_usage usage
+  `);
+
+  const rows = (result as unknown as { rows?: Array<{ dashboard: unknown }> }).rows ?? [];
+  return c.json(
+    rows[0]?.dashboard ?? {
+      observedAt: new Date(),
+      kpis: {},
+      prospectReview: {},
+      journey: [],
+      queues: {},
+      priorityLeads: [],
+      recentLeads: [],
+      tasks: [],
+      aiUsage: null,
+    }
+  );
+});
 
 function leadQualificationValues(leadId: string, assessment: ai.LeadQualificationAssessment) {
   return {

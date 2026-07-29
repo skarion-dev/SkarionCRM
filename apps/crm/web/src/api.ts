@@ -659,6 +659,74 @@ export interface Task {
   deletedAt: string | null;
 }
 
+export interface DashboardData {
+  observedAt: string;
+  kpis: {
+    pendingProspects: number;
+    availableProspects: number;
+    activeLeads: number;
+    readyToReachOut: number;
+    connectionSent: number;
+    engaged: number;
+    openTasks: number;
+    overdueTasks: number;
+  };
+  prospectReview: {
+    pending: number;
+    available: number;
+    captured: number;
+    needsCapture: number;
+    unscored: number;
+    averageScore: number;
+  };
+  journey: Array<{ stage: LeadJourneyStage; count: number }>;
+  queues: {
+    profile: DashboardQueueSummary;
+    scoring: DashboardQueueSummary;
+  };
+  priorityLeads: DashboardLead[];
+  recentLeads: Array<
+    Pick<
+      DashboardLead,
+      'id' | 'leadNumber' | 'firstName' | 'lastName' | 'linkedinUrl' | 'journeyStage'
+    > & {
+      createdAt: string;
+      aiScore: number | null;
+    }
+  >;
+  tasks: Array<Pick<Task, 'id' | 'title' | 'priority' | 'dueDate' | 'assigneeId'>>;
+  aiUsage: {
+    period: string;
+    requests: number;
+    failedRequests: number;
+    tokens: number;
+    costUsd: number;
+    defaultModel: string;
+  } | null;
+}
+
+export interface DashboardQueueSummary {
+  active: number;
+  waiting: number;
+  processing: number;
+  retrying: number;
+  completed24h: number;
+  latestCompletedAt: string | null;
+}
+
+export interface DashboardLead {
+  id: string;
+  leadNumber: string | null;
+  firstName: string;
+  lastName: string;
+  headline: string | null;
+  linkedinUrl: string | null;
+  journeyStage: LeadJourneyStage;
+  score: number;
+  reasoningSummary: string;
+  recommendedAction: string;
+}
+
 export function listCompanies() {
   return crmFetch<{ companies: Company[] }>('/api/companies');
 }

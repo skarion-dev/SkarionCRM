@@ -212,20 +212,20 @@ export const AI_AGENTS: ReadonlyArray<{
     id: 'crm-copilot',
     name: 'CRM Copilot',
     description: 'Answers CRM questions using permission-filtered RAG context.',
-    tier: 'fast',
+    tier: 'cheap',
   },
   {
     id: 'reporting-ceo',
     name: 'Reporting CEO',
     description:
       'Analyzes company-wide CRM metrics, highlights risks, and produces executive reports and charts.',
-    tier: 'reasoning',
+    tier: 'cheap',
   },
   {
     id: 'lead-intake',
     name: 'Lead Intake Agent',
     description: 'Extracts structured lead data from PDFs, resumes, and pasted text.',
-    tier: 'fast',
+    tier: 'cheap',
   },
   {
     id: 'prospect-profile',
@@ -252,7 +252,7 @@ export const AI_AGENTS: ReadonlyArray<{
     name: 'LinkedIn Connection Writer',
     description:
       'Creates a verified, personalized connection note that is ready to paste and never exceeds 300 characters.',
-    tier: 'fast',
+    tier: 'cheap',
   },
   {
     id: 'outreach-writer',

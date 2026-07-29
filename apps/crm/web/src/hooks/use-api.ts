@@ -9,6 +9,7 @@ import {
   type LeadAiAssessment,
   type Opportunity,
   type Task,
+  type DashboardData,
   type Activity,
   type LeadAttachment,
   type ImportBatch,
@@ -47,6 +48,24 @@ function useCrmQuery<T>(key: string[], fetcher: () => Promise<T>, enabled = true
       }
     },
     enabled,
+  });
+}
+
+export function useDashboard() {
+  return useQuery({
+    queryKey: ['dashboard'],
+    queryFn: async () => {
+      try {
+        return await crmFetch<DashboardData>('/api/dashboard');
+      } catch (err) {
+        if (err instanceof Error && 'status' in err && err.status === 401) {
+          redirectToLogin();
+        }
+        throw err;
+      }
+    },
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
   });
 }
 
