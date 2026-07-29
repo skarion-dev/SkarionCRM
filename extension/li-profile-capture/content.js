@@ -1,5 +1,5 @@
-// LinkedIn Profile Auto-Capture
-// Runs on every linkedin.com/in/* page, extracts the full profile, saves to storage
+// LinkedIn Profile Capture
+// Runs on linkedin.com/in/* pages and waits for an explicit popup command.
 
 // The manifest auto-loads this script on every profile page (document_idle),
 // and the popup's "Capture Current Profile Now" button injects it again via
@@ -19,12 +19,11 @@ if (window.__liProfileCaptureVersion !== chrome.runtime.getManifest().version) {
 }
 
 function initLiProfileCapture() {
-  const CAPTURE_DELAY = 3000; // wait for lazy sections to render
   let currentProgress = {
-    status: 'waiting',
-    percent: 5,
-    message: 'Waiting for LinkedIn to finish loading',
-    detail: 'The scraper will start automatically.',
+    status: 'idle',
+    percent: 0,
+    message: 'Ready to capture',
+    detail: 'Choose capture only or capture and send to CRM.',
   };
 
   function delay(ms) {
@@ -248,9 +247,8 @@ function initLiProfileCapture() {
     // Only capture actual profile pages, not overlays/redirects
     if (!window.location.href.includes('/in/')) return;
 
-    // Auto-capture (on load) and the popup's manual re-injection can both call
-    // run() close together; without this lock they'd scroll/observe the same
-    // page concurrently.
+    // Repeated button clicks or reinjection can call run() close together;
+    // without this lock they would scroll/observe the same page concurrently.
     if (window.__liProfileCaptureRunning) {
       reportProgress(
         currentProgress.status,
@@ -281,13 +279,17 @@ function initLiProfileCapture() {
       profile.idempotencyKey = prior.idempotencyKey || crypto.randomUUID();
       // Refresh scraped LinkedIn fields without erasing the persistent CRM
       // delivery receipt added by popup.js after the server confirms a send.
-      existing[profile.profileId] = { ...prior, ...profile };
+      // Keep only the currently requested profile: this extension is not a
+      // multi-profile queue and can never bulk-send older captures.
+      const currentProfileOnly = {
+        [profile.profileId]: { ...prior, ...profile },
+      };
       reportProgress('running', 97, 'Saving captured profile', 'Writing to extension storage.');
-      chrome.storage.local.set({ profiles: existing });
+      await chrome.storage.local.set({ profiles: currentProfileOnly });
       console.log(`[LI Capture] Saved: ${profile.name} (${profile.profileId})`);
 
       // Badge the extension icon with count
-      const count = Object.keys(existing).length;
+      const count = 1;
       chrome.runtime.sendMessage({ action: 'updateBadge', count });
       reportProgress(
         'complete',
@@ -313,14 +315,12 @@ function initLiProfileCapture() {
     }
   });
 
-  // Run after page is stable
   reportProgress(
-    'waiting',
-    5,
-    'Waiting for LinkedIn to finish loading',
-    'Automatic capture starts in about 3 seconds.'
+    'idle',
+    0,
+    'Ready to capture',
+    'Nothing is queued automatically. Choose an action in the extension popup.'
   );
-  setTimeout(run, CAPTURE_DELAY);
 
   // Also listen for SPA navigation within the same tab
   let lastUrl = window.location.href;
@@ -328,12 +328,11 @@ function initLiProfileCapture() {
     if (window.location.href !== lastUrl && window.location.href.includes('/in/')) {
       lastUrl = window.location.href;
       reportProgress(
-        'waiting',
-        5,
+        'idle',
+        0,
         'New LinkedIn profile detected',
-        'Automatic capture starts in about 3 seconds.'
+        'Nothing is queued automatically. Choose an action in the extension popup.'
       );
-      setTimeout(run, CAPTURE_DELAY);
     }
   }).observe(document.body, { childList: true, subtree: true });
 

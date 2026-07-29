@@ -481,6 +481,13 @@
       .btn-capture:hover:not(:disabled) {
         background: #004182;
       }
+      .btn-capture-send {
+        background: #057642;
+        color: white;
+      }
+      .btn-capture-send:hover:not(:disabled) {
+        background: #046034;
+      }
 
       .scrape-progress {
         display: none;
@@ -534,6 +541,17 @@
         font-size: 10px;
         margin-top: 6px;
       }
+      .scrape-progress-link {
+        display: none;
+        color: #0a66c2;
+        font-size: 10px;
+        font-weight: 700;
+        margin-top: 6px;
+        text-decoration: none;
+      }
+      .scrape-progress-link.open {
+        display: inline-block;
+      }
 
       .tip {
         font-size: 10px;
@@ -552,7 +570,7 @@
       </svg>
       <div>
         <h1>Profile Capture</h1>
-        <small>Auto-saves every profile you visit</small>
+        <small>Capture and send one profile at a time</small>
       </div>
       <div class="spacer"></div>
       <button class="icon-btn" id="btnSettings" title="CRM connection settings">⚙</button>
@@ -582,7 +600,7 @@
       <div class="stat-row">
         <div class="stat">
           <div class="n" id="statCount">0</div>
-          <div class="l">Profiles saved</div>
+          <div class="l">Current local capture</div>
         </div>
         <div class="stat green">
           <div class="n" id="statSent">0</div>
@@ -590,7 +608,12 @@
         </div>
       </div>
 
-      <button class="btn btn-capture" id="btnCaptureNow">📸 Capture Current Profile Now</button>
+      <div class="btn-row">
+        <button class="btn btn-capture" id="btnCaptureNow">Capture only</button>
+        <button class="btn btn-capture-send" id="btnCaptureSendNow">
+          Capture &amp; Send to CRM
+        </button>
+      </div>
 
       <div class="scrape-progress" id="scrapeProgress">
         <div class="scrape-progress-head">
@@ -601,6 +624,7 @@
           <div class="scrape-progress-fill" id="scrapeProgressFill"></div>
         </div>
         <div class="scrape-progress-detail" id="scrapeProgressDetail"></div>
+        <a class="scrape-progress-link" id="scrapeProgressLink" target="_blank">Open in CRM</a>
       </div>
 
       <div class="search-box">

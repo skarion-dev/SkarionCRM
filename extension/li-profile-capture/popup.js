@@ -24,13 +24,17 @@ const detail = document.getElementById('detail');
 const btnReviewSend = document.getElementById('btnReviewSend');
 const btnClear = document.getElementById('btnClear');
 const btnCapture = document.getElementById('btnCaptureNow');
+const btnCaptureSend = document.getElementById('btnCaptureSendNow');
 const scrapeProgress = document.getElementById('scrapeProgress');
 const scrapeProgressMessage = document.getElementById('scrapeProgressMessage');
 const scrapeProgressPercent = document.getElementById('scrapeProgressPercent');
 const scrapeProgressFill = document.getElementById('scrapeProgressFill');
 const scrapeProgressDetail = document.getElementById('scrapeProgressDetail');
+const scrapeProgressLink = document.getElementById('scrapeProgressLink');
 let activeTabId = null;
 let activeProfileId = null;
+let captureAndSendRequest = null;
+let captureAndSendBusy = false;
 
 // --- Settings (CRM URL + API key), saved per-device ---
 const btnSettings = document.getElementById('btnSettings');
@@ -192,23 +196,48 @@ function renderScrapeProgress(progress) {
     return;
   }
 
-  const percent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
-  scrapeProgress.className = `scrape-progress open ${progress.status || ''}`;
+  const rawPercent = Math.max(0, Math.min(100, Number(progress.percent) || 0));
+  const oneShotCapturing =
+    Boolean(captureAndSendRequest) && ['waiting', 'running', 'complete'].includes(progress.status);
+  const percent = oneShotCapturing ? Math.round(rawPercent * 0.7) : rawPercent;
+  const visualStatus = progress.status === 'sent' ? 'complete' : progress.status || '';
+  scrapeProgress.className = `scrape-progress open ${visualStatus}`;
   scrapeProgressMessage.textContent = progress.message || 'Capturing profile';
   scrapeProgressPercent.textContent = `${percent}%`;
   scrapeProgressFill.style.width = `${percent}%`;
   scrapeProgressDetail.textContent = progress.detail || '';
-
-  const inProgress = progress.status === 'running' || progress.status === 'waiting';
-  btnCapture.disabled = inProgress;
-  if (progress.status === 'complete') {
-    btnCapture.textContent = '✓ Profile captured';
-  } else if (progress.status === 'failed') {
-    btnCapture.textContent = '↻ Try capture again';
-  } else if (inProgress) {
-    btnCapture.textContent = `⏳ ${progress.message}`;
+  if (progress.recordUrl) {
+    scrapeProgressLink.href = progress.recordUrl;
+    scrapeProgressLink.classList.add('open');
   } else {
-    btnCapture.textContent = '📸 Capture Current Profile Now';
+    scrapeProgressLink.removeAttribute('href');
+    scrapeProgressLink.classList.remove('open');
+  }
+
+  const inProgress =
+    progress.status === 'running' || progress.status === 'waiting' || progress.status === 'sending';
+  btnCapture.disabled = inProgress;
+  btnCaptureSend.disabled = inProgress || captureAndSendBusy;
+  if (progress.status === 'sent') {
+    btnCapture.textContent = 'Capture only';
+    btnCaptureSend.textContent = '✓ Sent to CRM';
+  } else if (progress.status === 'complete' && captureAndSendRequest) {
+    btnCapture.textContent = 'Capture only';
+    btnCaptureSend.textContent = 'Sending to CRM…';
+    void maybeCaptureAndSend();
+  } else if (progress.status === 'complete') {
+    btnCapture.textContent = '✓ Captured';
+    btnCaptureSend.textContent = 'Capture & Send to CRM';
+  } else if (progress.status === 'failed') {
+    btnCapture.textContent = 'Try capture again';
+    btnCaptureSend.textContent = 'Capture & Send to CRM';
+  } else if (inProgress) {
+    btnCapture.textContent = 'Capturing…';
+    btnCaptureSend.textContent =
+      progress.status === 'sending' ? 'Sending to CRM…' : 'Capture & Send to CRM';
+  } else {
+    btnCapture.textContent = 'Capture only';
+    btnCaptureSend.textContent = 'Capture & Send to CRM';
   }
 }
 
@@ -371,22 +400,40 @@ function recordLink(entityType, id) {
   return `${DEFAULT_CRM_WEB_URL}/${entityType === 'contact' ? 'contacts' : 'leads'}/${id}`;
 }
 
-function markProfileSent(result) {
+async function markProfileSent(result, keepLocal = true) {
   const profileId = leadForm.dataset.profileId;
   const profile = allProfiles[profileId];
   const entityType = result.entityType || (result.contact ? 'contact' : 'lead');
   const record = result.contact || result.lead;
   if (!profile || !record?.id) return null;
 
-  profile.crmStatus = 'sent';
-  profile.crmSentAt = new Date().toISOString();
-  profile.crmRecordId = record.id;
-  profile.crmEntityType = entityType;
-  profile.crmRecordUrl = recordLink(entityType, record.id);
-  allProfiles[profileId] = profile;
-  chrome.storage.local.set({ profiles: allProfiles });
+  const sentProfile = {
+    ...profile,
+    crmStatus: 'sent',
+    crmSentAt: new Date().toISOString(),
+    crmRecordId: record.id,
+    crmEntityType: entityType,
+    crmRecordUrl: recordLink(entityType, record.id),
+  };
+  const nextProfiles = { ...allProfiles };
+  if (keepLocal) nextProfiles[profileId] = sentProfile;
+  else delete nextProfiles[profileId];
+  await chrome.storage.local.set({ profiles: nextProfiles });
+  allProfiles = nextProfiles;
+  if (!keepLocal) await chrome.action.setBadgeText({ text: '0' });
   render(searchInput.value);
-  return profile.crmRecordUrl;
+  return sentProfile.crmRecordUrl;
+}
+
+function storeOneShotProgress(progress) {
+  const value = {
+    ...progress,
+    profileId: activeProfileId,
+    tabId: activeTabId,
+    updatedAt: new Date().toISOString(),
+  };
+  chrome.storage.local.set({ scrapeProgress: value });
+  renderScrapeProgress(value);
 }
 
 function showCrmConfirmation(message, url) {
@@ -468,11 +515,11 @@ btnCancelLead.addEventListener('click', () => {
   leadForm.classList.remove('open');
 });
 
-btnSendLead.addEventListener('click', async () => {
+async function sendLeadToCrm(removeAfterSend = false) {
   if (!crmSettings.crmUrl) {
     lfStatusLine.textContent = 'Set the CRM API base URL in ⚙ Settings first.';
     lfStatusLine.className = 'status-line err';
-    return;
+    return false;
   }
   // The CRM now rejects any /extension/leads request with no valid key —
   // fail fast here with a clear message instead of a confusing 401 later.
@@ -480,13 +527,13 @@ btnSendLead.addEventListener('click', async () => {
     lfStatusLine.textContent =
       'Add your personal API key in ⚙ Settings first (ask an admin to generate one).';
     lfStatusLine.className = 'status-line err';
-    return;
+    return false;
   }
   const displayName = `${lfFirstName.value.trim()} ${lfLastName.value.trim()}`.trim();
   if (!displayName || !(lfLinkedinUrl.value.trim() || lfEmail.value.trim())) {
     lfStatusLine.textContent = 'A name plus a LinkedIn URL or an email is required.';
     lfStatusLine.className = 'status-line err';
-    return;
+    return false;
   }
 
   const payload = {
@@ -508,6 +555,7 @@ btnSendLead.addEventListener('click', async () => {
   btnSendLead.textContent = 'Sending…';
   lfStatusLine.textContent = '';
   lfStatusLine.className = 'status-line';
+  let succeeded = false;
 
   try {
     const headers = {
@@ -526,7 +574,10 @@ btnSendLead.addEventListener('click', async () => {
       throw new Error(`${res.status} ${body}`);
     }
     const result = await res.json();
-    const crmRecordUrl = markProfileSent(result);
+    const crmRecordUrl = await markProfileSent(result, !removeAfterSend);
+    if (!crmRecordUrl) {
+      throw new Error('CRM response did not include a confirmed lead or contact record.');
+    }
 
     if (result.duplicate) {
       const entityType = result.entityType || 'lead';
@@ -551,14 +602,39 @@ btnSendLead.addEventListener('click', async () => {
       );
       showAiAssessment(result.aiAssessment);
     }
+    succeeded = true;
+    if (removeAfterSend) {
+      storeOneShotProgress({
+        status: 'sent',
+        percent: 100,
+        message: result.duplicate ? 'Confirmed in CRM' : 'Sent to CRM',
+        detail: result.aiAssessment
+          ? 'CRM delivery and AI qualification completed. Nothing remains queued locally.'
+          : 'CRM delivery completed. Nothing remains queued locally.',
+        recordUrl: crmRecordUrl,
+      });
+    }
     lfStatusLine.className = 'status-line';
   } catch (err) {
     lfStatusLine.textContent = `Failed to reach ${crmSettings.crmUrl}/extension/leads — ${err.message}`;
     lfStatusLine.className = 'status-line err';
+    if (removeAfterSend) {
+      storeOneShotProgress({
+        status: 'failed',
+        percent: 72,
+        message: 'CRM send failed',
+        detail: `${err.message} The single capture is retained for retry.`,
+      });
+    }
   } finally {
     btnSendLead.disabled = false;
     btnSendLead.textContent = 'Send to CRM';
   }
+  return succeeded;
+}
+
+btnSendLead.addEventListener('click', () => {
+  void sendLeadToCrm();
 });
 
 // Load
@@ -586,34 +662,81 @@ chrome.storage.onChanged.addListener((changes, area) => {
     if (activeProfileId && allProfiles[activeProfileId]) {
       showDetail(activeProfileId);
     }
+    if (captureAndSendRequest) void maybeCaptureAndSend();
   }
 });
 
-// Search
-searchInput.addEventListener('input', () => {
-  selectedId = null;
-  detail.style.display = 'none';
-  render(searchInput.value);
-});
+async function maybeCaptureAndSend() {
+  if (!captureAndSendRequest || captureAndSendBusy) return;
+  const profile = allProfiles[captureAndSendRequest.profileId];
+  const capturedAt = profile ? new Date(profile.capturedAt).getTime() : 0;
+  if (!profile || capturedAt < captureAndSendRequest.startedAt - 1000) return;
 
-// Capture current tab now
-btnCapture.addEventListener('click', async () => {
+  captureAndSendBusy = true;
+  openLeadForm(profile);
+  storeOneShotProgress({
+    status: 'sending',
+    percent: 74,
+    message: 'Sending current profile to CRM',
+    detail: 'Waiting for CRM confirmation and AI qualification. Only this profile is being sent.',
+  });
+
+  try {
+    const sent = await sendLeadToCrm(true);
+    if (!sent) {
+      storeOneShotProgress({
+        status: 'failed',
+        percent: 72,
+        message: 'CRM send did not complete',
+        detail: 'Review the form error below. The single capture is retained for retry.',
+      });
+    }
+  } finally {
+    captureAndSendRequest = null;
+    captureAndSendBusy = false;
+    btnCapture.disabled = false;
+    btnCaptureSend.disabled = false;
+  }
+}
+
+async function startCapture(sendAfterCapture) {
+  if (captureAndSendBusy || captureAndSendRequest) return;
+  btnCapture.disabled = true;
+  btnCaptureSend.disabled = true;
+
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab || !tab.url?.includes('linkedin.com/in/')) {
-    btnCapture.textContent = '⚠ Not a LinkedIn profile page';
+    const button = sendAfterCapture ? btnCaptureSend : btnCapture;
+    button.textContent = 'Not a LinkedIn profile';
     setTimeout(() => {
-      btnCapture.textContent = '📸 Capture Current Profile Now';
+      button.textContent = sendAfterCapture ? 'Capture & Send to CRM' : 'Capture only';
     }, 2000);
+    btnCapture.disabled = false;
+    btnCaptureSend.disabled = false;
     return;
   }
+  if (sendAfterCapture && (!crmSettings.crmUrl || !crmSettings.apiKey)) {
+    settingsPanel.classList.add('open');
+    settingsStatus.textContent = 'Add and save your CRM API key before using capture & send.';
+    settingsStatus.className = 'status-line err';
+    btnCapture.disabled = false;
+    btnCaptureSend.disabled = false;
+    return;
+  }
+
   activeTabId = tab.id;
   activeProfileId = tab.url.split('/in/')[1]?.split('?')[0]?.replace(/\/$/, '') || null;
+  captureAndSendRequest = sendAfterCapture
+    ? { profileId: activeProfileId, startedAt: Date.now() }
+    : null;
   renderScrapeProgress({
     tabId: tab.id,
     status: 'running',
     percent: 2,
-    message: 'Starting capture',
-    detail: 'Connecting to the LinkedIn profile page.',
+    message: sendAfterCapture ? 'Starting capture & send' : 'Starting capture',
+    detail: sendAfterCapture
+      ? 'This action is locked to the currently open profile.'
+      : 'Connecting to the currently open LinkedIn profile.',
   });
 
   try {
@@ -623,6 +746,7 @@ btnCapture.addEventListener('click', async () => {
       await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
       await chrome.tabs.sendMessage(tab.id, { action: 'captureProfileNow' });
     } catch (error) {
+      captureAndSendRequest = null;
       renderScrapeProgress({
         tabId: tab.id,
         status: 'failed',
@@ -632,8 +756,24 @@ btnCapture.addEventListener('click', async () => {
           error instanceof Error ? error.message : 'Reload the LinkedIn profile and try again.',
       });
       btnCapture.disabled = false;
+      btnCaptureSend.disabled = false;
     }
   }
+}
+
+// Search
+searchInput.addEventListener('input', () => {
+  selectedId = null;
+  detail.style.display = 'none';
+  render(searchInput.value);
+});
+
+btnCapture.addEventListener('click', () => {
+  void startCapture(false);
+});
+
+btnCaptureSend.addEventListener('click', () => {
+  void startCapture(true);
 });
 
 // Clear

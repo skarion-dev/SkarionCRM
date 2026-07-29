@@ -1,8 +1,8 @@
 # LinkedIn Profile Capture (Chrome extension)
 
-Auto-captures every LinkedIn profile you visit (name, headline, location,
-about, experience, education, skills, certifications) and sends reviewed
-profiles straight into Skarion CRM as leads.
+Captures the currently open LinkedIn profile (name, headline, location,
+about, experience, education, skills, certifications) and sends it straight
+into Skarion CRM as a lead.
 
 ## Install (unpacked, for internal team use — not published to the Chrome Web Store)
 
@@ -18,18 +18,21 @@ profiles straight into Skarion CRM as leads.
 
 ## Use
 
-- Browsing `linkedin.com/in/*` auto-captures the profile ~3s after the page
-  settles (it scrolls through the page first so lazy-loaded sections like
-  Experience actually render before scraping).
+- Nothing is captured or queued automatically. On a `linkedin.com/in/*`
+  profile, choose **Capture only** for review or **Capture & Send to CRM**
+  for the locked one-profile workflow.
 - The popup shows the scraper's live stage, percentage, scroll pass, section
   count, and recently detected LinkedIn section names. The progress comes
   directly from the content script rather than an estimated timer.
-- Click the extension icon to see everything captured so far. **Captured**
+- Click the extension icon to see the current local capture. **Captured**
   means saved locally in Chrome; it has not reached CRM until the profile
   displays the green **Sent to CRM** badge.
 - Click a profile or **Review & Send to CRM**, review the form, then press
   **Send to CRM**. The extension only marks the profile as sent after the
   CRM server confirms the record and provides an **Open in CRM** link.
+- Capture storage has a maximum of one profile. **Capture & Send to CRM**
+  sends only the currently open LinkedIn profile and removes that capture
+  after CRM confirmation, so it cannot bulk-send a queue.
 - **Lead quality tiers**: on a captured profile's detail view, one click on
   a tier button (Excellent Fit / Good Fit / Future Fit / Indian / Worth
   Trying) pre-fills the lead form with that tier as a tag and opens it for
