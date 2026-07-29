@@ -12,6 +12,8 @@ import {
 } from '@skarion/ai-toolkit';
 import { can, canList } from '@skarion/permissions';
 import { parseContactsCsv, parseCompaniesCsv, parseLeadsCsv } from '@skarion/importers';
+import Papa from 'papaparse';
+import readXlsxFile from 'read-excel-file/web-worker';
 import * as schema from './db/schema.js';
 import { eq, and, isNull, like, sql, desc, asc, or, inArray, gte } from 'drizzle-orm';
 import type { CrmDb } from './db/types.js';
@@ -50,10 +52,20 @@ import {
   normalizePhoneKey,
   isRealEmail,
   findExactMatch,
+  buildLeadEnrichmentPatch,
+  findNameEnrichmentCandidate,
 } from './lib/leadDedup.js';
 import { nextLeadNumber } from './lib/leadNumber.js';
 import { buildLeadConditions, parseCommaList, resolveLeadSortColumn } from './lib/leadFilters.js';
 import { shouldAutoGenerateLinkedinConnectionNote } from './lib/leadAutomation.js';
+import {
+  detectLinkedInExportKind,
+  spreadsheetRowsToRecords,
+  splitLinkedInDisplayName,
+  summarizeLinkedInConversations,
+  summarizeLinkedInInvitations,
+  type LinkedInExportRow,
+} from './lib/linkedinExport.js';
 import {
   buildCeoSystemInstruction,
   parseCeoQuestion,
@@ -333,6 +345,70 @@ async function resolveExtensionKeyOwner(
   return { userId: row.user_id as string, email: row.email as string };
 }
 
+async function enrichExtensionLead(
+  db: CrmDb,
+  existing: typeof schema.leads.$inferSelect,
+  body: Record<string, unknown>,
+  linkedinUrl: string | null,
+  actorUserId: string
+): Promise<{
+  lead: typeof schema.leads.$inferSelect;
+  enrichedFields: string[];
+}> {
+  const { patch, enrichedFields } = buildLeadEnrichmentPatch(existing, {
+    firstName: typeof body.firstName === 'string' ? body.firstName : undefined,
+    lastName: typeof body.lastName === 'string' ? body.lastName : undefined,
+    email: typeof body.email === 'string' ? body.email : null,
+    phone: typeof body.phone === 'string' ? body.phone : null,
+    companyName: typeof body.companyName === 'string' ? body.companyName : null,
+    companyDomain: typeof body.companyDomain === 'string' ? body.companyDomain : null,
+    linkedinUrl,
+    notes: typeof body.notes === 'string' ? body.notes : null,
+    tags: body.tags,
+  });
+  if (enrichedFields.length === 0) {
+    await linkImportedLinkedInConversationsToLead(db, existing);
+    return { lead: existing, enrichedFields };
+  }
+
+  const [lead] = await db
+    .update(schema.leads)
+    .set({ ...patch, updatedAt: new Date() })
+    .where(eq(schema.leads.id, existing.id))
+    .returning();
+  if (!lead) return { lead: existing, enrichedFields: [] };
+
+  await linkImportedLinkedInConversationsToLead(db, lead);
+  await withAudit(db, schema.auditLog, {
+    actorUserId,
+    action: 'enrich',
+    resourceType: 'lead',
+    resourceId: lead.id,
+    before: existing,
+    after: { ...lead, enrichedFields, source: 'linkedin-extension' },
+    app: 'crm',
+  });
+  return { lead, enrichedFields };
+}
+
+async function linkImportedLinkedInConversationsToLead(
+  db: CrmDb,
+  lead: typeof schema.leads.$inferSelect
+): Promise<void> {
+  const linkedinUrl = canonicalizeLinkedinUrl(lead.linkedinUrl);
+  if (!linkedinUrl) return;
+
+  await db
+    .update(schema.linkedinConversations)
+    .set({ leadId: lead.id, updatedAt: new Date() })
+    .where(
+      and(
+        isNull(schema.linkedinConversations.leadId),
+        eq(sql`lower(${schema.linkedinConversations.otherPartyProfileUrl})`, linkedinUrl)
+      )
+    );
+}
+
 /**
  * Preflight check the extension calls before showing its send button as
  * live — lets the user see "already exists" and back out instead of finding
@@ -353,11 +429,59 @@ app.post('/extension/leads/check', async (c) => {
 
   const exact = await findExactMatch(db, { linkedinUrl, email, phone });
   if (exact) {
+    if (exact.entityType === 'lead') {
+      const { enrichedFields } = buildLeadEnrichmentPatch(exact.record, {
+        firstName: body.firstName,
+        lastName: body.lastName,
+        email: body.email,
+        phone: body.phone,
+        companyName: body.companyName,
+        companyDomain: body.companyDomain,
+        linkedinUrl,
+        notes: body.notes,
+        tags: body.tags,
+      });
+      return c.json({
+        status: 'exact_duplicate',
+        matchType: exact.matchType,
+        entityType: exact.entityType,
+        record: exact.record,
+        enrichmentAvailable: enrichedFields.length > 0,
+        enrichedFields,
+      });
+    }
     return c.json({
       status: 'exact_duplicate',
       matchType: exact.matchType,
       entityType: exact.entityType,
       record: exact.record,
+    });
+  }
+
+  const enrichmentCandidate = await findNameEnrichmentCandidate(db, {
+    firstName: String(body.firstName ?? ''),
+    lastName: String(body.lastName ?? ''),
+    companyName: typeof body.companyName === 'string' ? body.companyName : null,
+    linkedinUrl,
+  });
+  if (enrichmentCandidate) {
+    const { enrichedFields } = buildLeadEnrichmentPatch(enrichmentCandidate, {
+      firstName: body.firstName,
+      lastName: body.lastName,
+      email: body.email,
+      phone: body.phone,
+      companyName: body.companyName,
+      companyDomain: body.companyDomain,
+      linkedinUrl,
+      notes: body.notes,
+      tags: body.tags,
+    });
+    return c.json({
+      status: 'enrichment_available',
+      matchType: 'name',
+      entityType: 'lead',
+      record: enrichmentCandidate,
+      enrichedFields,
     });
   }
 
@@ -422,17 +546,20 @@ app.post('/extension/leads', async (c) => {
       .where(eq(schema.leads.idempotencyKey, idempotencyKey))
       .limit(1);
     if (prior) {
+      const enriched = await enrichExtensionLead(db, prior, body, linkedinUrl, ownerId);
       const [aiAssessment] = await db
         .select()
         .from(schema.leadAiAssessments)
         .where(eq(schema.leadAiAssessments.leadId, prior.id));
       return c.json(
         {
-          lead: prior,
+          lead: enriched.lead,
           aiAssessment: aiAssessment ?? null,
-          ownerId: prior.ownerId,
+          ownerId: enriched.lead.ownerId,
           duplicate: true,
           replayed: true,
+          enriched: enriched.enrichedFields.length > 0,
+          enrichedFields: enriched.enrichedFields,
         },
         200
       );
@@ -455,16 +582,45 @@ app.post('/extension/leads', async (c) => {
         200
       );
     }
+    const enriched = await enrichExtensionLead(db, exact.record, body, linkedinUrl, ownerId);
     const [aiAssessment] = await db
       .select()
       .from(schema.leadAiAssessments)
       .where(eq(schema.leadAiAssessments.leadId, exact.record.id));
     return c.json(
       {
-        lead: exact.record,
+        lead: enriched.lead,
         aiAssessment: aiAssessment ?? null,
-        ownerId: exact.record.ownerId,
+        ownerId: enriched.lead.ownerId,
         duplicate: true,
+        enriched: enriched.enrichedFields.length > 0,
+        enrichedFields: enriched.enrichedFields,
+      },
+      200
+    );
+  }
+
+  const enrichmentCandidate = await findNameEnrichmentCandidate(db, {
+    firstName: String(body.firstName ?? ''),
+    lastName: String(body.lastName ?? ''),
+    companyName: typeof body.companyName === 'string' ? body.companyName : null,
+    linkedinUrl,
+  });
+  if (enrichmentCandidate) {
+    const enriched = await enrichExtensionLead(db, enrichmentCandidate, body, linkedinUrl, ownerId);
+    const [aiAssessment] = await db
+      .select()
+      .from(schema.leadAiAssessments)
+      .where(eq(schema.leadAiAssessments.leadId, enrichmentCandidate.id));
+    return c.json(
+      {
+        lead: enriched.lead,
+        aiAssessment: aiAssessment ?? null,
+        ownerId: enriched.lead.ownerId,
+        duplicate: true,
+        matchedBy: 'name',
+        enriched: enriched.enrichedFields.length > 0,
+        enrichedFields: enriched.enrichedFields,
       },
       200
     );
@@ -505,16 +661,19 @@ app.post('/extension/leads', async (c) => {
     if (code === '23505') {
       const raced = await findExactMatch(db, { linkedinUrl, email, phone });
       if (raced && raced.entityType === 'lead') {
+        const enriched = await enrichExtensionLead(db, raced.record, body, linkedinUrl, ownerId);
         const [aiAssessment] = await db
           .select()
           .from(schema.leadAiAssessments)
           .where(eq(schema.leadAiAssessments.leadId, raced.record.id));
         return c.json(
           {
-            lead: raced.record,
+            lead: enriched.lead,
             aiAssessment: aiAssessment ?? null,
-            ownerId: raced.record.ownerId,
+            ownerId: enriched.lead.ownerId,
             duplicate: true,
+            enriched: enriched.enrichedFields.length > 0,
+            enrichedFields: enriched.enrichedFields,
           },
           200
         );
@@ -532,6 +691,7 @@ app.post('/extension/leads', async (c) => {
     after: { ...data, capturedVia: 'linkedin-extension', keyAttributed: !!resolved },
     app: 'crm',
   });
+  await linkImportedLinkedInConversationsToLead(db, result);
 
   // Keep lead_channels in step with the lead — the Leads UI derives its
   // outreach tabs from these rows.
@@ -4004,6 +4164,7 @@ async function buildCeoReportingSnapshot(db: CrmDb): Promise<CeoReportingSnapsho
     [activitySummary],
     [leadWindowSummary],
     [scoreSummary],
+    [linkedinSummary],
     leadStatusRows,
     leadOutreachRows,
     leadSourceRows,
@@ -4011,6 +4172,7 @@ async function buildCeoReportingSnapshot(db: CrmDb): Promise<CeoReportingSnapsho
     opportunityRows,
     taskPriorityRows,
     recentLeadRows,
+    recentLinkedinRows,
     upcomingOpportunityRows,
   ] = await Promise.all([
     db
@@ -4060,6 +4222,14 @@ async function buildCeoReportingSnapshot(db: CrmDb): Promise<CeoReportingSnapsho
         average: sql<string | null>`round(avg(${schema.leadAiAssessments.overallScore}), 1)::text`,
       })
       .from(schema.leadAiAssessments),
+    db
+      .select({
+        conversations: sql<number>`count(*)::int`,
+        messages: sql<number>`coalesce(sum(${schema.linkedinConversations.messageCount}), 0)::int`,
+        leads: sql<number>`count(distinct ${schema.linkedinConversations.leadId})::int`,
+        lastMessageAt: sql<Date | null>`max(${schema.linkedinConversations.lastMessageAt})`,
+      })
+      .from(schema.linkedinConversations),
     db
       .select({
         label: schema.leads.status,
@@ -4124,6 +4294,21 @@ async function buildCeoReportingSnapshot(db: CrmDb): Promise<CeoReportingSnapsho
       .limit(10),
     db
       .select({
+        leadFirstName: schema.leads.firstName,
+        leadLastName: schema.leads.lastName,
+        otherPartyName: schema.linkedinConversations.otherPartyName,
+        messageCount: schema.linkedinConversations.messageCount,
+        outboundCount: schema.linkedinConversations.outboundCount,
+        lastMessageAt: schema.linkedinConversations.lastMessageAt,
+        lastMessageFromUs: schema.linkedinConversations.lastMessageFromUs,
+        messages: schema.linkedinConversations.messages,
+      })
+      .from(schema.linkedinConversations)
+      .leftJoin(schema.leads, eq(schema.linkedinConversations.leadId, schema.leads.id))
+      .orderBy(desc(schema.linkedinConversations.lastMessageAt))
+      .limit(10),
+    db
+      .select({
         name: schema.opportunities.name,
         stage: schema.opportunities.stage,
         amount: schema.opportunities.amount,
@@ -4158,6 +4343,10 @@ async function buildCeoReportingSnapshot(db: CrmDb): Promise<CeoReportingSnapsho
         scoreSummary?.average === null || scoreSummary?.average === undefined
           ? null
           : Number(scoreSummary.average),
+      linkedinConversations: Number(linkedinSummary?.conversations) || 0,
+      linkedinMessages: Number(linkedinSummary?.messages) || 0,
+      leadsWithLinkedinConversations: Number(linkedinSummary?.leads) || 0,
+      lastLinkedinMessageAt: linkedinSummary?.lastMessageAt?.toISOString() ?? null,
     },
     leadsByStatus: reportingSeries(leadStatusRows),
     leadsByOutreachStatus: reportingSeries(leadOutreachRows),
@@ -4178,6 +4367,20 @@ async function buildCeoReportingSnapshot(db: CrmDb): Promise<CeoReportingSnapsho
       status: row.status,
       source: row.source,
       createdAt: row.createdAt.toISOString(),
+    })),
+    recentLinkedinConversations: recentLinkedinRows.map((row) => ({
+      leadName: `${row.leadFirstName ?? ''} ${row.leadLastName ?? ''}`.trim() || row.otherPartyName,
+      messageCount: row.messageCount,
+      outboundCount: row.outboundCount,
+      lastMessageAt: row.lastMessageAt.toISOString(),
+      lastMessageFromUs: row.lastMessageFromUs,
+      lastMessagePreview: (() => {
+        const messages = Array.isArray(row.messages)
+          ? (row.messages as Array<{ content?: unknown }>)
+          : [];
+        const content = messages[messages.length - 1]?.content;
+        return typeof content === 'string' ? content.slice(0, 500) : '';
+      })(),
     })),
     upcomingOpportunities: upcomingOpportunityRows.map((row) => ({
       name: row.name,
@@ -4312,6 +4515,102 @@ anything unless the application explicitly confirms that action.`,
   return c.json({ answer, context: scored, message: assistantMessage });
 });
 
+type LinkedInUploadFile = {
+  name: string;
+  type: string;
+  size: number;
+  arrayBuffer: () => Promise<ArrayBuffer>;
+};
+
+function isLinkedInUploadFile(value: unknown): value is LinkedInUploadFile {
+  if (!value || typeof value !== 'object') return false;
+  const file = value as Partial<LinkedInUploadFile>;
+  return (
+    typeof file.name === 'string' &&
+    typeof file.type === 'string' &&
+    typeof file.size === 'number' &&
+    typeof file.arrayBuffer === 'function'
+  );
+}
+
+async function parseLinkedInExportUpload(
+  file: LinkedInUploadFile
+): Promise<Array<{ label: string; rows: LinkedInExportRow[] }>> {
+  const extension = file.name.toLowerCase().split('.').pop();
+  const bytes = await file.arrayBuffer();
+  if (extension === 'csv' || file.type === 'text/csv') {
+    const text = new TextDecoder('utf-8').decode(bytes);
+    const parsed = Papa.parse<LinkedInExportRow>(text, {
+      header: true,
+      skipEmptyLines: true,
+    });
+    if (parsed.errors.length > 0 && parsed.data.length === 0) {
+      const firstError = parsed.errors[0] as { message?: unknown } | undefined;
+      throw new Error(
+        `${file.name}: ${
+          typeof firstError?.message === 'string' ? firstError.message : 'Invalid CSV file.'
+        }`
+      );
+    }
+    return [{ label: file.name, rows: parsed.data }];
+  }
+
+  if (extension === 'xlsx') {
+    const sheets = await readXlsxFile(bytes);
+    return sheets.map((sheet) => ({
+      label: `${file.name} · ${sheet.sheet}`,
+      rows: spreadsheetRowsToRecords(sheet.data),
+    }));
+  }
+
+  throw new Error(`${file.name}: upload a CSV or XLSX file.`);
+}
+
+function normalizedLeadName(firstName: string, lastName: string): string {
+  return `${firstName} ${lastName}`.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+async function upsertImportedLinkedInChannel(
+  db: CrmDb,
+  lead: typeof schema.leads.$inferSelect,
+  patch: {
+    stage: 'awaiting_reply' | 'replied' | 'connection_request_sent';
+    lastAttemptAt: Date;
+    attemptCount: number;
+  }
+): Promise<void> {
+  const [existing] = await db
+    .select()
+    .from(schema.leadChannels)
+    .where(
+      and(eq(schema.leadChannels.leadId, lead.id), eq(schema.leadChannels.channel, 'linkedin'))
+    );
+  if (existing) {
+    const useIncomingState =
+      !existing.lastAttemptAt || existing.lastAttemptAt <= patch.lastAttemptAt;
+    await db
+      .update(schema.leadChannels)
+      .set({
+        stage: useIncomingState ? patch.stage : existing.stage,
+        lastAttemptAt: useIncomingState ? patch.lastAttemptAt : existing.lastAttemptAt,
+        attemptCount: Math.max(existing.attemptCount, patch.attemptCount),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.leadChannels.id, existing.id));
+  } else {
+    await db.insert(schema.leadChannels).values({
+      leadId: lead.id,
+      channel: 'linkedin',
+      stage: patch.stage,
+      lastAttemptAt: patch.lastAttemptAt,
+      attemptCount: patch.attemptCount,
+      sequence: 1,
+      ownerId: lead.ownerId,
+    });
+  }
+  await recomputeLeadOutreachStatus(db, lead.id);
+}
+
 app.get('/api/ceo-chat/history', async (c) => {
   if (!c.get('isSuperadmin')) return c.json({ error: 'Forbidden.' }, 403);
 
@@ -4362,6 +4661,264 @@ app.delete('/api/ceo-chat/history', async (c) => {
     app: 'crm',
   });
   return c.json({ success: true });
+});
+
+app.post('/api/ceo-chat/import-linkedin', async (c) => {
+  if (!c.get('isSuperadmin')) return c.json({ error: 'Forbidden.' }, 403);
+
+  const userId = c.get('userId');
+  const rateLimit = checkRateLimit(`ceo-linkedin-import:${userId}`, 6, 10 * 60 * 1000);
+  if (!rateLimit.allowed) {
+    c.header('Retry-After', String(rateLimit.retryAfter ?? 60));
+    return c.json({ error: 'Too many LinkedIn imports. Please wait and try again.' }, 429);
+  }
+
+  const formData = await c.req.formData();
+  const files = (formData.getAll('files') as unknown[]).filter(isLinkedInUploadFile);
+  if (files.length < 1 || files.length > 4) {
+    return c.json({ error: 'Upload between one and four LinkedIn export files.' }, 400);
+  }
+  if (files.some((file) => file.size > 20 * 1024 * 1024)) {
+    return c.json({ error: 'Each LinkedIn export file must be 20 MB or smaller.' }, 413);
+  }
+
+  const suppliedOwnerProfileUrl = canonicalizeLinkedinUrl(formData.get('ownerProfileUrl'));
+  const messageRows: LinkedInExportRow[] = [];
+  const invitationRows: LinkedInExportRow[] = [];
+  const detectedFiles: Array<{ name: string; kind: 'messages' | 'invitations'; rows: number }> = [];
+  const ignoredSheets: string[] = [];
+
+  try {
+    for (const file of files) {
+      const sheets = await parseLinkedInExportUpload(file);
+      for (const sheet of sheets) {
+        const kind = detectLinkedInExportKind(sheet.rows);
+        if (!kind) {
+          ignoredSheets.push(sheet.label);
+          continue;
+        }
+        detectedFiles.push({ name: sheet.label, kind, rows: sheet.rows.length });
+        if (kind === 'messages') messageRows.push(...sheet.rows);
+        else invitationRows.push(...sheet.rows);
+      }
+    }
+  } catch (error) {
+    return c.json(
+      { error: error instanceof Error ? error.message : 'Could not parse the uploaded files.' },
+      400
+    );
+  }
+
+  if (messageRows.length === 0 && invitationRows.length === 0) {
+    return c.json(
+      {
+        error:
+          'No LinkedIn Messages or Invitations worksheet was detected. Upload the original LinkedIn export CSV/XLSX files.',
+      },
+      400
+    );
+  }
+
+  const conversationResult = summarizeLinkedInConversations(messageRows, suppliedOwnerProfileUrl);
+  if (messageRows.length > 0 && !conversationResult.ownerProfileUrl) {
+    return c.json(
+      {
+        error:
+          'Could not identify your LinkedIn profile URL from Messages. Enter your LinkedIn profile URL and try again.',
+      },
+      400
+    );
+  }
+  const invitationResult = summarizeLinkedInInvitations(invitationRows);
+  const db = getDb(c.env, schema) as CrmDb;
+  const leads = await db.select().from(schema.leads).where(isNull(schema.leads.deletedAt));
+  const leadsByProfileUrl = new Map<string, typeof schema.leads.$inferSelect>();
+  const leadsByName = new Map<string, Array<typeof schema.leads.$inferSelect>>();
+  for (const lead of leads) {
+    const profileUrl = canonicalizeLinkedinUrl(lead.linkedinUrl);
+    if (profileUrl) leadsByProfileUrl.set(profileUrl, lead);
+    const name = normalizedLeadName(lead.firstName, lead.lastName);
+    const matches = leadsByName.get(name) ?? [];
+    matches.push(lead);
+    leadsByName.set(name, matches);
+  }
+
+  let matchedConversations = 0;
+  let storedConversations = 0;
+  let matchedInvitations = 0;
+  let enrichedLeads = 0;
+  let unmatched = 0;
+  const handledProfileUrls = new Set<string>();
+  const enrichedLeadIds = new Set<string>();
+
+  const resolveLead = async (
+    profileUrl: string | null,
+    displayName: string
+  ): Promise<typeof schema.leads.$inferSelect | null> => {
+    if (profileUrl) {
+      const byUrl = leadsByProfileUrl.get(profileUrl);
+      if (byUrl) return byUrl;
+    }
+
+    const { firstName, lastName } = splitLinkedInDisplayName(displayName);
+    const nameMatches = leadsByName.get(normalizedLeadName(firstName, lastName)) ?? [];
+    const safeMatches = nameMatches.filter((lead) => !canonicalizeLinkedinUrl(lead.linkedinUrl));
+    if (safeMatches.length !== 1) return null;
+
+    const candidate = safeMatches[0]!;
+    if (!profileUrl) return candidate;
+
+    const [updated] = await db
+      .update(schema.leads)
+      .set({ linkedinUrl: profileUrl, updatedAt: new Date() })
+      .where(eq(schema.leads.id, candidate.id))
+      .returning();
+    if (!updated) return candidate;
+    leadsByProfileUrl.set(profileUrl, updated);
+    enrichedLeadIds.add(updated.id);
+    return updated;
+  };
+
+  for (const conversation of conversationResult.conversations) {
+    const lead = await resolveLead(conversation.otherPartyProfileUrl, conversation.otherPartyName);
+    if (lead) {
+      matchedConversations += 1;
+      if (conversation.otherPartyProfileUrl) {
+        handledProfileUrls.add(conversation.otherPartyProfileUrl);
+      }
+      await upsertImportedLinkedInChannel(db, lead, {
+        stage: conversation.lastMessageFromUs ? 'awaiting_reply' : 'replied',
+        lastAttemptAt: conversation.lastMessageAt,
+        attemptCount: conversation.outboundCount,
+      });
+    } else {
+      unmatched += 1;
+    }
+
+    const values = {
+      externalConversationId: conversation.conversationId,
+      leadId: lead?.id ?? null,
+      otherPartyName: conversation.otherPartyName,
+      otherPartyProfileUrl: conversation.otherPartyProfileUrl,
+      ownerProfileUrl: conversationResult.ownerProfileUrl!,
+      messageCount: conversation.messages.length,
+      outboundCount: conversation.outboundCount,
+      lastMessageAt: conversation.lastMessageAt,
+      lastMessageFromUs: conversation.lastMessageFromUs,
+      messages: conversation.messages,
+      importedBy: userId,
+      updatedAt: new Date(),
+    };
+    await db
+      .insert(schema.linkedinConversations)
+      .values(values)
+      .onConflictDoUpdate({
+        target: [
+          schema.linkedinConversations.importedBy,
+          schema.linkedinConversations.externalConversationId,
+        ],
+        set: values,
+      });
+    storedConversations += 1;
+  }
+
+  for (const invitation of invitationResult.invitations) {
+    if (handledProfileUrls.has(invitation.otherPartyProfileUrl)) continue;
+    const lead = await resolveLead(invitation.otherPartyProfileUrl, invitation.otherPartyName);
+    if (!lead) {
+      unmatched += 1;
+      continue;
+    }
+    await upsertImportedLinkedInChannel(db, lead, {
+      stage: 'connection_request_sent',
+      lastAttemptAt: invitation.sentAt,
+      attemptCount: 1,
+    });
+    handledProfileUrls.add(invitation.otherPartyProfileUrl);
+    matchedInvitations += 1;
+  }
+  enrichedLeads = enrichedLeadIds.size;
+
+  const totalMessages = conversationResult.conversations.reduce(
+    (total, conversation) => total + conversation.messages.length,
+    0
+  );
+  const skippedRows = conversationResult.skippedRows + invitationResult.skippedRows;
+  const summary = [
+    '### LinkedIn export imported',
+    '',
+    `- **Files/worksheets recognized:** ${detectedFiles.length}`,
+    `- **Conversations stored:** ${storedConversations}`,
+    `- **Messages stored:** ${totalMessages}`,
+    `- **Conversations matched to leads:** ${matchedConversations}`,
+    `- **Pending invitations matched:** ${matchedInvitations}`,
+    `- **Name-only leads enriched with LinkedIn URLs:** ${enrichedLeads}`,
+    `- **Unmatched profiles:** ${unmatched}`,
+    `- **Skipped invalid rows:** ${skippedRows}`,
+    ignoredSheets.length > 0
+      ? `- **Ignored worksheets:** ${ignoredSheets.map((name) => `\`${name}\``).join(', ')}`
+      : '',
+    '',
+    'The Reporting CEO snapshot now includes the imported LinkedIn conversation totals and outreach state.',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const [historyMessage] = await db
+    .insert(schema.chatMessages)
+    .values({
+      userId,
+      role: 'ceo_assistant',
+      content: summary,
+      contextIds: detectedFiles.map((file) => ({
+        resourceType: `linkedin_${file.kind}_import`,
+        resourceId: file.name,
+      })),
+    })
+    .returning({
+      id: schema.chatMessages.id,
+      createdAt: schema.chatMessages.createdAt,
+    });
+
+  await withAudit(db, schema.auditLog, {
+    actorUserId: userId,
+    action: 'import',
+    resourceType: 'linkedin_export',
+    resourceId: historyMessage?.id ?? crypto.randomUUID(),
+    after: {
+      detectedFiles,
+      storedConversations,
+      totalMessages,
+      matchedConversations,
+      matchedInvitations,
+      enrichedLeads,
+      unmatched,
+      skippedRows,
+    },
+    app: 'crm',
+  });
+
+  return c.json({
+    success: true,
+    summary,
+    historyMessage: historyMessage
+      ? {
+          id: historyMessage.id,
+          role: 'assistant',
+          content: summary,
+          createdAt: historyMessage.createdAt.toISOString(),
+        }
+      : null,
+    detectedFiles,
+    storedConversations,
+    totalMessages,
+    matchedConversations,
+    matchedInvitations,
+    enrichedLeads,
+    unmatched,
+    skippedRows,
+    ownerProfileUrl: conversationResult.ownerProfileUrl,
+  });
 });
 
 app.post('/api/ceo-chat', async (c) => {

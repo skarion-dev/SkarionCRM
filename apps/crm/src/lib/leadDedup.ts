@@ -60,6 +60,117 @@ export interface DedupMatch {
   record: any;
 }
 
+type LeadEnrichmentRecord = {
+  firstName: string;
+  lastName: string;
+  email: string | null;
+  phone: string | null;
+  companyName: string | null;
+  companyDomain: string | null;
+  linkedinUrl: string | null;
+  notes: string | null;
+  tags: unknown;
+};
+
+type LeadEnrichmentInput = Partial<LeadEnrichmentRecord>;
+
+function blank(value: unknown): boolean {
+  return value === null || value === undefined || (typeof value === 'string' && !value.trim());
+}
+
+const LINKEDIN_PROFILE_SECTION =
+  /^(headline|location|connections|about|experience|education|skills|certifications):(?:\s*(.*))?$/i;
+
+function splitLinkedInProfileSections(notes: string): Map<string, string> {
+  const sections = new Map<string, string>();
+  let sectionName: string | null = null;
+  let sectionLines: string[] = [];
+  const saveSection = () => {
+    if (sectionName && sectionLines.length > 0) {
+      sections.set(sectionName, sectionLines.join('\n').trim());
+    }
+  };
+
+  for (const line of notes.replace(/\r\n?/g, '\n').split('\n')) {
+    const match = line.trim().match(LINKEDIN_PROFILE_SECTION);
+    if (match) {
+      saveSection();
+      sectionName = match[1]!.toLowerCase();
+      sectionLines = [line.trim()];
+    } else if (sectionName) {
+      sectionLines.push(line);
+    }
+  }
+  saveSection();
+  return sections;
+}
+
+export function hasLinkedInProfileDetails(notes: unknown): boolean {
+  if (typeof notes !== 'string') return false;
+  return splitLinkedInProfileSections(notes).size > 0;
+}
+
+/**
+ * Builds a non-destructive enrichment patch. Existing human-entered values
+ * always win; a fresh extension capture fills gaps and appends its richer
+ * profile notes only when no LinkedIn profile sections were stored before.
+ */
+export function buildLeadEnrichmentPatch(
+  existing: LeadEnrichmentRecord,
+  incoming: LeadEnrichmentInput
+): { patch: Partial<LeadEnrichmentRecord>; enrichedFields: string[] } {
+  const patch: Partial<LeadEnrichmentRecord> = {};
+  const enrichedFields: string[] = [];
+
+  const fill = (field: keyof LeadEnrichmentRecord, value: unknown) => {
+    if (!blank(existing[field]) || blank(value)) return;
+    (patch as Record<string, unknown>)[field] = value;
+    enrichedFields.push(field);
+  };
+
+  fill('firstName', incoming.firstName?.trim());
+  fill('lastName', incoming.lastName?.trim());
+  if (isRealEmail(incoming.email)) fill('email', incoming.email.trim().toLowerCase());
+  fill('phone', incoming.phone?.trim());
+  fill('companyName', incoming.companyName?.trim());
+  fill('companyDomain', incoming.companyDomain?.trim());
+  fill('linkedinUrl', canonicalizeLinkedinUrl(incoming.linkedinUrl));
+
+  const incomingNotes = incoming.notes?.trim();
+  if (incomingNotes) {
+    const existingNotes = existing.notes?.trim() ?? '';
+    const existingSections = splitLinkedInProfileSections(existingNotes);
+    const incomingSections = splitLinkedInProfileSections(incomingNotes);
+    const missingSections = [...incomingSections.entries()]
+      .filter(([section]) => !existingSections.has(section))
+      .map(([, content]) => content);
+
+    if (existingSections.size === 0 || missingSections.length > 0) {
+      const addition = existingSections.size === 0 ? incomingNotes : missingSections.join('\n\n');
+      patch.notes = existingNotes
+        ? `${existingNotes}\n\n--- LinkedIn profile ${
+            existingSections.size === 0 ? 'capture' : 'enrichment'
+          } ---\n${addition}`
+        : addition;
+      enrichedFields.push('notes');
+    }
+  }
+
+  const existingTags = Array.isArray(existing.tags)
+    ? existing.tags.filter((tag): tag is string => typeof tag === 'string')
+    : [];
+  const incomingTags = Array.isArray(incoming.tags)
+    ? incoming.tags.filter((tag): tag is string => typeof tag === 'string')
+    : [];
+  const mergedTags = [...new Set([...existingTags, ...incomingTags])];
+  if (mergedTags.length > existingTags.length) {
+    patch.tags = mergedTags;
+    enrichedFields.push('tags');
+  }
+
+  return { patch, enrichedFields };
+}
+
 /**
  * Duplicate hierarchy, checked in order, across BOTH leads and contacts —
  * someone already converted to a contact must still be caught, not just
@@ -133,4 +244,48 @@ export async function findExactMatch(
   }
 
   return null;
+}
+
+/**
+ * Safe fallback for older name-only leads. A name match is accepted only
+ * when it is unique (or uniquely matches the supplied company) and the old
+ * record has no conflicting LinkedIn URL.
+ */
+export async function findNameEnrichmentCandidate(
+  db: CrmDb,
+  input: {
+    firstName: string;
+    lastName: string;
+    companyName: string | null;
+    linkedinUrl: string | null;
+  }
+): Promise<typeof schema.leads.$inferSelect | null> {
+  const firstName = input.firstName.trim().toLowerCase();
+  const lastName = input.lastName.trim().toLowerCase();
+  if (!firstName || !lastName) return null;
+
+  const matches = await db
+    .select()
+    .from(schema.leads)
+    .where(
+      and(
+        eq(sql`lower(${schema.leads.firstName})`, firstName),
+        eq(sql`lower(${schema.leads.lastName})`, lastName),
+        isNull(schema.leads.deletedAt)
+      )
+    )
+    .limit(10);
+
+  const nonConflicting = matches.filter((lead) => {
+    const storedUrl = canonicalizeLinkedinUrl(lead.linkedinUrl);
+    return !storedUrl || !input.linkedinUrl || storedUrl === input.linkedinUrl;
+  });
+  if (nonConflicting.length === 1) return nonConflicting[0] ?? null;
+
+  const companyName = input.companyName?.trim().toLowerCase();
+  if (!companyName) return null;
+  const sameCompany = nonConflicting.filter(
+    (lead) => lead.companyName?.trim().toLowerCase() === companyName
+  );
+  return sameCompany.length === 1 ? (sameCompany[0] ?? null) : null;
 }

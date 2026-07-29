@@ -291,6 +291,34 @@ export const leadChannels = crmSchema.table(
   ]
 );
 
+export const linkedinConversations = crmSchema.table(
+  'linkedin_conversations',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    externalConversationId: text('external_conversation_id').notNull(),
+    leadId: uuid('lead_id').references(() => leads.id, { onDelete: 'set null' }),
+    otherPartyName: text('other_party_name').notNull(),
+    otherPartyProfileUrl: text('other_party_profile_url'),
+    ownerProfileUrl: text('owner_profile_url').notNull(),
+    messageCount: integer('message_count').default(0).notNull(),
+    outboundCount: integer('outbound_count').default(0).notNull(),
+    lastMessageAt: timestamp('last_message_at', { withTimezone: true }).notNull(),
+    lastMessageFromUs: boolean('last_message_from_us').default(false).notNull(),
+    messages: jsonb('messages').notNull(),
+    importedBy: uuid('imported_by').notNull(),
+    ...timestamps(),
+  },
+  (table) => [
+    uniqueIndex('idx_linkedin_conversations_importer_external').on(
+      table.importedBy,
+      table.externalConversationId
+    ),
+    index('idx_linkedin_conversations_lead').on(table.leadId),
+    index('idx_linkedin_conversations_last_message').on(table.lastMessageAt),
+    index('idx_linkedin_conversations_profile_url').on(table.otherPartyProfileUrl),
+  ]
+);
+
 export const leadAttachments = crmSchema.table(
   'lead_attachments',
   {
@@ -510,6 +538,7 @@ export const leadsRelations = relations(leads, ({ one, many }) => ({
   }),
   batch: one(importBatches, { fields: [leads.batchId], references: [importBatches.id] }),
   channels: many(leadChannels),
+  linkedinConversations: many(linkedinConversations),
   attachments: many(leadAttachments),
   aiAssessment: one(leadAiAssessments, {
     fields: [leads.id],
@@ -530,6 +559,10 @@ export const importBatchesRelations = relations(importBatches, ({ many }) => ({
 
 export const leadChannelsRelations = relations(leadChannels, ({ one }) => ({
   lead: one(leads, { fields: [leadChannels.leadId], references: [leads.id] }),
+}));
+
+export const linkedinConversationsRelations = relations(linkedinConversations, ({ one }) => ({
+  lead: one(leads, { fields: [linkedinConversations.leadId], references: [leads.id] }),
 }));
 
 export const leadAttachmentsRelations = relations(leadAttachments, ({ one }) => ({

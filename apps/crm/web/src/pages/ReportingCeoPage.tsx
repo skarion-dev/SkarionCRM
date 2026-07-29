@@ -24,11 +24,15 @@ import {
   Square,
   Trash2,
   User,
+  Upload,
+  FileSpreadsheet,
+  X,
 } from 'lucide-react';
 import { crmStream } from '../api.js';
 import {
   useCeoChatHistory,
   useClearCeoChatHistory,
+  useImportCeoLinkedInExport,
   type CeoChatMessage,
 } from '../hooks/use-api.js';
 import { useAuthStore } from '../stores/auth.js';
@@ -392,14 +396,19 @@ export default function ReportingCeoPage() {
   const isSuperadmin = useAuthStore((state) => state.user?.isSuperadmin ?? false);
   const { data: history, isLoading: historyLoading, refetch } = useCeoChatHistory();
   const clearHistory = useClearCeoChatHistory();
+  const importLinkedIn = useImportCeoLinkedInExport();
   const [messages, setMessages] = useState<CeoChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamStatus, setStreamStatus] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [importFiles, setImportFiles] = useState<File[]>([]);
+  const [ownerProfileUrl, setOwnerProfileUrl] = useState('');
+  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
   const initializedRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!initializedRef.current && history?.messages) {
@@ -536,6 +545,41 @@ export default function ReportingCeoPage() {
     });
   };
 
+  const selectImportFiles = (files: File[]) => {
+    const supported = files.filter((file) => /\.(csv|xlsx)$/i.test(file.name)).slice(0, 4);
+    if (supported.length === 0) {
+      showToast('Choose LinkedIn Messages or Invitations CSV/XLSX files', 'error');
+      return;
+    }
+    if (files.length > 4) showToast('Only the first four files were selected', 'warning');
+    setImportFiles(supported);
+  };
+
+  const handleLinkedInImport = () => {
+    if (importFiles.length === 0 || importLinkedIn.isPending) return;
+    importLinkedIn.mutate(
+      { files: importFiles, ownerProfileUrl },
+      {
+        onSuccess: (result) => {
+          if (result.historyMessage) {
+            setMessages((current) => [...current, result.historyMessage!]);
+          }
+          setImportFiles([]);
+          setOwnerProfileUrl(result.ownerProfileUrl ?? ownerProfileUrl);
+          if (fileInputRef.current) fileInputRef.current.value = '';
+          showToast(
+            `Imported ${result.totalMessages} messages and matched ${
+              result.matchedConversations + result.matchedInvitations
+            } lead records`,
+            'success'
+          );
+        },
+        onError: (caught) =>
+          showToast(caught instanceof Error ? caught.message : 'LinkedIn import failed', 'error'),
+      }
+    );
+  };
+
   if (!isSuperadmin) {
     return (
       <div className="mx-auto mt-16 max-w-lg rounded-xl border border-red-200 bg-white p-8 text-center">
@@ -657,6 +701,105 @@ export default function ReportingCeoPage() {
         )}
       </div>
 
+      <div
+        onDragEnter={(event) => {
+          event.preventDefault();
+          setIsDraggingFiles(true);
+        }}
+        onDragOver={(event) => event.preventDefault()}
+        onDragLeave={(event) => {
+          if (event.currentTarget === event.target) setIsDraggingFiles(false);
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          setIsDraggingFiles(false);
+          selectImportFiles(Array.from(event.dataTransfer.files));
+        }}
+        className={`mb-4 rounded-xl border border-dashed p-3 transition ${
+          isDraggingFiles
+            ? 'border-blue-500 bg-blue-50'
+            : 'border-slate-300 bg-slate-50/70 hover:border-blue-300'
+        }`}
+      >
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="rounded-lg bg-emerald-100 p-2 text-emerald-700">
+            <FileSpreadsheet size={19} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium text-slate-800">
+              Import LinkedIn Messages and Invitations
+            </div>
+            <p className="text-xs text-slate-500">
+              Drop the original CSV or XLSX exports. Conversations are stored, leads are matched,
+              and outreach stages are updated.
+            </p>
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            className="hidden"
+            onChange={(event) => selectImportFiles(Array.from(event.target.files ?? []))}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isStreaming || importLinkedIn.isPending}
+            className="flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+          >
+            <Upload size={15} />
+            Choose files
+          </button>
+        </div>
+
+        {importFiles.length > 0 && (
+          <div className="mt-3 space-y-2 border-t border-slate-200 pt-3">
+            <div className="flex flex-wrap gap-2">
+              {importFiles.map((file) => (
+                <span
+                  key={`${file.name}-${file.size}`}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs text-slate-700 ring-1 ring-slate-200"
+                >
+                  {file.name}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setImportFiles((current) => current.filter((item) => item !== file))
+                    }
+                    className="text-slate-400 hover:text-red-500"
+                    aria-label={`Remove ${file.name}`}
+                  >
+                    <X size={12} />
+                  </button>
+                </span>
+              ))}
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <input
+                value={ownerProfileUrl}
+                onChange={(event) => setOwnerProfileUrl(event.target.value)}
+                placeholder="Your LinkedIn profile URL (optional; inferred from Messages)"
+                className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-400"
+              />
+              <button
+                type="button"
+                onClick={handleLinkedInImport}
+                disabled={importLinkedIn.isPending || isStreaming}
+                className="flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-wait disabled:bg-emerald-300"
+              >
+                {importLinkedIn.isPending ? (
+                  <Loader2 size={15} className="animate-spin" />
+                ) : (
+                  <Upload size={15} />
+                )}
+                {importLinkedIn.isPending ? 'Updating CRM…' : 'Import and update CRM'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -682,7 +825,7 @@ export default function ReportingCeoPage() {
         <div className="mt-2 flex items-center justify-between">
           <div className="flex items-center gap-2 text-xs text-slate-400">
             <ShieldCheck size={13} />
-            Read-only · verified CRM snapshot
+            CEO analysis is read-only · approved imports update CRM
             {lastAssistant && <span>· history saved</span>}
           </div>
           {isStreaming ? (

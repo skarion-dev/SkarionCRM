@@ -18,6 +18,10 @@ export interface CeoReportingSnapshot {
     activitiesInWindow: number;
     leadsCreatedInWindow: number;
     averageLeadScore: number | null;
+    linkedinConversations: number;
+    linkedinMessages: number;
+    leadsWithLinkedinConversations: number;
+    lastLinkedinMessageAt: string | null;
   };
   leadsByStatus: ReportingSeriesItem[];
   leadsByOutreachStatus: ReportingSeriesItem[];
@@ -31,6 +35,14 @@ export interface CeoReportingSnapshot {
     status: string;
     source: string;
     createdAt: string;
+  }>;
+  recentLinkedinConversations: Array<{
+    leadName: string;
+    messageCount: number;
+    outboundCount: number;
+    lastMessageAt: string;
+    lastMessageFromUs: boolean;
+    lastMessagePreview: string;
   }>;
   upcomingOpportunities: Array<{
     name: string;

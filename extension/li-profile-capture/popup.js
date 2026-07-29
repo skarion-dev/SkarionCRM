@@ -459,7 +459,10 @@ function currentLeadFormPayload() {
     email: lfEmail.value.trim() || null,
     phone: lfPhone.value.trim() || null,
     companyName: lfCompanyName.value.trim() || null,
+    companyDomain: lfCompanyDomain.value.trim() || null,
     linkedinUrl: lfLinkedinUrl.value.trim() || null,
+    tags: leadTags,
+    notes: lfNotes.value.trim() || null,
   };
 }
 
@@ -507,10 +510,20 @@ async function checkDuplicate() {
     if (result.status === 'exact_duplicate') {
       const record = result.record;
       const label = result.entityType === 'contact' ? 'an existing contact' : 'an existing lead';
+      const enrichmentMessage = result.enrichmentAvailable
+        ? ` Sending will enrich missing fields: ${result.enrichedFields.join(', ')}.`
+        : ' The stored record already contains these profile details.';
       showDupeBanner(
         `⚠ Already in the CRM as ${label} (matched by ${result.matchType.replace('_', ' ')}). ` +
-          `Sending will just return that record, not create a new one. ` +
+          `No duplicate will be created.${enrichmentMessage} ` +
           `<a href="${recordLink(result.entityType, record.id)}" target="_blank">Open existing ${result.entityType}</a>`
+      );
+    } else if (result.status === 'enrichment_available') {
+      const record = result.record;
+      showDupeBanner(
+        `✓ Existing name-only lead found. Sending will update the same lead with: ` +
+          `${result.enrichedFields.join(', ') || 'captured LinkedIn details'}. ` +
+          `<a href="${recordLink('lead', record.id)}" target="_blank">Open existing lead</a>`
       );
     } else if (result.status === 'possible_duplicate') {
       const names = result.matches.map((m) => `${m.firstName} ${m.lastName}`.trim()).join(', ');
@@ -616,13 +629,18 @@ async function sendLeadToCrm(removeAfterSend = false) {
       const entityType = result.entityType || 'lead';
       const record = result.contact || result.lead;
       showDupeBanner(
-        `Already existed as ${entityType === 'contact' ? 'a contact' : 'a lead'} — nothing new was created. ` +
-          `<a href="${recordLink(entityType, record.id)}" target="_blank">Open existing ${entityType}</a>`
+        result.enriched
+          ? `Existing ${entityType} enriched with ${result.enrichedFields.join(', ')} — no duplicate was created. ` +
+              `<a href="${recordLink(entityType, record.id)}" target="_blank">Open updated ${entityType}</a>`
+          : `Already existed as ${entityType === 'contact' ? 'a contact' : 'a lead'} — no duplicate was created. ` +
+              `<a href="${recordLink(entityType, record.id)}" target="_blank">Open existing ${entityType}</a>`
       );
       showCrmConfirmation(
-        result.replayed
-          ? 'Confirmed in CRM—same send as before, no duplicate created. ✓'
-          : 'Confirmed: already exists in CRM. ✓',
+        result.enriched
+          ? 'Updated missing LinkedIn profile details in CRM. ✓'
+          : result.replayed
+            ? 'Confirmed in CRM—same send as before, no duplicate created. ✓'
+            : 'Confirmed: already exists in CRM. ✓',
         crmRecordUrl
       );
       showAiAssessment(result.aiAssessment);
@@ -641,7 +659,11 @@ async function sendLeadToCrm(removeAfterSend = false) {
       storeOneShotProgress({
         status: 'sent',
         percent: 100,
-        message: result.duplicate ? 'Confirmed in CRM' : 'Sent to CRM',
+        message: result.enriched
+          ? 'Existing lead enriched'
+          : result.duplicate
+            ? 'Confirmed in CRM'
+            : 'Sent to CRM',
         detail: result.aiAssessment
           ? 'CRM delivery and AI qualification completed. Nothing remains queued locally.'
           : 'CRM delivery completed. Nothing remains queued locally.',

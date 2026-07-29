@@ -85,6 +85,13 @@
       "when": 1785300097921,
       "tag": "0011_parched_magik",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1785305215750,
+      "tag": "0012_clammy_brood",
+      "breakpoints": true
     }
   ]
 }

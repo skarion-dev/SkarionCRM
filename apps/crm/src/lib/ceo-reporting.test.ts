@@ -18,6 +18,10 @@ const snapshot: CeoReportingSnapshot = {
     activitiesInWindow: 7,
     leadsCreatedInWindow: 5,
     averageLeadScore: 72,
+    linkedinConversations: 2,
+    linkedinMessages: 8,
+    leadsWithLinkedinConversations: 2,
+    lastLinkedinMessageAt: '2026-07-28T00:00:00.000Z',
   },
   leadsByStatus: [{ label: 'new', value: 6 }],
   leadsByOutreachStatus: [],
@@ -26,6 +30,7 @@ const snapshot: CeoReportingSnapshot = {
   opportunitiesByStage: [],
   tasksByPriority: [],
   recentLeads: [],
+  recentLinkedinConversations: [],
   upcomingOpportunities: [],
 };
 

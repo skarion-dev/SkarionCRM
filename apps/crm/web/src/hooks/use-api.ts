@@ -585,6 +585,41 @@ export function useClearCeoChatHistory() {
   });
 }
 
+export interface CeoLinkedInImportResult {
+  success: true;
+  summary: string;
+  historyMessage: CeoChatMessage | null;
+  detectedFiles: Array<{ name: string; kind: 'messages' | 'invitations'; rows: number }>;
+  storedConversations: number;
+  totalMessages: number;
+  matchedConversations: number;
+  matchedInvitations: number;
+  enrichedLeads: number;
+  unmatched: number;
+  skippedRows: number;
+  ownerProfileUrl: string | null;
+}
+
+export function useImportCeoLinkedInExport() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ files, ownerProfileUrl }: { files: File[]; ownerProfileUrl?: string }) => {
+      const formData = new FormData();
+      files.forEach((file) => formData.append('files', file));
+      if (ownerProfileUrl?.trim()) formData.append('ownerProfileUrl', ownerProfileUrl.trim());
+      return crmFetch<CeoLinkedInImportResult>('/api/ceo-chat/import-linkedin', {
+        method: 'POST',
+        body: formData,
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['ceo-chat', 'history'] });
+      qc.invalidateQueries({ queryKey: ['leads'] });
+      qc.invalidateQueries({ queryKey: ['lead-channels'] });
+    },
+  });
+}
+
 // ─── SEARCH ───
 
 export interface SearchResult {

@@ -43,7 +43,11 @@ into Skarion CRM as a lead.
 - Email is optional because LinkedIn does not expose it on profile pages. The
   extension and CRM do not manufacture placeholder addresses.
 - Sending the same LinkedIn URL twice does not create a duplicate lead — the
-  CRM returns the existing one instead.
+  CRM returns the existing one and fills missing email, phone, company,
+  LinkedIn URL, tags, and captured profile sections without overwriting
+  stronger human-entered data.
+- A unique exact-name match for an older name-only lead is enriched in place.
+  Ambiguous same-name matches remain warnings and are never merged automatically.
 - Version 1.5 cancels the duplicate pre-check as soon as a send begins, so a
   newly created lead cannot be mistaken for its own pre-existing duplicate.
 - After a new LinkedIn lead is saved, the Vertex-backed qualification workflow

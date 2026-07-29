@@ -5,6 +5,8 @@ import {
   normalizePhoneKey,
   isRealEmail,
   findExactMatch,
+  buildLeadEnrichmentPatch,
+  hasLinkedInProfileDetails,
 } from './leadDedup.js';
 
 describe('canonicalizeLinkedinUrl', () => {
@@ -78,6 +80,85 @@ describe('isRealEmail', () => {
     expect(isRealEmail('   ')).toBe(false);
     expect(isRealEmail(null)).toBe(false);
     expect(isRealEmail(undefined)).toBe(false);
+  });
+});
+
+describe('lead enrichment', () => {
+  it('fills missing LinkedIn fields without overwriting good CRM data', () => {
+    const result = buildLeadEnrichmentPatch(
+      {
+        firstName: 'Jane',
+        lastName: 'Doe',
+        email: 'jane@company.com',
+        phone: null,
+        companyName: null,
+        companyDomain: null,
+        linkedinUrl: null,
+        notes: 'Introduced by Sam.',
+        tags: ['referral'],
+      },
+      {
+        email: 'different@example.com',
+        phone: '+1 555 123 4567',
+        companyName: 'Example Co',
+        linkedinUrl: 'https://linkedin.com/in/jane-doe?trk=profile',
+        notes: 'Headline: Fiber Engineer\nExperience:\nExample Co',
+        tags: ['good-fit'],
+      }
+    );
+
+    expect(result.patch).toMatchObject({
+      phone: '+1 555 123 4567',
+      companyName: 'Example Co',
+      linkedinUrl: 'https://www.linkedin.com/in/jane-doe',
+      tags: ['referral', 'good-fit'],
+    });
+    expect(result.patch.email).toBeUndefined();
+    expect(result.patch.notes).toContain('Introduced by Sam.');
+    expect(result.patch.notes).toContain('Headline: Fiber Engineer');
+  });
+
+  it('does not append the profile a second time', () => {
+    expect(hasLinkedInProfileDetails('Headline: Fiber Engineer')).toBe(true);
+    const result = buildLeadEnrichmentPatch(
+      {
+        firstName: 'Jane',
+        lastName: 'Doe',
+        email: null,
+        phone: null,
+        companyName: null,
+        companyDomain: null,
+        linkedinUrl: 'https://www.linkedin.com/in/jane-doe',
+        notes: 'Headline: Fiber Engineer',
+        tags: [],
+      },
+      { notes: 'Headline: Updated headline' }
+    );
+    expect(result.patch.notes).toBeUndefined();
+  });
+
+  it('adds only profile sections that are still missing', () => {
+    const result = buildLeadEnrichmentPatch(
+      {
+        firstName: 'Jane',
+        lastName: 'Doe',
+        email: null,
+        phone: null,
+        companyName: null,
+        companyDomain: null,
+        linkedinUrl: 'https://www.linkedin.com/in/jane-doe',
+        notes: 'Headline: Human-approved headline',
+        tags: [],
+      },
+      {
+        notes: 'Headline: Scraped headline\nLocation: New York\n\nAbout:\nBuilds fiber networks.',
+      }
+    );
+
+    expect(result.patch.notes).toContain('Headline: Human-approved headline');
+    expect(result.patch.notes).not.toContain('Headline: Scraped headline');
+    expect(result.patch.notes).toContain('Location: New York');
+    expect(result.patch.notes).toContain('About:\nBuilds fiber networks.');
   });
 });
 
