@@ -248,7 +248,7 @@ export const AI_AGENTS: ReadonlyArray<{
     id: 'lead-scorer',
     name: 'Lead Scoring Agent',
     description: 'Scores lead quality and returns structured reasoning.',
-    tier: 'fast',
+    tier: 'cheap',
   },
   {
     id: 'next-best-action',

@@ -170,8 +170,9 @@ export default function LeadDetail() {
   const isPlaceholderEmail = (lead.email ?? '').includes('@placeholder.skarion');
   const connectionNoteCharacterCount = [...connectionNoteDraft].length;
   const connectionNoteDirty = aiAssessment
-    ? connectionNoteDraft.trim() !== aiAssessment.connectionNote
+    ? connectionNoteDraft.trim() !== (aiAssessment.connectionNote ?? '')
     : false;
+  const hasConnectionNote = Boolean(aiAssessment?.connectionNote || connectionNoteDraft.trim());
   const connectionNoteBusy = updateConnectionNote.isPending || updateOutreachStage.isPending;
 
   const handleStatusChange = (newStatus: LeadJourneyStage) => {
@@ -190,7 +191,7 @@ export default function LeadDetail() {
   const handleGenerateConnectionNote = () => {
     generateAiAssessment.mutate(undefined, {
       onSuccess: (result) => {
-        setConnectionNoteDraft(result.assessment.connectionNote);
+        setConnectionNoteDraft(result.assessment.connectionNote ?? '');
         showToast('Connection note and lead score generated', 'success');
       },
       onError: (error) =>
@@ -427,7 +428,7 @@ export default function LeadDetail() {
               )}
               {generateAiAssessment.isPending
                 ? 'Reading Profile…'
-                : aiAssessment
+                : aiAssessment?.connectionNote
                   ? 'Regenerate Connection Note'
                   : 'Generate Connection Note'}
             </button>
@@ -505,48 +506,51 @@ export default function LeadDetail() {
                     </span>
                   </div>
                   <p className="mt-1 text-xs text-violet-700">
-                    Generated from the lead details saved in CRM. Edit the note before copying if
-                    needed.
+                    {hasConnectionNote
+                      ? 'Generated from the lead details saved in CRM. Edit the note before copying if needed.'
+                      : 'Scored automatically from the lead details saved in CRM. Generate a connection note when you are ready to reach out.'}
                   </p>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  {connectionNoteDirty && (
+                {hasConnectionNote && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    {connectionNoteDirty && (
+                      <button
+                        type="button"
+                        onClick={handleSaveConnectionNote}
+                        disabled={connectionNoteBusy}
+                        className="flex items-center gap-1.5 rounded-md border border-violet-300 bg-white px-3 py-2 text-sm font-medium text-violet-700 hover:bg-violet-50 disabled:cursor-wait disabled:opacity-60 transition-colors"
+                      >
+                        <Save size={15} />
+                        Save Changes
+                      </button>
+                    )}
                     <button
                       type="button"
-                      onClick={handleSaveConnectionNote}
+                      onClick={() => handleCopyConnectionNote(false)}
                       disabled={connectionNoteBusy}
-                      className="flex items-center gap-1.5 rounded-md border border-violet-300 bg-white px-3 py-2 text-sm font-medium text-violet-700 hover:bg-violet-50 disabled:cursor-wait disabled:opacity-60 transition-colors"
+                      className="flex items-center gap-1.5 rounded-md bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:cursor-wait disabled:bg-violet-300 transition-colors"
                     >
-                      <Save size={15} />
-                      Save Changes
+                      {connectionNoteAction === 'copied' ? <Check size={15} /> : <Copy size={15} />}
+                      {connectionNoteAction === 'copied' ? 'Copied' : 'Copy Note'}
                     </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => handleCopyConnectionNote(false)}
-                    disabled={connectionNoteBusy}
-                    className="flex items-center gap-1.5 rounded-md bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:cursor-wait disabled:bg-violet-300 transition-colors"
-                  >
-                    {connectionNoteAction === 'copied' ? <Check size={15} /> : <Copy size={15} />}
-                    {connectionNoteAction === 'copied' ? 'Copied' : 'Copy Note'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleCopyConnectionNote(true)}
-                    disabled={connectionNoteBusy}
-                    className="flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-wait disabled:bg-blue-300 transition-colors"
-                    title="Copy the edited note and set the LinkedIn outreach stage to connection request sent"
-                  >
-                    {connectionNoteAction === 'copied-and-sent' ? (
-                      <Check size={15} />
-                    ) : (
-                      <Send size={15} />
-                    )}
-                    {connectionNoteAction === 'copied-and-sent'
-                      ? 'Copied + Marked Sent'
-                      : 'Copy + Connection Sent'}
-                  </button>
-                </div>
+                    <button
+                      type="button"
+                      onClick={() => handleCopyConnectionNote(true)}
+                      disabled={connectionNoteBusy}
+                      className="flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-wait disabled:bg-blue-300 transition-colors"
+                      title="Copy the edited note and set the LinkedIn outreach stage to connection request sent"
+                    >
+                      {connectionNoteAction === 'copied-and-sent' ? (
+                        <Check size={15} />
+                      ) : (
+                        <Send size={15} />
+                      )}
+                      {connectionNoteAction === 'copied-and-sent'
+                        ? 'Copied + Marked Sent'
+                        : 'Copy + Connection Sent'}
+                    </button>
+                  </div>
+                )}
               </div>
 
               {aiAssessment.reasoningSummary && (
@@ -555,29 +559,31 @@ export default function LeadDetail() {
                 </p>
               )}
 
-              <div className="rounded-lg border border-violet-200 bg-white p-3">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-violet-700">
-                    LinkedIn connection note
-                  </span>
-                  <span
-                    className={cn(
-                      'text-xs font-medium',
-                      connectionNoteCharacterCount <= 300 ? 'text-slate-500' : 'text-red-600'
-                    )}
-                  >
-                    {connectionNoteCharacterCount}/300 characters
-                  </span>
+              {hasConnectionNote && (
+                <div className="rounded-lg border border-violet-200 bg-white p-3">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-wider text-violet-700">
+                      LinkedIn connection note
+                    </span>
+                    <span
+                      className={cn(
+                        'text-xs font-medium',
+                        connectionNoteCharacterCount <= 300 ? 'text-slate-500' : 'text-red-600'
+                      )}
+                    >
+                      {connectionNoteCharacterCount}/300 characters
+                    </span>
+                  </div>
+                  <textarea
+                    value={connectionNoteDraft}
+                    onChange={(event) => setConnectionNoteDraft(event.target.value)}
+                    maxLength={300}
+                    rows={4}
+                    className="w-full resize-y rounded-md border border-slate-200 px-3 py-2 text-sm leading-relaxed text-slate-800 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
+                    aria-label="Editable LinkedIn connection note"
+                  />
                 </div>
-                <textarea
-                  value={connectionNoteDraft}
-                  onChange={(event) => setConnectionNoteDraft(event.target.value)}
-                  maxLength={300}
-                  rows={4}
-                  className="w-full resize-y rounded-md border border-slate-200 px-3 py-2 text-sm leading-relaxed text-slate-800 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
-                  aria-label="Editable LinkedIn connection note"
-                />
-              </div>
+              )}
             </div>
           )}
 

@@ -414,6 +414,7 @@ export type LeadJourneyStage =
   | 'qualified'
   | 'meeting_booked'
   | 'opportunity'
+  | 'follow_up'
   | 'converted'
   | 'nurture'
   | 'no_response'
@@ -470,6 +471,9 @@ export interface Lead {
   deletedAt: string | null;
   leadNumber?: string;
   batchId?: string | null;
+  aiScore?: number | null;
+  aiClassification?: string | null;
+  scoreJobStatus?: string | null;
 }
 
 export interface TagDefinition {
@@ -500,7 +504,7 @@ export interface LeadAiAssessment {
   bestOutreachAngle: string;
   qualificationQuestions: string[];
   reasoningSummary: string;
-  connectionNote: string;
+  connectionNote: string | null;
   connectionNoteCharacterCount: number;
   createdAt: string;
   updatedAt: string;

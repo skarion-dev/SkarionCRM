@@ -22,6 +22,7 @@ describe('lead journey compatibility', () => {
     );
     expect(mergeJourneyWithChannelStages('engaged', ['connection_request_sent'])).toBe('engaged');
     expect(mergeJourneyWithChannelStages('nurture', ['replied'])).toBe('nurture');
+    expect(mergeJourneyWithChannelStages('follow_up', ['booked_call'])).toBe('follow_up');
   });
 });
 

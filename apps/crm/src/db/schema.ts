@@ -47,6 +47,7 @@ export const leadJourneyStageEnum = crmSchema.enum('lead_journey_stage', [
   'qualified',
   'meeting_booked',
   'opportunity',
+  'follow_up',
   'converted',
   'nurture',
   'no_response',
@@ -288,13 +289,34 @@ export const leadAiAssessments = crmSchema.table(
     bestOutreachAngle: text('best_outreach_angle').notNull(),
     qualificationQuestions: jsonb('qualification_questions').notNull(),
     reasoningSummary: text('reasoning_summary').notNull(),
-    connectionNote: text('connection_note').notNull(),
-    connectionNoteCharacterCount: integer('connection_note_character_count').notNull(),
+    connectionNote: text('connection_note'),
+    connectionNoteCharacterCount: integer('connection_note_character_count').default(0).notNull(),
     ...timestamps(),
   },
   (table) => [
     index('idx_lead_ai_assessments_score').on(table.overallScore),
     index('idx_lead_ai_assessments_classification').on(table.classification),
+  ]
+);
+
+export const leadScoreJobs = crmSchema.table(
+  'lead_score_jobs',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    leadId: uuid('lead_id')
+      .notNull()
+      .references(() => leads.id, { onDelete: 'cascade' }),
+    status: text('status').default('pending').notNull(),
+    attempts: integer('attempts').default(0).notNull(),
+    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).defaultNow().notNull(),
+    lockedAt: timestamp('locked_at', { withTimezone: true }),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    lastError: text('last_error'),
+    ...timestamps(),
+  },
+  (table) => [
+    uniqueIndex('idx_lead_score_jobs_lead').on(table.leadId),
+    index('idx_lead_score_jobs_queue').on(table.status, table.nextAttemptAt),
   ]
 );
 

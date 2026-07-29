@@ -9,6 +9,7 @@ export const LEAD_JOURNEY_STAGES: LeadJourneyStage[] = [
   'qualified',
   'meeting_booked',
   'opportunity',
+  'follow_up',
   'converted',
   'nurture',
   'no_response',
@@ -25,6 +26,7 @@ export const ACTIVE_LEAD_JOURNEY: LeadJourneyStage[] = [
   'qualified',
   'meeting_booked',
   'opportunity',
+  'follow_up',
   'converted',
 ];
 
@@ -37,6 +39,7 @@ export const LEAD_JOURNEY_LABELS: Record<LeadJourneyStage, string> = {
   qualified: 'Qualified',
   meeting_booked: 'Meeting booked',
   opportunity: 'Opportunity',
+  follow_up: 'Follow-up',
   converted: 'Converted',
   nurture: 'Nurture',
   no_response: 'No response',
@@ -51,7 +54,12 @@ export function journeyLabel(stage: LeadJourneyStage | string | null | undefined
 
 export function journeyBadgeClass(stage: LeadJourneyStage | string): string {
   if (stage === 'converted') return 'bg-emerald-100 text-emerald-700';
-  if (stage === 'qualified' || stage === 'meeting_booked' || stage === 'opportunity') {
+  if (
+    stage === 'qualified' ||
+    stage === 'meeting_booked' ||
+    stage === 'opportunity' ||
+    stage === 'follow_up'
+  ) {
     return 'bg-green-100 text-green-700';
   }
   if (stage === 'engaged' || stage === 'connected') return 'bg-blue-100 text-blue-700';

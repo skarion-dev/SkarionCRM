@@ -7,6 +7,7 @@ export const LEAD_JOURNEY_STAGES = [
   'qualified',
   'meeting_booked',
   'opportunity',
+  'follow_up',
   'converted',
   'nurture',
   'no_response',
@@ -25,7 +26,8 @@ const ACTIVE_STAGE_RANK: Partial<Record<LeadJourneyStage, number>> = {
   qualified: 5,
   meeting_booked: 6,
   opportunity: 7,
-  converted: 8,
+  follow_up: 8,
+  converted: 9,
 };
 
 const MANUAL_SIDE_STAGES = new Set<LeadJourneyStage>(['nurture', 'disqualified', 'lost']);
@@ -113,7 +115,12 @@ export function legacyFieldsForJourney(stage: LeadJourneyStage): {
   if (stage === 'disqualified' || stage === 'lost') {
     return { status: 'disqualified', outreachStatus: 'bad_fit' };
   }
-  if (stage === 'qualified' || stage === 'meeting_booked' || stage === 'opportunity') {
+  if (
+    stage === 'qualified' ||
+    stage === 'meeting_booked' ||
+    stage === 'opportunity' ||
+    stage === 'follow_up'
+  ) {
     return {
       status: 'qualified',
       outreachStatus: stage === 'meeting_booked' ? 'booked_call' : 'replied',

@@ -1204,7 +1204,7 @@ questions that resolve the highest-impact missing information.`;
 
   const assessment = await extractStructured<LeadQualificationAssessment>(prompt, env, {
     agent: 'lead-scorer',
-    tier: 'fast',
+    tier: 'cheap',
   });
   if (!assessment) return null;
 

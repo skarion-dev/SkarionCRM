@@ -8,10 +8,12 @@ enabled = true
 head_sampling_rate = 1
 
 [triggers]
-crons = ["0 * * * *"]
+crons = ["0 * * * *", "*/5 * * * *"]
 
 [vars]
 WORKFLOW_RUNNER_URL = "https://skarion-workflow-runner.skarion-talentos.workers.dev"
+CRM_API_URL = "https://skarion-crm-platform.skarion-talentos.workers.dev"
 
 [env.staging.vars]
 WORKFLOW_RUNNER_URL = "https://skarion-workflow-runner-staging.skarion-talentos.workers.dev"
+CRM_API_URL = "https://skarion-crm-platform-staging.skarion-talentos.workers.dev"

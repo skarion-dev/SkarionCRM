@@ -8,6 +8,7 @@ import {
   useSavedSearches,
   useCreateSavedSearch,
   useDeleteSavedSearch,
+  useUpdateEntity,
 } from '../hooks/use-api.js';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../stores/auth.js';
@@ -43,6 +44,64 @@ import { showToast } from '../stores/toast.js';
 import { buildLeadsQueryString, type LeadFilters } from '../lib/leadFilters.js';
 import { LEAD_JOURNEY_STAGES, journeyBadgeClass, journeyLabel } from '../lib/leadJourney.js';
 
+const LEAD_SORT_OPTIONS = [
+  ['createdAt', 'Created'],
+  ['updatedAt', 'Updated'],
+  ['name', 'Full name'],
+  ['firstName', 'First name'],
+  ['lastName', 'Last name'],
+  ['leadNumber', 'Lead number'],
+  ['score', 'AI score'],
+  ['classification', 'AI classification'],
+  ['journeyStage', 'Journey'],
+  ['companyName', 'Company'],
+  ['companyDomain', 'Company domain'],
+  ['email', 'Email'],
+  ['phone', 'Phone'],
+  ['linkedinUrl', 'LinkedIn URL'],
+  ['source', 'Source'],
+  ['tags', 'Tags'],
+  ['ownerId', 'Owner'],
+  ['outreachStatus', 'Legacy outreach status'],
+  ['notes', 'Notes'],
+  ['sourceSheet', 'Import source'],
+  ['originalRowNumber', 'Import row'],
+] as const;
+
+function SortableHeader({
+  column,
+  label,
+  sortBy,
+  sortOrder,
+  onSort,
+}: {
+  column: string;
+  label: string;
+  sortBy: string;
+  sortOrder: 'asc' | 'desc';
+  onSort: (column: string) => void;
+}) {
+  return (
+    <th
+      className="text-left px-4 py-3 font-medium text-slate-600 cursor-pointer select-none hover:bg-slate-100"
+      onClick={() => onSort(column)}
+    >
+      <div className="flex items-center gap-1 whitespace-nowrap">
+        {label}
+        {sortBy === column ? (
+          sortOrder === 'asc' ? (
+            <ArrowUp size={14} />
+          ) : (
+            <ArrowDown size={14} />
+          )
+        ) : (
+          <ArrowUpDown size={14} className="text-slate-300" />
+        )}
+      </div>
+    </th>
+  );
+}
+
 export default function LeadsPage() {
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -58,6 +117,7 @@ export default function LeadsPage() {
   const [importOpen, setImportOpen] = useState(false);
   const [pdfImportOpen, setPdfImportOpen] = useState(false);
   const [editLead, setEditLead] = useState<Lead | null>(null);
+  const [journeyOverrides, setJourneyOverrides] = useState<Record<string, LeadJourneyStage>>({});
 
   // Additive "More filters" — date range, tag, and (superadmin/manager-only)
   // owner multi-select. Journey remains the fast primary filter above.
@@ -110,6 +170,7 @@ export default function LeadsPage() {
   const { data: savedSearchesData } = useSavedSearches();
   const createSavedSearch = useCreateSavedSearch();
   const deleteSavedSearch = useDeleteSavedSearch();
+  const updateLead = useUpdateEntity('leads');
   const navigate = useNavigate();
   const crmUsers = (identityUsers ?? []).filter((u) =>
     u.appMemberships?.some((m) => m.app === 'crm')
@@ -192,8 +253,37 @@ export default function LeadsPage() {
       setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'));
     } else {
       setSortBy(column);
-      setSortOrder('asc');
+      setSortOrder(column === 'score' || column === 'createdAt' ? 'desc' : 'asc');
     }
+  };
+
+  const updateJourneyInline = (lead: Lead, journeyStage: LeadJourneyStage) => {
+    if (journeyStage === lead.journeyStage) return;
+    setJourneyOverrides((current) => ({ ...current, [lead.id]: journeyStage }));
+    updateLead.mutate(
+      { id: lead.id, data: { journeyStage } },
+      {
+        onSuccess: () => {
+          setJourneyOverrides((current) => {
+            const next = { ...current };
+            delete next[lead.id];
+            return next;
+          });
+          showToast(`${lead.firstName} moved to ${journeyLabel(journeyStage)}`, 'success');
+        },
+        onError: (error) => {
+          setJourneyOverrides((current) => {
+            const next = { ...current };
+            delete next[lead.id];
+            return next;
+          });
+          showToast(
+            error instanceof Error ? error.message : 'Could not update the lead journey',
+            'error'
+          );
+        },
+      }
+    );
   };
 
   const openCreate = () => {
@@ -423,6 +513,33 @@ export default function LeadsPage() {
             </option>
           ))}
         </select>
+        <select
+          value={sortBy}
+          onChange={(event) => toggleSort(event.target.value)}
+          className="px-3 py-2 border border-slate-200 rounded-md text-sm bg-white"
+          title="Sort leads by any field"
+          aria-label="Sort leads by field"
+        >
+          {LEAD_SORT_OPTIONS.map(([value, label]) => (
+            <option key={value} value={value}>
+              Sort: {label}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={() => setSortOrder((current) => (current === 'asc' ? 'desc' : 'asc'))}
+          className="flex items-center gap-1 px-3 py-2 border border-slate-200 rounded-md text-sm bg-white hover:bg-slate-50"
+          title={
+            sortOrder === 'asc'
+              ? 'Ascending; click for descending'
+              : 'Descending; click for ascending'
+          }
+          aria-label={`Sort ${sortOrder === 'asc' ? 'ascending' : 'descending'}`}
+        >
+          {sortOrder === 'asc' ? <ArrowUp size={15} /> : <ArrowDown size={15} />}
+          {sortOrder === 'asc' ? 'Asc' : 'Desc'}
+        </button>
         <button
           onClick={() => setMoreFiltersOpen((o) => !o)}
           className={cn(
@@ -732,78 +849,95 @@ export default function LeadsPage() {
                     )}
                   </button>
                 </th>
-                <th
-                  className="text-left px-4 py-3 font-medium text-slate-600 cursor-pointer select-none hover:bg-slate-100"
-                  onClick={() => toggleSort('firstName')}
-                >
-                  <div className="flex items-center gap-1">
-                    Name{' '}
-                    {sortBy === 'firstName' ? (
-                      sortOrder === 'asc' ? (
-                        <ArrowUp size={14} />
-                      ) : (
-                        <ArrowDown size={14} />
-                      )
-                    ) : (
-                      <ArrowUpDown size={14} className="text-slate-300" />
-                    )}
+                <th className="px-4 py-3 font-medium text-slate-600">
+                  <div className="flex items-center gap-3 whitespace-nowrap">
+                    {[
+                      { column: 'name', label: 'Name' },
+                      { column: 'journeyStage', label: 'Journey' },
+                    ].map((heading) => (
+                      <button
+                        key={heading.column}
+                        type="button"
+                        onClick={() => toggleSort(heading.column)}
+                        className="flex items-center gap-1 hover:text-slate-900"
+                      >
+                        {heading.label}
+                        {sortBy === heading.column ? (
+                          sortOrder === 'asc' ? (
+                            <ArrowUp size={14} />
+                          ) : (
+                            <ArrowDown size={14} />
+                          )
+                        ) : (
+                          <ArrowUpDown size={14} className="text-slate-300" />
+                        )}
+                      </button>
+                    ))}
                   </div>
                 </th>
-                <th className="text-left px-4 py-3 font-medium text-slate-600">Lead #</th>
-                <th
-                  className="text-left px-4 py-3 font-medium text-slate-600 cursor-pointer select-none hover:bg-slate-100"
-                  onClick={() => toggleSort('companyName')}
-                >
-                  <div className="flex items-center gap-1">
-                    Company{' '}
-                    {sortBy === 'companyName' ? (
-                      sortOrder === 'asc' ? (
-                        <ArrowUp size={14} />
-                      ) : (
-                        <ArrowDown size={14} />
-                      )
-                    ) : (
-                      <ArrowUpDown size={14} className="text-slate-300" />
-                    )}
-                  </div>
-                </th>
-                <th
-                  className="text-left px-4 py-3 font-medium text-slate-600 cursor-pointer select-none hover:bg-slate-100"
-                  onClick={() => toggleSort('email')}
-                >
-                  <div className="flex items-center gap-1">
-                    Email{' '}
-                    {sortBy === 'email' ? (
-                      sortOrder === 'asc' ? (
-                        <ArrowUp size={14} />
-                      ) : (
-                        <ArrowDown size={14} />
-                      )
-                    ) : (
-                      <ArrowUpDown size={14} className="text-slate-300" />
-                    )}
-                  </div>
-                </th>
-                <th className="text-left px-4 py-3 font-medium text-slate-600">LinkedIn</th>
-                <th className="text-left px-4 py-3 font-medium text-slate-600">Tags</th>
-                <th
-                  className="text-left px-4 py-3 font-medium text-slate-600 cursor-pointer select-none hover:bg-slate-100"
-                  onClick={() => toggleSort('journeyStage')}
-                >
-                  <div className="flex items-center gap-1">
-                    Journey{' '}
-                    {sortBy === 'journeyStage' ? (
-                      sortOrder === 'asc' ? (
-                        <ArrowUp size={14} />
-                      ) : (
-                        <ArrowDown size={14} />
-                      )
-                    ) : (
-                      <ArrowUpDown size={14} className="text-slate-300" />
-                    )}
-                  </div>
-                </th>
-                <th className="text-left px-4 py-3 font-medium text-slate-600">Owner</th>
+                <SortableHeader
+                  column="leadNumber"
+                  label="Lead #"
+                  sortBy={sortBy}
+                  sortOrder={sortOrder}
+                  onSort={toggleSort}
+                />
+                <SortableHeader
+                  column="score"
+                  label="AI score"
+                  sortBy={sortBy}
+                  sortOrder={sortOrder}
+                  onSort={toggleSort}
+                />
+                <SortableHeader
+                  column="companyName"
+                  label="Company"
+                  sortBy={sortBy}
+                  sortOrder={sortOrder}
+                  onSort={toggleSort}
+                />
+                <SortableHeader
+                  column="email"
+                  label="Email"
+                  sortBy={sortBy}
+                  sortOrder={sortOrder}
+                  onSort={toggleSort}
+                />
+                <SortableHeader
+                  column="linkedinUrl"
+                  label="LinkedIn"
+                  sortBy={sortBy}
+                  sortOrder={sortOrder}
+                  onSort={toggleSort}
+                />
+                <SortableHeader
+                  column="source"
+                  label="Source"
+                  sortBy={sortBy}
+                  sortOrder={sortOrder}
+                  onSort={toggleSort}
+                />
+                <SortableHeader
+                  column="tags"
+                  label="Tags"
+                  sortBy={sortBy}
+                  sortOrder={sortOrder}
+                  onSort={toggleSort}
+                />
+                <SortableHeader
+                  column="ownerId"
+                  label="Owner"
+                  sortBy={sortBy}
+                  sortOrder={sortOrder}
+                  onSort={toggleSort}
+                />
+                <SortableHeader
+                  column="createdAt"
+                  label="Created"
+                  sortBy={sortBy}
+                  sortOrder={sortOrder}
+                  onSort={toggleSort}
+                />
                 <th className="text-right px-4 py-3 font-medium text-slate-600">Actions</th>
               </tr>
             </thead>
@@ -829,9 +963,30 @@ export default function LeadsPage() {
                       )}
                     </button>
                   </td>
-                  <td className="px-4 py-3">
-                    <div className="font-medium">
-                      {lead.firstName} {lead.lastName}
+                  <td className="px-4 py-3 min-w-64">
+                    <div className="flex items-center gap-2">
+                      <div className="font-medium whitespace-nowrap">
+                        {lead.firstName} {lead.lastName}
+                      </div>
+                      <select
+                        value={journeyOverrides[lead.id] ?? lead.journeyStage}
+                        onClick={(event) => event.stopPropagation()}
+                        onChange={(event) => {
+                          event.stopPropagation();
+                          updateJourneyInline(lead, event.target.value as LeadJourneyStage);
+                        }}
+                        className={cn(
+                          'max-w-40 rounded-md border-0 px-2 py-1 text-xs font-medium outline-none ring-1 ring-inset ring-slate-200',
+                          journeyBadgeClass(journeyOverrides[lead.id] ?? lead.journeyStage)
+                        )}
+                        aria-label={`Update journey for ${lead.firstName} ${lead.lastName}`}
+                      >
+                        {LEAD_JOURNEY_STAGES.map((stage) => (
+                          <option key={stage} value={stage}>
+                            {journeyLabel(stage)}
+                          </option>
+                        ))}
+                      </select>
                     </div>
                   </td>
                   <td className="px-4 py-3">
@@ -839,6 +994,24 @@ export default function LeadsPage() {
                       <span className="font-mono text-xs text-slate-500">{lead.leadNumber}</span>
                     ) : (
                       '—'
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    {lead.aiScore != null ? (
+                      <div
+                        className="inline-flex min-w-12 items-center justify-center rounded-full bg-violet-100 px-2 py-1 text-xs font-bold text-violet-700"
+                        title={lead.aiClassification ?? 'AI lead score'}
+                      >
+                        {lead.aiScore}/100
+                      </div>
+                    ) : lead.scoreJobStatus === 'processing' ? (
+                      <span className="inline-flex items-center gap-1 text-xs text-blue-600">
+                        <Loader2 size={13} className="animate-spin" /> Scoring
+                      </span>
+                    ) : lead.scoreJobStatus === 'failed' ? (
+                      <span className="text-xs font-medium text-amber-600">Retry queued</span>
+                    ) : (
+                      <span className="text-xs text-slate-400">Queued</span>
                     )}
                   </td>
                   <td className="px-4 py-3 text-slate-600">{lead.companyName ?? '—'}</td>
@@ -859,6 +1032,9 @@ export default function LeadsPage() {
                     ) : (
                       '—'
                     )}
+                  </td>
+                  <td className="px-4 py-3 text-slate-600 capitalize">
+                    {lead.source.replace(/_/g, ' ')}
                   </td>
                   <td className="px-4 py-3">
                     {lead.tags && lead.tags.length > 0 ? (
@@ -881,20 +1057,13 @@ export default function LeadsPage() {
                       '—'
                     )}
                   </td>
-                  <td className="px-4 py-3">
-                    <span
-                      className={cn(
-                        'px-2 py-0.5 rounded text-xs font-medium',
-                        journeyBadgeClass(lead.journeyStage)
-                      )}
-                    >
-                      {journeyLabel(lead.journeyStage)}
-                    </span>
-                  </td>
                   <td className="px-4 py-3 text-slate-600">
                     {canManage
                       ? crmUsers.find((u) => u.id === lead.ownerId)?.displayName || '—'
                       : 'Me'}
+                  </td>
+                  <td className="px-4 py-3 whitespace-nowrap text-slate-500">
+                    {new Date(lead.createdAt).toLocaleDateString()}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-2">
@@ -940,7 +1109,7 @@ export default function LeadsPage() {
               ))}
               {leads.length === 0 && (
                 <tr>
-                  <td colSpan={11} className="px-4 py-12 text-center text-slate-400">
+                  <td colSpan={12} className="px-4 py-12 text-center text-slate-400">
                     No leads found
                   </td>
                 </tr>

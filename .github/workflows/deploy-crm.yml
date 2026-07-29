@@ -70,6 +70,13 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      - name: Set WORKFLOW_RUNNER_SECRET secret
+        working-directory: apps/crm
+        run: printf '%s' "$WORKFLOW_RUNNER_SECRET" | wrangler secret put WORKFLOW_RUNNER_SECRET
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WORKFLOW_RUNNER_SECRET: ${{ secrets.WORKFLOW_RUNNER_SECRET }}
       - name: Set GOOGLE_API_KEY secret
         working-directory: apps/crm
         run: printf '%s' "$GOOGLE_API_KEY" | wrangler secret put GOOGLE_API_KEY

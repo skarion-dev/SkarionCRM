@@ -15,7 +15,20 @@ import { parseContactsCsv, parseCompaniesCsv, parseLeadsCsv } from '@skarion/imp
 import Papa from 'papaparse';
 import readXlsxFile from 'read-excel-file/web-worker';
 import * as schema from './db/schema.js';
-import { eq, and, isNull, like, sql, desc, asc, or, inArray, gte } from 'drizzle-orm';
+import {
+  eq,
+  and,
+  isNull,
+  like,
+  sql,
+  desc,
+  asc,
+  or,
+  inArray,
+  gte,
+  lte,
+  getTableColumns,
+} from 'drizzle-orm';
 import type { CrmDb } from './db/types.js';
 
 // --- Rate Limiting (per-Worker instance, in-memory) ---
@@ -172,6 +185,7 @@ interface Env extends AiGatewayEnv {
   APP_URL: string;
   RESEND_API_KEY?: string;
   WORKFLOW_RUNNER_URL?: string;
+  WORKFLOW_RUNNER_SECRET?: string;
   AI_PROVIDER?: string;
   AI_GATEWAY_BASE_URL?: string;
   AI_GATEWAY_API_KEY?: string;
@@ -765,6 +779,20 @@ app.post('/extension/leads', async (c) => {
   );
 });
 
+app.post('/internal/lead-score-queue/drain', async (c) => {
+  const configuredSecret = c.env.WORKFLOW_RUNNER_SECRET;
+  const authorization = c.req.header('Authorization');
+  if (!configuredSecret || authorization !== `Bearer ${configuredSecret}`) {
+    return c.json({ error: 'Unauthorized.' }, 401);
+  }
+
+  const requestedLimit = Number(c.req.query('limit') ?? 5);
+  const limit = Math.min(5, Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : 5));
+  const db = getDb(c.env, schema) as CrmDb;
+  const result = await drainLeadScoreQueue(db, c.env, limit);
+  return c.json(result);
+});
+
 app.use('/api/*', requireAuth);
 app.use('/api/admin/*', requireSuperadmin());
 
@@ -830,7 +858,11 @@ async function getConfiguredAiEnv(db: CrmDb, env: Env, actorUserId?: string | nu
     AI_MODEL_CHEAP: settings.tierModels.cheap,
     AI_MODEL_FALLBACK: settings.tierModels.cheap,
     AI_EMBEDDING_MODEL: settings.tierModels.embedding,
-    AI_AGENT_MODELS: JSON.stringify(settings.agentModels),
+    AI_AGENT_MODELS: JSON.stringify({
+      ...settings.agentModels,
+      // Lead scoring is intentionally pinned to the cheapest Flash route.
+      'lead-scorer': DEFAULT_AI_MODELS.cheap,
+    }),
     AI_USAGE_RECORDER: async (record) => {
       await db.insert(schema.aiUsageEvents).values({
         actorUserId: actorUserId ?? null,
@@ -852,31 +884,9 @@ async function getConfiguredAiEnv(db: CrmDb, env: Env, actorUserId?: string | nu
   };
 }
 
-async function generateAndSaveLeadAiAssessment(
-  db: CrmDb,
-  lead: typeof schema.leads.$inferSelect,
-  env: Env
-) {
-  const aiEnv = await getConfiguredAiEnv(db, env, lead.ownerId);
-  if (!ai.isAiConfigured(aiEnv)) return null;
-
-  const input: ai.LeadQualificationInput = {
-    firstName: lead.firstName,
-    lastName: lead.lastName,
-    email: lead.email,
-    companyName: lead.companyName,
-    status: lead.status,
-    source: lead.source,
-    notes: lead.notes,
-  };
-  const [assessment, connectionNote] = await Promise.all([
-    ai.qualifyLead(input, aiEnv),
-    ai.draftLinkedinConnectionNote(input, aiEnv),
-  ]);
-  if (!assessment || !connectionNote) return null;
-
-  const values = {
-    leadId: lead.id,
+function leadQualificationValues(leadId: string, assessment: ai.LeadQualificationAssessment) {
+  return {
+    leadId,
     overallScore: assessment.overallScore,
     rawScore: assessment.rawScore,
     classification: assessment.classification,
@@ -891,9 +901,194 @@ async function generateAndSaveLeadAiAssessment(
     bestOutreachAngle: assessment.bestOutreachAngle,
     qualificationQuestions: assessment.qualificationQuestions,
     reasoningSummary: assessment.reasoningSummary,
+    updatedAt: new Date(),
+  };
+}
+
+async function generateAndSaveLeadScore(
+  db: CrmDb,
+  lead: typeof schema.leads.$inferSelect,
+  env: Env
+) {
+  const aiEnv = await getConfiguredAiEnv(db, env, lead.ownerId);
+  if (!ai.isAiConfigured(aiEnv)) return null;
+
+  const assessment = await ai.qualifyLead(
+    {
+      firstName: lead.firstName,
+      lastName: lead.lastName,
+      email: lead.email,
+      companyName: lead.companyName,
+      status: lead.journeyStage,
+      source: lead.source,
+      notes: lead.notes,
+    },
+    aiEnv
+  );
+  if (!assessment) return null;
+
+  const scoreValues = leadQualificationValues(lead.id, assessment);
+  const [saved] = await db
+    .insert(schema.leadAiAssessments)
+    .values({
+      ...scoreValues,
+      connectionNote: null,
+      connectionNoteCharacterCount: 0,
+    })
+    .onConflictDoUpdate({
+      target: schema.leadAiAssessments.leadId,
+      // Preserve any human-edited/generated connection note when re-scoring.
+      set: scoreValues,
+    })
+    .returning();
+  return saved ?? null;
+}
+
+async function drainLeadScoreQueue(db: CrmDb, env: Env, limit: number) {
+  const now = new Date();
+  await db
+    .update(schema.leadScoreJobs)
+    .set({
+      status: 'failed',
+      lockedAt: null,
+      nextAttemptAt: now,
+      lastError: 'Recovered stale scoring lock.',
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(schema.leadScoreJobs.status, 'processing'),
+        sql`${schema.leadScoreJobs.lockedAt} < now() - interval '30 minutes'`
+      )
+    );
+
+  const jobs = await db
+    .select()
+    .from(schema.leadScoreJobs)
+    .where(
+      and(
+        inArray(schema.leadScoreJobs.status, ['pending', 'failed']),
+        lte(schema.leadScoreJobs.nextAttemptAt, now)
+      )
+    )
+    .orderBy(asc(schema.leadScoreJobs.nextAttemptAt))
+    .limit(limit);
+
+  const result = { claimed: 0, scored: 0, alreadyScored: 0, failed: 0 };
+  for (const job of jobs) {
+    const [claimed] = await db
+      .update(schema.leadScoreJobs)
+      .set({
+        status: 'processing',
+        attempts: sql`${schema.leadScoreJobs.attempts} + 1`,
+        lockedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(schema.leadScoreJobs.id, job.id),
+          inArray(schema.leadScoreJobs.status, ['pending', 'failed']),
+          lte(schema.leadScoreJobs.nextAttemptAt, now)
+        )
+      )
+      .returning();
+    if (!claimed) continue;
+    result.claimed += 1;
+
+    try {
+      const [[lead], [existingAssessment]] = await Promise.all([
+        db
+          .select()
+          .from(schema.leads)
+          .where(and(eq(schema.leads.id, job.leadId), isNull(schema.leads.deletedAt)))
+          .limit(1),
+        db
+          .select({ leadId: schema.leadAiAssessments.leadId })
+          .from(schema.leadAiAssessments)
+          .where(eq(schema.leadAiAssessments.leadId, job.leadId))
+          .limit(1),
+      ]);
+
+      if (!lead || existingAssessment) {
+        await db
+          .update(schema.leadScoreJobs)
+          .set({
+            status: 'completed',
+            completedAt: new Date(),
+            lockedAt: null,
+            lastError: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.leadScoreJobs.id, job.id));
+        result.alreadyScored += 1;
+        continue;
+      }
+
+      const assessment = await generateAndSaveLeadScore(db, lead, env);
+      if (!assessment) throw new Error(ai.AI_NOT_CONFIGURED_MSG);
+
+      await db
+        .update(schema.leadScoreJobs)
+        .set({
+          status: 'completed',
+          completedAt: new Date(),
+          lockedAt: null,
+          lastError: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.leadScoreJobs.id, job.id));
+      result.scored += 1;
+    } catch (error) {
+      const message = (error instanceof Error ? error.message : 'Unknown scoring failure').slice(
+        0,
+        1000
+      );
+      const backoffMinutes = Math.min(360, 5 * 2 ** Math.max(0, claimed.attempts - 1));
+      await db
+        .update(schema.leadScoreJobs)
+        .set({
+          // Keep retrying with a capped backoff so temporary provider failures
+          // never strand a lead permanently.
+          status: 'failed',
+          nextAttemptAt: new Date(Date.now() + backoffMinutes * 60_000),
+          lockedAt: null,
+          lastError: message,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.leadScoreJobs.id, job.id));
+      result.failed += 1;
+    }
+  }
+  return result;
+}
+
+async function generateAndSaveLeadAiAssessment(
+  db: CrmDb,
+  lead: typeof schema.leads.$inferSelect,
+  env: Env
+) {
+  const aiEnv = await getConfiguredAiEnv(db, env, lead.ownerId);
+  if (!ai.isAiConfigured(aiEnv)) return null;
+
+  const input: ai.LeadQualificationInput = {
+    firstName: lead.firstName,
+    lastName: lead.lastName,
+    email: lead.email,
+    companyName: lead.companyName,
+    status: lead.journeyStage,
+    source: lead.source,
+    notes: lead.notes,
+  };
+  const [assessment, connectionNote] = await Promise.all([
+    ai.qualifyLead(input, aiEnv),
+    ai.draftLinkedinConnectionNote(input, aiEnv),
+  ]);
+  if (!assessment || !connectionNote) return null;
+
+  const values = {
+    ...leadQualificationValues(lead.id, assessment),
     connectionNote,
     connectionNoteCharacterCount: [...connectionNote].length,
-    updatedAt: new Date(),
   };
   const [saved] = await db
     .insert(schema.leadAiAssessments)
@@ -1422,8 +1617,9 @@ app.get('/api/leads', async (c) => {
     createdTo,
   });
 
+  const sortColumn = resolveLeadSortColumn(sortBy);
   const orderByClause =
-    sortOrder === 'asc' ? asc(resolveLeadSortColumn(sortBy)) : desc(resolveLeadSortColumn(sortBy));
+    sortOrder === 'asc' ? sql`${sortColumn} asc nulls last` : sql`${sortColumn} desc nulls last`;
 
   // Get total count
   const countResult = await db
@@ -1434,8 +1630,15 @@ app.get('/api/leads', async (c) => {
 
   // Get paginated rows
   const rows = await db
-    .select()
+    .select({
+      ...getTableColumns(schema.leads),
+      aiScore: schema.leadAiAssessments.overallScore,
+      aiClassification: schema.leadAiAssessments.classification,
+      scoreJobStatus: schema.leadScoreJobs.status,
+    })
     .from(schema.leads)
+    .leftJoin(schema.leadAiAssessments, eq(schema.leadAiAssessments.leadId, schema.leads.id))
+    .leftJoin(schema.leadScoreJobs, eq(schema.leadScoreJobs.leadId, schema.leads.id))
     .where(and(...conditions))
     .orderBy(orderByClause)
     .limit(pageSize)
@@ -1660,12 +1863,18 @@ app.get('/api/leads/export.csv', async (c) => {
     createdFrom,
     createdTo,
   });
+  const sortColumn = resolveLeadSortColumn(sortBy);
   const orderByClause =
-    sortOrder === 'asc' ? asc(resolveLeadSortColumn(sortBy)) : desc(resolveLeadSortColumn(sortBy));
+    sortOrder === 'asc' ? sql`${sortColumn} asc nulls last` : sql`${sortColumn} desc nulls last`;
 
   const rows = await db
-    .select()
+    .select({
+      ...getTableColumns(schema.leads),
+      aiScore: schema.leadAiAssessments.overallScore,
+      aiClassification: schema.leadAiAssessments.classification,
+    })
     .from(schema.leads)
+    .leftJoin(schema.leadAiAssessments, eq(schema.leadAiAssessments.leadId, schema.leads.id))
     .where(and(...conditions))
     .orderBy(orderByClause);
 
@@ -1679,6 +1888,8 @@ app.get('/api/leads/export.csv', async (c) => {
     'companyDomain',
     'linkedinUrl',
     'journeyStage',
+    'aiScore',
+    'aiClassification',
     'source',
     'tags',
     'notes',
@@ -1699,6 +1910,8 @@ app.get('/api/leads/export.csv', async (c) => {
         row.companyDomain,
         row.linkedinUrl,
         row.journeyStage,
+        row.aiScore,
+        row.aiClassification,
         row.source,
         normalizeTagNames(row.tags).join(' | '),
         row.notes,
@@ -5384,9 +5597,19 @@ app.post('/api/leads/:id/score', async (c) => {
     return c.json({ error: 'Forbidden.' }, 403);
   }
 
-  const result = await ai.scoreLead(row, await getConfiguredAiEnv(db, c.env));
-  if (!result) return c.json({ error: ai.AI_NOT_CONFIGURED_MSG }, 503);
-  return c.json(result);
+  const assessment = await generateAndSaveLeadScore(db, row, c.env);
+  if (!assessment) return c.json({ error: ai.AI_NOT_CONFIGURED_MSG }, 503);
+  await db
+    .update(schema.leadScoreJobs)
+    .set({
+      status: 'completed',
+      completedAt: new Date(),
+      lockedAt: null,
+      lastError: null,
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.leadScoreJobs.leadId, row.id));
+  return c.json({ score: assessment.overallScore, reasoning: assessment.reasoningSummary });
 });
 
 app.get('/api/leads/:id/ai-assessment', async (c) => {

@@ -335,8 +335,11 @@ export function useDeleteEntity() {
       await crmFetch(`/api/${type}/${id}`, { method: 'DELETE' });
       return { type, id };
     },
-    onSuccess: ({ type }) => {
-      qc.invalidateQueries({ queryKey: [type] });
+    onSuccess: async ({ type }) => {
+      await qc.invalidateQueries({ queryKey: [type] });
+      if (type === 'leads') {
+        await qc.invalidateQueries({ queryKey: ['leads-infinite'] });
+      }
     },
   });
 }
@@ -368,8 +371,11 @@ export function useBulkLeads() {
         }
       );
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['leads'] });
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['leads'] }),
+        qc.invalidateQueries({ queryKey: ['leads-infinite'] }),
+      ]);
     },
   });
 }
@@ -383,8 +389,11 @@ export function useCreateEntity<T extends Record<string, unknown>>(type: string)
         body: JSON.stringify(data),
       });
     },
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: [type] });
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: [type] });
+      if (type === 'leads') {
+        await qc.invalidateQueries({ queryKey: ['leads-infinite'] });
+      }
     },
   });
 }
@@ -398,9 +407,12 @@ export function useUpdateEntity<T extends Record<string, unknown>>(type: string)
         body: JSON.stringify(data),
       });
     },
-    onSuccess: (_, vars) => {
-      qc.invalidateQueries({ queryKey: [type] });
-      qc.invalidateQueries({ queryKey: [type, vars.id] });
+    onSuccess: async (_, vars) => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: [type] }),
+        qc.invalidateQueries({ queryKey: [type, vars.id] }),
+        ...(type === 'leads' ? [qc.invalidateQueries({ queryKey: ['leads-infinite'] })] : []),
+      ]);
     },
   });
 }
