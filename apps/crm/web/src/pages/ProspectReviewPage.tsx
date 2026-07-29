@@ -1,18 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Activity,
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  CheckCircle2,
+  Clock3,
   ExternalLink,
   FileUp,
   Loader2,
   Search,
+  TriangleAlert,
   UsersRound,
 } from 'lucide-react';
 import {
   useClaimNextProspects,
   useImportBatches,
   useImportProspects,
+  useProfileCleanupStatus,
   useProspectEvents,
   useProspectImportJob,
   useProspects,
@@ -82,6 +87,11 @@ const DECISIONS: Array<{
   { id: 'maybe', label: 'Maybe', className: 'bg-amber-500 text-white' },
   { id: 'future', label: 'Future', className: 'bg-violet-600 text-white' },
   {
+    id: 'foreign_national',
+    label: 'Foreign National',
+    className: 'bg-indigo-700 text-white',
+  },
+  {
     id: 'disqualified',
     label: 'Disqualify',
     className: 'border border-red-300 text-red-700 bg-white',
@@ -137,6 +147,7 @@ export default function ProspectReviewPage() {
     ]
   );
   const { data, isLoading, error } = useProspects(filters);
+  const { data: cleanupStatus, isLoading: cleanupStatusLoading } = useProfileCleanupStatus();
   const { data: batches } = useImportBatches();
   const importProspects = useImportProspects();
   const { data: importJob } = useProspectImportJob(importJobId);
@@ -148,6 +159,14 @@ export default function ProspectReviewPage() {
   const totalPages = Math.max(1, data?.totalPages ?? 1);
   const firstVisible = data?.total ? (page - 1) * pageSize + 1 : 0;
   const lastVisible = data?.total ? Math.min(page * pageSize, data.total) : 0;
+  const cleanup = cleanupStatus?.summary;
+  const cleanupState = cleanup?.processing
+    ? { label: 'Working now', className: 'bg-blue-100 text-blue-700' }
+    : cleanup?.retrying
+      ? { label: 'Retrying', className: 'bg-amber-100 text-amber-800' }
+      : cleanup?.waiting
+        ? { label: 'Waiting for next run', className: 'bg-violet-100 text-violet-700' }
+        : { label: 'Queue clear', className: 'bg-emerald-100 text-emerald-700' };
 
   useEffect(() => {
     if (page > totalPages) setPage(totalPages);
@@ -349,6 +368,138 @@ export default function ProspectReviewPage() {
           </button>
         </div>
       </div>
+
+      <section className="overflow-hidden rounded-lg border bg-white">
+        <div className="flex flex-col gap-3 border-b px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-start gap-3">
+            <div className="rounded-lg bg-blue-50 p-2 text-blue-600">
+              {cleanup?.processing ? (
+                <Loader2 size={20} className="animate-spin" />
+              ) : cleanup?.retrying ? (
+                <TriangleAlert size={20} />
+              ) : cleanup?.active ? (
+                <Clock3 size={20} />
+              ) : (
+                <CheckCircle2 size={20} />
+              )}
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="font-semibold text-slate-900">Profile Cleanup Agent</h2>
+                <span
+                  className={cn(
+                    'rounded-full px-2.5 py-1 text-xs font-semibold',
+                    cleanupState.className
+                  )}
+                >
+                  {cleanupStatusLoading ? 'Loading live status…' : cleanupState.label}
+                </span>
+                <span className="inline-flex items-center gap-1 text-xs text-slate-400">
+                  <Activity size={12} /> updates every 5 seconds
+                </span>
+              </div>
+              <p className="mt-1 text-xs text-slate-500">
+                Structures captured profile data before the separate Lead Scoring Agent runs.
+              </p>
+            </div>
+          </div>
+          <div className="text-xs text-slate-500">
+            {cleanup?.active ? (
+              <>
+                Estimated queue time{' '}
+                <strong className="text-slate-700">~{cleanup.estimatedMinutes} min</strong>
+              </>
+            ) : (
+              'Ready for new captures'
+            )}
+          </div>
+        </div>
+
+        <div className="grid gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_minmax(320px,0.8fr)]">
+          <div>
+            <div className="mb-2 flex items-end justify-between text-sm">
+              <span className="font-medium text-slate-700">
+                {cleanup?.active ?? 0} profiles remaining
+              </span>
+              <span className="text-xs tabular-nums text-slate-500">
+                {cleanup?.progressPercent ?? 0}% of all queued cleanup complete
+              </span>
+            </div>
+            <div className="h-2.5 overflow-hidden rounded-full bg-slate-100">
+              <div
+                className={cn(
+                  'h-full rounded-full transition-all duration-500',
+                  cleanup?.retrying ? 'bg-amber-500' : 'bg-blue-600'
+                )}
+                style={{ width: `${cleanup?.progressPercent ?? 0}%` }}
+              />
+            </div>
+            <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {[
+                ['Processing', cleanup?.processing ?? 0],
+                ['Waiting', cleanup?.waiting ?? 0],
+                ['Retrying', cleanup?.retrying ?? 0],
+                ['Completed 24h', cleanup?.completedToday ?? 0],
+              ].map(([label, count]) => (
+                <div key={label} className="rounded-md bg-slate-50 px-3 py-2">
+                  <div className="text-lg font-semibold tabular-nums text-slate-900">{count}</div>
+                  <div className="text-xs text-slate-500">{label}</div>
+                </div>
+              ))}
+            </div>
+            <p className="mt-3 text-xs text-slate-400">
+              Processes up to {cleanupStatus?.cadence.batchSize ?? 5} profiles every{' '}
+              {cleanupStatus?.cadence.cadenceMinutes ?? 5} minutes. Failed jobs stay visible and
+              retry with backoff.
+            </p>
+          </div>
+
+          <div className="rounded-md border bg-slate-50/60">
+            <div className="flex items-center justify-between border-b px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+              <span>Live queue</span>
+              <span>{cleanup?.active ?? 0} total</span>
+            </div>
+            <div className="max-h-44 overflow-y-auto">
+              {cleanupStatus?.queue.length ? (
+                cleanupStatus.queue.map((job, index) => (
+                  <div
+                    key={job.id}
+                    className="flex items-center justify-between gap-3 border-b px-3 py-2 text-xs last:border-0"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate font-medium text-slate-700">
+                        <span className="mr-2 font-mono text-slate-400">{index + 1}</span>
+                        {job.leadNumber} · {job.firstName} {job.lastName}
+                      </div>
+                      {job.lastError && (
+                        <div className="mt-0.5 truncate text-amber-700" title={job.lastError}>
+                          {job.lastError}
+                        </div>
+                      )}
+                    </div>
+                    <span
+                      className={cn(
+                        'shrink-0 rounded-full px-2 py-1 font-medium capitalize',
+                        job.status === 'processing'
+                          ? 'bg-blue-100 text-blue-700'
+                          : job.status === 'failed'
+                            ? 'bg-amber-100 text-amber-800'
+                            : 'bg-slate-200 text-slate-600'
+                      )}
+                    >
+                      {job.status === 'failed' ? `retry ${job.attempts}` : job.status}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <div className="px-3 py-8 text-center text-xs text-slate-500">
+                  No profiles are waiting for cleanup.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
 
       {importJob?.job && (
         <div className="border rounded-lg bg-white p-4">

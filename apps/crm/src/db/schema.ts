@@ -44,6 +44,7 @@ export const leadStatusEnum = crmSchema.enum('lead_status', [
 
 export const leadJourneyStageEnum = crmSchema.enum('lead_journey_stage', [
   'future',
+  'foreign_national',
   'new',
   'ready_to_reach_out',
   'connection_sent',
@@ -71,6 +72,7 @@ export const leadReviewDispositionEnum = crmSchema.enum('lead_review_disposition
   'maybe',
   'worth_trying',
   'future',
+  'foreign_national',
   'disqualified',
 ]);
 

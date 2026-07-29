@@ -5,6 +5,7 @@ export const PROSPECT_DISPOSITIONS = [
   'maybe',
   'worth_trying',
   'future',
+  'foreign_national',
   'disqualified',
 ] as const;
 
@@ -24,6 +25,8 @@ export function dispositionTag(disposition: ProspectDisposition): string {
       return 'Maybe';
     case 'future':
       return 'Future';
+    case 'foreign_national':
+      return 'Foreign National';
     case 'disqualified':
       return 'Disqualified';
   }

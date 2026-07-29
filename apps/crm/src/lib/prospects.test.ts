@@ -96,6 +96,7 @@ describe('prospect ingestion', () => {
 
   it('maps dispositions to stable reporting labels', () => {
     expect(dispositionTag('excellent_fit')).toBe('Excellent Fit');
+    expect(dispositionTag('foreign_national')).toBe('Foreign National');
     expect(dispositionTag('disqualified')).toBe('Disqualified');
   });
 

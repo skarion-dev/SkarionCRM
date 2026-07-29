@@ -3,11 +3,12 @@ import {
   formatBatchTag,
   hasLeadTag,
   isLeadActivationStage,
+  isLeadHoldingStage,
   journeyStageForTags,
   journeyStageFromLegacy,
   mergeJourneyWithChannelStages,
   normalizeTagNames,
-  syncFutureTagForJourney,
+  syncHoldingTagsForJourney,
 } from './leadJourney.js';
 
 describe('lead journey compatibility', () => {
@@ -40,14 +41,22 @@ describe('lead tags', () => {
     expect(formatBatchTag('Set 4')).toBe('Batch 4');
   });
 
-  it('keeps the Future tag and journey stage aligned', () => {
+  it('keeps holding tags and journey stages aligned', () => {
     expect(hasLeadTag(['Batch 8', ' future '], 'Future')).toBe(true);
     expect(journeyStageForTags('new', ['Future'])).toBe('future');
     expect(journeyStageForTags('new', ['Future Candidates'])).toBe('future');
-    expect(syncFutureTagForJourney(['Batch 8'], 'future')).toEqual(['Batch 8', 'Future']);
-    expect(syncFutureTagForJourney(['Future', 'Batch 8'], 'new')).toEqual(['Batch 8']);
-    expect(syncFutureTagForJourney(['Future Candidates', 'Batch 8'], 'new')).toEqual(['Batch 8']);
+    expect(journeyStageForTags('new', ['Foreign National'])).toBe('foreign_national');
+    expect(syncHoldingTagsForJourney(['Batch 8'], 'future')).toEqual(['Batch 8', 'Future']);
+    expect(syncHoldingTagsForJourney(['Batch 8'], 'foreign_national')).toEqual([
+      'Batch 8',
+      'Foreign National',
+    ]);
+    expect(syncHoldingTagsForJourney(['Future', 'Batch 8'], 'new')).toEqual(['Batch 8']);
+    expect(syncHoldingTagsForJourney(['Foreign National', 'Batch 8'], 'new')).toEqual(['Batch 8']);
+    expect(syncHoldingTagsForJourney(['Future'], 'foreign_national')).toEqual(['Foreign National']);
     expect(isLeadActivationStage('new')).toBe(true);
     expect(isLeadActivationStage('future')).toBe(false);
+    expect(isLeadHoldingStage('future')).toBe(true);
+    expect(isLeadHoldingStage('foreign_national')).toBe(true);
   });
 });

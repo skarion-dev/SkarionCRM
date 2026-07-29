@@ -12,6 +12,21 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 });
 
+async function enablePersistentSidePanel() {
+  try {
+    await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+  } catch (error) {
+    console.error('Could not enable the Skarion side panel:', error);
+  }
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   chrome.action.setBadgeText({ text: '' });
+  void enablePersistentSidePanel();
 });
+
+chrome.runtime.onStartup.addListener(() => {
+  void enablePersistentSidePanel();
+});
+
+void enablePersistentSidePanel();

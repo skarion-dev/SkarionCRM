@@ -1,5 +1,6 @@
 export const LEAD_JOURNEY_STAGES = [
   'future',
+  'foreign_national',
   'new',
   'ready_to_reach_out',
   'connection_sent',
@@ -20,6 +21,7 @@ export type LeadJourneyStage = (typeof LEAD_JOURNEY_STAGES)[number];
 
 const ACTIVE_STAGE_RANK: Partial<Record<LeadJourneyStage, number>> = {
   future: 0,
+  foreign_national: 0,
   new: 1,
   ready_to_reach_out: 2,
   connection_sent: 3,
@@ -51,6 +53,10 @@ export function isLeadJourneyStage(value: unknown): value is LeadJourneyStage {
 
 export function isLeadActivationStage(stage: LeadJourneyStage): boolean {
   return ACTIVATION_STAGES.has(stage);
+}
+
+export function isLeadHoldingStage(stage: LeadJourneyStage | string): boolean {
+  return stage === 'future' || stage === 'foreign_national';
 }
 
 export function journeyStageFromLegacy(input: {
@@ -172,14 +178,31 @@ function isFutureTagName(tag: string): boolean {
   return normalized === 'future' || normalized.startsWith('future ');
 }
 
-export function journeyStageForTags(stage: LeadJourneyStage, tags: unknown): LeadJourneyStage {
-  return normalizeTagNames(tags).some(isFutureTagName) ? 'future' : stage;
+function isForeignNationalTagName(tag: string): boolean {
+  const normalized = tag.trim().toLowerCase();
+  return normalized === 'foreign national' || normalized.startsWith('foreign national ');
 }
 
-export function syncFutureTagForJourney(values: unknown, stage: LeadJourneyStage): string[] {
-  const withoutFuture = normalizeTagNames(values).filter((tag) => !isFutureTagName(tag));
-  return stage === 'future' ? normalizeTagNames([...withoutFuture, 'Future']) : withoutFuture;
+export function journeyStageForTags(stage: LeadJourneyStage, tags: unknown): LeadJourneyStage {
+  const normalizedTags = normalizeTagNames(tags);
+  if (normalizedTags.some(isFutureTagName)) return 'future';
+  if (normalizedTags.some(isForeignNationalTagName)) return 'foreign_national';
+  return stage;
 }
+
+export function syncHoldingTagsForJourney(values: unknown, stage: LeadJourneyStage): string[] {
+  const withoutHoldingTags = normalizeTagNames(values).filter(
+    (tag) => !isFutureTagName(tag) && !isForeignNationalTagName(tag)
+  );
+  if (stage === 'future') return normalizeTagNames([...withoutHoldingTags, 'Future']);
+  if (stage === 'foreign_national') {
+    return normalizeTagNames([...withoutHoldingTags, 'Foreign National']);
+  }
+  return withoutHoldingTags;
+}
+
+/** Compatibility alias for older imports. */
+export const syncFutureTagForJourney = syncHoldingTagsForJourney;
 
 export function tagSlug(name: string): string {
   const asciiSlug = name

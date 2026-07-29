@@ -90,6 +90,7 @@ import {
 import {
   formatBatchTag,
   isLeadActivationStage,
+  isLeadHoldingStage,
   isLeadJourneyStage,
   journeyStageForTags,
   journeyStageFromLegacy,
@@ -97,7 +98,7 @@ import {
   legacyFieldsForJourney,
   mergeJourneyWithChannelStages,
   normalizeTagNames,
-  syncFutureTagForJourney,
+  syncHoldingTagsForJourney,
   tagSlug,
   type LeadJourneyStage,
 } from './lib/leadJourney.js';
@@ -402,7 +403,13 @@ async function reviewProspect(
   const now = new Date();
   const accepted = disposition !== 'disqualified';
   const journeyStage: LeadJourneyStage =
-    disposition === 'disqualified' ? 'disqualified' : disposition === 'future' ? 'future' : 'new';
+    disposition === 'disqualified'
+      ? 'disqualified'
+      : disposition === 'future'
+        ? 'future'
+        : disposition === 'foreign_national'
+          ? 'foreign_national'
+          : 'new';
   const legacy = legacyFieldsForJourney(journeyStage);
   const profileName = profileString(profile ?? {}, 'name');
   const name = profileName ? deriveProspectName(profileName, lead.linkedinUrl ?? '') : null;
@@ -439,6 +446,7 @@ async function reviewProspect(
         'Worth Trying',
         'Maybe',
         'Future',
+        'Foreign National',
         'Disqualified',
         ...(captureReceived ? ['needs profile capture'] : []),
       ]
@@ -518,13 +526,13 @@ async function reviewProspect(
   await db
     .delete(schema.prospectReviewClaims)
     .where(eq(schema.prospectReviewClaims.leadId, lead.id));
-  if (accepted && disposition !== 'future') {
+  if (accepted && !isLeadHoldingStage(journeyStage)) {
     await db
       .insert(schema.leadScoreJobs)
       .values({ leadId: lead.id })
       .onConflictDoNothing({ target: schema.leadScoreJobs.leadId });
     await autoCreateLeadChannels(db, updated);
-  } else if (disposition === 'future') {
+  } else if (isLeadHoldingStage(journeyStage)) {
     await db
       .delete(schema.leadScoreJobs)
       .where(
@@ -1505,7 +1513,7 @@ app.post('/extension/leads', async (c) => {
 
   // Keep lead_channels in step with the lead — the Leads UI derives its
   // outreach tabs from these rows.
-  if (result.journeyStage !== 'future') {
+  if (!isLeadHoldingStage(result.journeyStage)) {
     c.executionCtx.waitUntil(autoCreateLeadChannels(db, result).catch(() => {}));
   }
 
@@ -1630,7 +1638,11 @@ app.post('/extension/prospects/review', async (c) => {
       profile,
       typeof body.rowVersion === 'number' ? body.rowVersion : undefined
     );
-    if (body.disposition !== 'future' && body.disposition !== 'disqualified') {
+    if (
+      body.disposition !== 'future' &&
+      body.disposition !== 'foreign_national' &&
+      body.disposition !== 'disqualified'
+    ) {
       c.executionCtx.waitUntil(
         generateAndSaveLeadAiAssessment(db, reviewed, c.env).catch((error) =>
           console.error('Accepted prospect AI assessment failed:', error)
@@ -2606,6 +2618,111 @@ app.post('/api/tags', async (c) => {
 
 // --- PROSPECT REVIEW ---
 
+app.get('/api/prospects/profile-cleanup-status', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  if (!getRole(c)) return c.json({ error: 'Forbidden.' }, 403);
+
+  const activeLead = and(
+    eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
+    isNull(schema.leads.deletedAt)
+  );
+  const [summaryRows, queue] = await Promise.all([
+    db
+      .select({
+        total: sql<number>`count(*)`,
+        waiting: sql<number>`count(*) filter (
+          where ${schema.leadProfileJobs.status} = 'pending'
+        )`,
+        processing: sql<number>`count(*) filter (
+          where ${schema.leadProfileJobs.status} = 'processing'
+        )`,
+        retrying: sql<number>`count(*) filter (
+          where ${schema.leadProfileJobs.status} = 'failed'
+        )`,
+        completed: sql<number>`count(*) filter (
+          where ${schema.leadProfileJobs.status} = 'completed'
+        )`,
+        completedToday: sql<number>`count(*) filter (
+          where ${schema.leadProfileJobs.status} = 'completed'
+            and ${schema.leadProfileJobs.completedAt} >= now() - interval '24 hours'
+        )`,
+        oldestQueuedAt: sql<Date | null>`min(${schema.leadProfileJobs.createdAt}) filter (
+          where ${schema.leadProfileJobs.status} in ('pending', 'failed')
+        )`,
+        latestCompletedAt: sql<Date | null>`max(${schema.leadProfileJobs.completedAt})`,
+      })
+      .from(schema.leadProfileJobs)
+      .innerJoin(schema.leads, eq(schema.leadProfileJobs.leadId, schema.leads.id))
+      .where(activeLead),
+    db
+      .select({
+        id: schema.leadProfileJobs.id,
+        leadId: schema.leadProfileJobs.leadId,
+        leadNumber: schema.leads.leadNumber,
+        firstName: schema.leads.firstName,
+        lastName: schema.leads.lastName,
+        status: schema.leadProfileJobs.status,
+        attempts: schema.leadProfileJobs.attempts,
+        nextAttemptAt: schema.leadProfileJobs.nextAttemptAt,
+        lockedAt: schema.leadProfileJobs.lockedAt,
+        lastError: schema.leadProfileJobs.lastError,
+        createdAt: schema.leadProfileJobs.createdAt,
+        updatedAt: schema.leadProfileJobs.updatedAt,
+      })
+      .from(schema.leadProfileJobs)
+      .innerJoin(schema.leads, eq(schema.leadProfileJobs.leadId, schema.leads.id))
+      .where(
+        and(activeLead, inArray(schema.leadProfileJobs.status, ['processing', 'pending', 'failed']))
+      )
+      .orderBy(
+        sql`case ${schema.leadProfileJobs.status}
+          when 'processing' then 0
+          when 'pending' then 1
+          else 2
+        end`,
+        asc(schema.leadProfileJobs.nextAttemptAt)
+      )
+      .limit(8),
+  ]);
+
+  const row = summaryRows[0];
+  const total = Number(row?.total ?? 0);
+  const waiting = Number(row?.waiting ?? 0);
+  const processing = Number(row?.processing ?? 0);
+  const retrying = Number(row?.retrying ?? 0);
+  const completed = Number(row?.completed ?? 0);
+  const active = waiting + processing + retrying;
+  const cadenceMinutes = 5;
+  const batchSize = 5;
+  const now = Date.now();
+  const nextScheduledRunAt = new Date(
+    Math.ceil(now / (cadenceMinutes * 60_000)) * cadenceMinutes * 60_000
+  );
+
+  return c.json({
+    summary: {
+      total,
+      active,
+      waiting,
+      processing,
+      retrying,
+      completed,
+      completedToday: Number(row?.completedToday ?? 0),
+      progressPercent: total ? Math.round((completed / total) * 100) : 100,
+      oldestQueuedAt: row?.oldestQueuedAt ?? null,
+      latestCompletedAt: row?.latestCompletedAt ?? null,
+      estimatedMinutes: active ? Math.ceil(active / batchSize) * cadenceMinutes : 0,
+    },
+    queue,
+    cadence: {
+      batchSize,
+      cadenceMinutes,
+      nextScheduledRunAt,
+    },
+    observedAt: new Date(),
+  });
+});
+
 app.get('/api/prospects', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   if (!getRole(c)) return c.json({ error: 'Forbidden.' }, 403);
@@ -3107,7 +3224,11 @@ app.put('/api/prospects/:id/review', async (c) => {
       null,
       typeof body.rowVersion === 'number' ? body.rowVersion : undefined
     );
-    if (body.disposition !== 'future' && body.disposition !== 'disqualified') {
+    if (
+      body.disposition !== 'future' &&
+      body.disposition !== 'foreign_national' &&
+      body.disposition !== 'disqualified'
+    ) {
       c.executionCtx.waitUntil(
         generateAndSaveLeadAiAssessment(db, updated, c.env).catch((error) =>
           console.error('Accepted prospect AI assessment failed:', error)
@@ -3341,12 +3462,12 @@ app.post('/api/leads', async (c) => {
   });
 
   // Auto-create lead_channels rows for the standard channels present on the lead
-  if (result.journeyStage !== 'future') {
+  if (!isLeadHoldingStage(result.journeyStage)) {
     c.executionCtx.waitUntil(autoCreateLeadChannels(db, result).catch(() => {}));
   }
 
   // Trigger workflow event for lead_created rules
-  if (result.journeyStage !== 'future') {
+  if (!isLeadHoldingStage(result.journeyStage)) {
     c.executionCtx.waitUntil(
       triggerWorkflowEvent(c.env, 'lead_created', {
         id: result.id,
@@ -3715,14 +3836,21 @@ app.put('/api/leads/:id', async (c) => {
     update.journeyStage = journeyStage;
     update.status = legacy.status;
     update.outreachStatus = legacy.outreachStatus;
-    const syncedTags = syncFutureTagForJourney(updatedTags ?? existing.tags, journeyStage);
-    if (journeyStage === 'future') {
-      await ensureTagDefinitions(db, ['Future'], caller.userId, true);
+    const syncedTags = syncHoldingTagsForJourney(updatedTags ?? existing.tags, journeyStage);
+    if (isLeadHoldingStage(journeyStage)) {
+      await ensureTagDefinitions(
+        db,
+        [journeyStage === 'future' ? 'Future' : 'Foreign National'],
+        caller.userId,
+        true
+      );
     }
     update.tags = syncedTags;
     updatedTags = syncedTags;
   } else if (updatedTags) {
-    const baseJourneyStage = existing.journeyStage === 'future' ? 'new' : existing.journeyStage;
+    const baseJourneyStage = isLeadHoldingStage(existing.journeyStage)
+      ? 'new'
+      : existing.journeyStage;
     const journeyStage = journeyStageForTags(baseJourneyStage, updatedTags);
     if (journeyStage !== existing.journeyStage) {
       const legacy = legacyFieldsForJourney(journeyStage);
@@ -3772,7 +3900,7 @@ app.put('/api/leads/:id', async (c) => {
     app: 'crm',
   });
 
-  if (result.journeyStage === 'future' && existing.journeyStage !== 'future') {
+  if (isLeadHoldingStage(result.journeyStage) && !isLeadHoldingStage(existing.journeyStage)) {
     await db
       .delete(schema.leadScoreJobs)
       .where(
@@ -3781,7 +3909,10 @@ app.put('/api/leads/:id', async (c) => {
           inArray(schema.leadScoreJobs.status, ['pending', 'failed'])
         )
       );
-  } else if (existing.journeyStage === 'future' && isLeadActivationStage(result.journeyStage)) {
+  } else if (
+    isLeadHoldingStage(existing.journeyStage) &&
+    isLeadActivationStage(result.journeyStage)
+  ) {
     await db
       .insert(schema.leadScoreJobs)
       .values({ leadId: result.id })
@@ -3796,7 +3927,7 @@ app.put('/api/leads/:id', async (c) => {
         }),
         result.source === 'linkedin'
           ? generateAndSaveLeadAiAssessment(db, result, c.env).catch((error) => {
-              console.error('Future lead activation AI assessment failed:', error);
+              console.error('Holding-stage lead activation AI assessment failed:', error);
               return null;
             })
           : Promise.resolve(null),
@@ -4425,12 +4556,17 @@ app.post('/api/leads/bulk', async (c) => {
       return c.json({ error: 'Invalid lead journey stage.' }, 400);
     }
     const legacy = legacyFieldsForJourney(requestedStage);
-    if (requestedStage === 'future') {
-      await ensureTagDefinitions(db, ['Future'], caller.userId, true);
+    if (isLeadHoldingStage(requestedStage)) {
+      await ensureTagDefinitions(
+        db,
+        [requestedStage === 'future' ? 'Future' : 'Foreign National'],
+        caller.userId,
+        true
+      );
     }
     const now = new Date();
     for (const lead of allLeads) {
-      const nextTags = syncFutureTagForJourney(lead.tags, requestedStage);
+      const nextTags = syncHoldingTagsForJourney(lead.tags, requestedStage);
       await db
         .update(schema.leads)
         .set({
@@ -4457,7 +4593,7 @@ app.post('/api/leads/bulk', async (c) => {
         },
         app: 'crm',
       });
-      if (lead.journeyStage === 'future' && isLeadActivationStage(requestedStage)) {
+      if (isLeadHoldingStage(lead.journeyStage) && isLeadActivationStage(requestedStage)) {
         await db
           .insert(schema.leadScoreJobs)
           .values({ leadId: lead.id })
@@ -4468,7 +4604,7 @@ app.post('/api/leads/bulk', async (c) => {
           source: lead.source,
           ownerId: lead.ownerId,
         });
-      } else if (lead.journeyStage !== 'future' && requestedStage === 'future') {
+      } else if (!isLeadHoldingStage(lead.journeyStage) && isLeadHoldingStage(requestedStage)) {
         await db
           .delete(schema.leadScoreJobs)
           .where(
@@ -4529,7 +4665,7 @@ app.post('/api/leads/bulk', async (c) => {
         const existing = Array.isArray(lead.tags) ? (lead.tags as string[]) : [];
         nextTags = [...new Set([...existing, ...tags])];
       }
-      const baseJourneyStage = lead.journeyStage === 'future' ? 'new' : lead.journeyStage;
+      const baseJourneyStage = isLeadHoldingStage(lead.journeyStage) ? 'new' : lead.journeyStage;
       const nextJourneyStage = journeyStageForTags(baseJourneyStage, nextTags);
       const nextLegacy = legacyFieldsForJourney(nextJourneyStage);
       await db
@@ -4558,7 +4694,7 @@ app.post('/api/leads/bulk', async (c) => {
         },
         app: 'crm',
       });
-      if (lead.journeyStage === 'future' && isLeadActivationStage(nextJourneyStage)) {
+      if (isLeadHoldingStage(lead.journeyStage) && isLeadActivationStage(nextJourneyStage)) {
         await db
           .insert(schema.leadScoreJobs)
           .values({ leadId: lead.id })
@@ -4569,7 +4705,7 @@ app.post('/api/leads/bulk', async (c) => {
           source: lead.source,
           ownerId: lead.ownerId,
         });
-      } else if (lead.journeyStage !== 'future' && nextJourneyStage === 'future') {
+      } else if (!isLeadHoldingStage(lead.journeyStage) && isLeadHoldingStage(nextJourneyStage)) {
         await db
           .delete(schema.leadScoreJobs)
           .where(
@@ -5835,8 +5971,8 @@ app.post('/api/import/leads', async (c) => {
       await enqueueLeadProfileCleanup(db, result.id);
     }
 
-    // Future leads intentionally have no outreach channels until activated.
-    if (result.journeyStage !== 'future') {
+    // Holding-stage leads intentionally have no outreach channels until activated.
+    if (!isLeadHoldingStage(result.journeyStage)) {
       await autoCreateLeadChannels(db, result);
     }
   }

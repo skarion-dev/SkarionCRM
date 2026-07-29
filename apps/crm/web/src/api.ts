@@ -407,6 +407,7 @@ export interface Contact {
 
 export type LeadJourneyStage =
   | 'future'
+  | 'foreign_national'
   | 'new'
   | 'ready_to_reach_out'
   | 'connection_sent'
@@ -496,7 +497,14 @@ export interface Lead {
   linkedinProfileKey: string | null;
   leadSequence: number | null;
   reviewState: 'pending' | 'accepted' | 'rejected';
-  reviewDisposition: 'excellent_fit' | 'maybe' | 'worth_trying' | 'future' | 'disqualified' | null;
+  reviewDisposition:
+    | 'excellent_fit'
+    | 'maybe'
+    | 'worth_trying'
+    | 'future'
+    | 'foreign_national'
+    | 'disqualified'
+    | null;
   reviewedAt: string | null;
   reviewedBy: string | null;
   profileCaptureStatus: 'not_captured' | 'processing' | 'captured' | 'partial' | 'failed';

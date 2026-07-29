@@ -218,6 +218,42 @@ export interface ProspectsResponse {
   awaitingReviewTotal: number;
 }
 
+export interface ProfileCleanupStatus {
+  summary: {
+    total: number;
+    active: number;
+    waiting: number;
+    processing: number;
+    retrying: number;
+    completed: number;
+    completedToday: number;
+    progressPercent: number;
+    oldestQueuedAt: string | null;
+    latestCompletedAt: string | null;
+    estimatedMinutes: number;
+  };
+  queue: Array<{
+    id: string;
+    leadId: string;
+    leadNumber: string;
+    firstName: string;
+    lastName: string;
+    status: 'processing' | 'pending' | 'failed';
+    attempts: number;
+    nextAttemptAt: string;
+    lockedAt: string | null;
+    lastError: string | null;
+    createdAt: string;
+    updatedAt: string;
+  }>;
+  cadence: {
+    batchSize: number;
+    cadenceMinutes: number;
+    nextScheduledRunAt: string;
+  };
+  observedAt: string;
+}
+
 function prospectQueryString(filters: ProspectFilters): string {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(filters)) {
@@ -231,6 +267,21 @@ export function useProspects(filters: ProspectFilters) {
   return useCrmQuery(['prospects', query], () =>
     crmFetch<ProspectsResponse>(`/api/prospects?${query}`)
   );
+}
+
+export function useProfileCleanupStatus() {
+  return useQuery({
+    queryKey: ['profile-cleanup-status'],
+    queryFn: async () => {
+      try {
+        return await crmFetch<ProfileCleanupStatus>('/api/prospects/profile-cleanup-status');
+      } catch (err) {
+        if (err instanceof Error && 'status' in err && err.status === 401) redirectToLogin();
+        throw err;
+      }
+    },
+    refetchInterval: 5_000,
+  });
 }
 
 export function useImportProspects() {
@@ -293,6 +344,7 @@ export type ProspectDisposition =
   | 'maybe'
   | 'worth_trying'
   | 'future'
+  | 'foreign_national'
   | 'disqualified';
 
 export function useReviewProspect() {
@@ -349,6 +401,9 @@ export function useProspectEvents(enabled = true) {
             await qc.invalidateQueries({ queryKey: ['prospects'] });
             await qc.invalidateQueries({ queryKey: ['leads-infinite'] });
             continue;
+          }
+          if (event.eventType === 'lead.profile_normalized') {
+            await qc.invalidateQueries({ queryKey: ['profile-cleanup-status'] });
           }
           const lead = event.payload?.lead;
           if (!lead) continue;

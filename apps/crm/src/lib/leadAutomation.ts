@@ -11,9 +11,14 @@ export interface LeadAutomationCandidate {
  * generate action without incurring AI usage during creation.
  */
 export function shouldAutoGenerateLinkedinConnectionNote(lead: LeadAutomationCandidate): boolean {
-  const isFuture =
+  const isHolding =
     lead.journeyStage === 'future' ||
+    lead.journeyStage === 'foreign_national' ||
     (Array.isArray(lead.tags) &&
-      lead.tags.some((tag) => typeof tag === 'string' && tag.trim().toLowerCase() === 'future'));
-  return lead.source === 'linkedin' && lead.status === 'new' && !isFuture;
+      lead.tags.some(
+        (tag) =>
+          typeof tag === 'string' &&
+          ['future', 'foreign national'].includes(tag.trim().toLowerCase())
+      ));
+  return lead.source === 'linkedin' && lead.status === 'new' && !isHolding;
 }

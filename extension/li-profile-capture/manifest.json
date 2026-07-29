@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "LinkedIn Profile Capture",
-  "version": "5.0.0",
-  "description": "Reviews LinkedIn prospects and sends each decision directly into Skarion CRM without a local profile queue.",
-  "permissions": ["activeTab", "scripting", "storage", "tabs"],
+  "version": "6.0.0",
+  "description": "Reviews LinkedIn prospects from a persistent side panel and sends each decision directly into Skarion CRM.",
+  "permissions": ["activeTab", "scripting", "storage", "tabs", "sidePanel"],
   "host_permissions": [
     "https://www.linkedin.com/*",
     "https://*.workers.dev/*",
@@ -11,7 +11,6 @@
     "http://127.0.0.1:*/*"
   ],
   "action": {
-    "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",
@@ -20,6 +19,9 @@
   },
   "background": {
     "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "popup.html"
   },
   "content_scripts": [
     {
