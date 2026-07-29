@@ -2134,7 +2134,7 @@ app.get('/api/dashboard', async (c) => {
         'failedRequests', usage.failed_requests,
         'tokens', usage.tokens,
         'costUsd', usage.cost_usd,
-        'defaultModel', ${DEFAULT_AI_MODELS.cheap}
+        'defaultModel', ${DEFAULT_AI_MODELS.cheap}::text
       ) ELSE NULL END
     ) AS dashboard
     FROM lead_kpis leads
