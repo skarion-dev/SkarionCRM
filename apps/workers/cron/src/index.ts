@@ -1,5 +1,5 @@
 // apps/workers/cron/src/index.ts
-// Triggers periodic workflow evaluations and drains the CRM lead-scoring queue.
+// Triggers periodic workflow evaluations and drains the CRM AI enrichment queues.
 
 export interface Env {
   WORKFLOW_RUNNER_URL: string;
@@ -40,6 +40,22 @@ export default {
           console.error(`Error evaluating ${trigger}:`, err);
         }
       }
+    }
+
+    try {
+      const response = await fetch(`${env.CRM_API_URL}/internal/lead-profile-queue/drain?limit=5`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${env.WORKFLOW_RUNNER_SECRET}`,
+        },
+      });
+      if (!response.ok) {
+        console.error(`Profile cleanup queue failed: ${response.status} ${await response.text()}`);
+      } else {
+        console.log('Profile cleanup queue:', JSON.stringify(await response.json()));
+      }
+    } catch (error) {
+      console.error('Error draining profile cleanup queue:', error);
     }
 
     try {

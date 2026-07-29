@@ -93,6 +93,12 @@ export type ProspectCsvRow = {
   email: string | null;
   phone: string | null;
   companyName: string | null;
+  headline: string | null;
+  location: string | null;
+  about: string | null;
+  experience: string | null;
+  education: string | null;
+  skills: string | null;
   notes: string | null;
   generatedName: boolean;
 };
@@ -153,6 +159,16 @@ export function normalizeProspectCsvRecord(
       email: nullable(firstValue(record, ['email', 'emailaddress'])),
       phone: nullable(firstValue(record, ['phone', 'phonenumber'])),
       companyName: nullable(firstValue(record, ['company', 'companyname', 'organization'])),
+      headline: nullable(firstValue(record, ['headline', 'title', 'currenttitle', 'jobtitle'])),
+      location: nullable(firstValue(record, ['location', 'city', 'region', 'country'])),
+      about: nullable(firstValue(record, ['about', 'summary', 'bio', 'profileabout'])),
+      experience: nullable(
+        firstValue(record, ['experience', 'workexperience', 'employment', 'workhistory'])
+      ),
+      education: nullable(
+        firstValue(record, ['education', 'schools', 'school', 'academicbackground'])
+      ),
+      skills: nullable(firstValue(record, ['skills', 'skillset', 'topskills'])),
       notes: nullable(firstValue(record, ['notes', 'remarks', 'note'])),
       generatedName: name.generated,
     },

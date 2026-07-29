@@ -164,6 +164,141 @@ function profileString(profile: Record<string, unknown>, key: string): string | 
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+const PROFILE_NORMALIZATION_VERSION = 1;
+
+function hasLeadProfileEvidence(lead: {
+  source?: string | null;
+  headline?: string | null;
+  location?: string | null;
+  about?: string | null;
+  experience?: string | null;
+  education?: string | null;
+  skills?: string | null;
+  notes?: string | null;
+}): boolean {
+  return Boolean(
+    lead.headline?.trim() ||
+    lead.location?.trim() ||
+    lead.about?.trim() ||
+    lead.experience?.trim() ||
+    lead.education?.trim() ||
+    lead.skills?.trim() ||
+    (lead.source === 'linkedin' && lead.notes?.trim())
+  );
+}
+
+async function enqueueLeadProfileCleanup(db: CrmDb, leadId: string): Promise<void> {
+  const now = new Date();
+  await db
+    .insert(schema.leadProfileJobs)
+    .values({ leadId, status: 'pending', nextAttemptAt: now })
+    .onConflictDoUpdate({
+      target: schema.leadProfileJobs.leadId,
+      set: {
+        status: 'pending',
+        nextAttemptAt: now,
+        lockedAt: null,
+        completedAt: null,
+        lastError: null,
+        updatedAt: now,
+      },
+    });
+  await db
+    .update(schema.leads)
+    .set({
+      profileNormalizationStatus: 'pending',
+      updatedAt: now,
+    })
+    .where(eq(schema.leads.id, leadId));
+}
+
+function structuredLeadQualificationInput(
+  lead: typeof schema.leads.$inferSelect
+): ai.LeadQualificationInput {
+  return {
+    firstName: lead.firstName,
+    lastName: lead.lastName,
+    email: lead.email,
+    companyName: lead.companyName,
+    title: lead.headline,
+    status: lead.journeyStage,
+    source: lead.source,
+    profileSummary: lead.profileSummary,
+    education: Array.isArray(lead.educationEntries)
+      ? (lead.educationEntries as ai.NormalizedEducationEntry[])
+      : null,
+    experience: Array.isArray(lead.experienceEntries)
+      ? (lead.experienceEntries as ai.NormalizedExperienceEntry[])
+      : null,
+    skills: Array.isArray(lead.skillNames) ? (lead.skillNames as string[]) : null,
+    notes: [
+      lead.notes,
+      !lead.profileSummary && lead.headline ? `Headline: ${lead.headline}` : null,
+      !lead.profileSummary && lead.location ? `Location: ${lead.location}` : null,
+      !lead.profileSummary && lead.about ? `About: ${lead.about}` : null,
+      !lead.profileSummary && lead.experience ? `Experience: ${lead.experience}` : null,
+      !lead.profileSummary && lead.education ? `Education: ${lead.education}` : null,
+      !lead.profileSummary && lead.skills ? `Skills: ${lead.skills}` : null,
+    ]
+      .filter(Boolean)
+      .join('\n'),
+  };
+}
+
+async function normalizeAndSaveLeadProfile(
+  db: CrmDb,
+  lead: typeof schema.leads.$inferSelect,
+  env: Env
+): Promise<typeof schema.leads.$inferSelect> {
+  if (!hasLeadProfileEvidence(lead)) return lead;
+  const current =
+    lead.profileNormalizationStatus === 'completed' &&
+    lead.profileNormalizationVersion >= PROFILE_NORMALIZATION_VERSION &&
+    (!lead.lastCapturedAt ||
+      (lead.profileNormalizedAt && lead.profileNormalizedAt >= lead.lastCapturedAt));
+  if (current) return lead;
+
+  await db
+    .update(schema.leads)
+    .set({ profileNormalizationStatus: 'processing', updatedAt: new Date() })
+    .where(eq(schema.leads.id, lead.id));
+  const aiEnv = await getConfiguredAiEnv(db, env, lead.ownerId);
+  const normalized = await ai.normalizeLeadProfile(
+    {
+      name: `${lead.firstName} ${lead.lastName}`.trim(),
+      headline: lead.headline,
+      location: lead.location,
+      about: lead.about,
+      experience: lead.experience,
+      education: lead.education,
+      skills: lead.skills,
+      legacyNotes: lead.source === 'linkedin' ? lead.notes : null,
+    },
+    aiEnv
+  );
+  if (!normalized) throw new Error(ai.AI_NOT_CONFIGURED_MSG);
+
+  const now = new Date();
+  const [updated] = await db
+    .update(schema.leads)
+    .set({
+      profileSummary: normalized.summary,
+      educationEntries: normalized.education,
+      experienceEntries: normalized.experience,
+      skillNames: normalized.skills,
+      profileNormalizationWarnings: normalized.warnings,
+      profileNormalizationStatus: 'completed',
+      profileNormalizationVersion: PROFILE_NORMALIZATION_VERSION,
+      profileNormalizedAt: now,
+      updatedAt: now,
+    })
+    .where(eq(schema.leads.id, lead.id))
+    .returning();
+  if (!updated) return lead;
+  await publishLeadEvent(db, 'lead.profile_normalized', null, updated);
+  return updated;
+}
+
 function mergeLeadTags(existing: unknown, additions: string[], removals: string[] = []): string[] {
   const remove = new Set(removals.map((tag) => tag.toLowerCase()));
   return normalizeTagNames([
@@ -208,6 +343,9 @@ async function reviewProspect(
   const experience = profileString(profile ?? {}, 'experience');
   const education = profileString(profile ?? {}, 'education');
   const skills = profileString(profile ?? {}, 'skills');
+  const profileEvidence = Boolean(
+    headline || location || about || experience || education || skills || lead.notes
+  );
   const linkedinUrl =
     canonicalizeLinkedinUrl(profileString(profile ?? {}, 'profileUrl')) ?? lead.linkedinUrl;
   const captureReceived = Boolean(profile);
@@ -270,6 +408,8 @@ async function reviewProspect(
       reviewedBy: actorUserId,
       profileCaptureStatus: captureReceived ? 'captured' : lead.profileCaptureStatus,
       lastCapturedAt: captureReceived ? now : lead.lastCapturedAt,
+      profileNormalizationStatus:
+        captureReceived && profileEvidence ? 'pending' : lead.profileNormalizationStatus,
       dataCompleteness: completeness,
       rowVersion: sql`${schema.leads.rowVersion} + 1`,
       journeyStage,
@@ -286,6 +426,9 @@ async function reviewProspect(
     )
     .returning();
   if (!updated) throw new Error('PROSPECT_VERSION_CONFLICT');
+  if (captureReceived && profileEvidence) {
+    await enqueueLeadProfileCleanup(db, lead.id);
+  }
 
   await db
     .delete(schema.prospectReviewClaims)
@@ -341,7 +484,19 @@ async function processProspectImport(
       .set({ status: 'processing', processedRows: 0, updatedAt: new Date() })
       .where(eq(schema.prospectImportJobs.id, jobId));
 
-    const existingByKey = new Map<string, { id: string; workspaceId: string }>();
+    const existingByKey = new Map<
+      string,
+      {
+        id: string;
+        workspaceId: string;
+        headline: string | null;
+        location: string | null;
+        about: string | null;
+        experience: string | null;
+        education: string | null;
+        skills: string | null;
+      }
+    >();
     for (const keyChunk of chunksOf(
       candidates.map((candidate) => candidate.linkedinProfileKey),
       400
@@ -351,6 +506,12 @@ async function processProspectImport(
           id: schema.leads.id,
           workspaceId: schema.leads.workspaceId,
           linkedinProfileKey: schema.leads.linkedinProfileKey,
+          headline: schema.leads.headline,
+          location: schema.leads.location,
+          about: schema.leads.about,
+          experience: schema.leads.experience,
+          education: schema.leads.education,
+          skills: schema.leads.skills,
         })
         .from(schema.leads)
         .where(
@@ -368,10 +529,12 @@ async function processProspectImport(
     const newCandidates = candidates.filter(
       (candidate) => !existingByKey.has(candidate.linkedinProfileKey)
     );
-    const tagNames = await ensureTagDefinitions(
+    const tagNames = await ensureTagDefinitions(db, [batch.name], actorUserId);
+    const needsCaptureTag = await ensureTagDefinitions(
       db,
-      [batch.name, 'needs profile capture'],
-      actorUserId
+      ['needs profile capture'],
+      actorUserId,
+      true
     );
     const leadValues: Array<typeof schema.leads.$inferInsert> = [];
     if (newCandidates.length > 0) {
@@ -390,6 +553,7 @@ async function processProspectImport(
         if (!candidate || rawSequence === undefined) throw new Error('Missing lead sequence.');
         const sequence =
           typeof rawSequence === 'string' ? Number.parseInt(rawSequence, 10) : rawSequence;
+        const hasProfile = hasLeadProfileEvidence({ source: 'linkedin', ...candidate });
         leadValues.push({
           workspaceId: batch.workspaceId,
           leadNumber: formatLeadNumber(sequence),
@@ -399,6 +563,12 @@ async function processProspectImport(
           email: candidate.email,
           phone: candidate.phone,
           companyName: candidate.companyName,
+          headline: candidate.headline,
+          location: candidate.location,
+          about: candidate.about,
+          experience: candidate.experience,
+          education: candidate.education,
+          skills: candidate.skills,
           linkedinUrl: candidate.linkedinUrl,
           linkedinProfileKey: candidate.linkedinProfileKey,
           source: 'linkedin',
@@ -406,12 +576,13 @@ async function processProspectImport(
           journeyStage: 'new',
           outreachStatus: 'not_approached',
           reviewState: 'pending',
-          profileCaptureStatus: 'not_captured',
+          profileCaptureStatus: hasProfile ? 'partial' : 'not_captured',
+          profileNormalizationStatus: hasProfile ? 'pending' : 'not_queued',
           dataCompleteness: calculateLeadCompleteness(candidate),
           notes: candidate.notes,
           sourceSheet: batch.name,
           originalRowNumber: candidate.sourceRow,
-          tags: tagNames,
+          tags: normalizeTagNames([...tagNames, ...(hasProfile ? [] : needsCaptureTag)]),
           ownerId: actorUserId,
           batchId: batch.id,
           idempotencyKey: `prospect-import:${batch.id}:${candidate.linkedinProfileKey}`,
@@ -428,6 +599,12 @@ async function processProspectImport(
         .returning({
           id: schema.leads.id,
           linkedinProfileKey: schema.leads.linkedinProfileKey,
+          headline: schema.leads.headline,
+          location: schema.leads.location,
+          about: schema.leads.about,
+          experience: schema.leads.experience,
+          education: schema.leads.education,
+          skills: schema.leads.skills,
         });
       created.push(...rows);
     }
@@ -448,6 +625,12 @@ async function processProspectImport(
           id: schema.leads.id,
           workspaceId: schema.leads.workspaceId,
           linkedinProfileKey: schema.leads.linkedinProfileKey,
+          headline: schema.leads.headline,
+          location: schema.leads.location,
+          about: schema.leads.about,
+          experience: schema.leads.experience,
+          education: schema.leads.education,
+          skills: schema.leads.skills,
         })
         .from(schema.leads)
         .where(
@@ -460,6 +643,39 @@ async function processProspectImport(
       for (const row of racedRows) {
         if (row.linkedinProfileKey) existingByKey.set(row.linkedinProfileKey, row);
       }
+    }
+
+    const candidateByKey = new Map(
+      candidates.map((candidate) => [candidate.linkedinProfileKey, candidate])
+    );
+    const cleanupLeadIds = new Set<string>();
+    for (const [profileKey, existing] of existingByKey) {
+      const candidate = candidateByKey.get(profileKey);
+      if (!candidate || !hasLeadProfileEvidence({ source: 'linkedin', ...candidate })) continue;
+      const [enriched] = await db
+        .update(schema.leads)
+        .set({
+          headline: existing.headline || candidate.headline,
+          location: existing.location || candidate.location,
+          about: existing.about || candidate.about,
+          experience: existing.experience || candidate.experience,
+          education: existing.education || candidate.education,
+          skills: existing.skills || candidate.skills,
+          profileCaptureStatus: 'partial',
+          profileNormalizationStatus: 'pending',
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.leads.id, existing.id))
+        .returning({ id: schema.leads.id });
+      if (enriched) cleanupLeadIds.add(enriched.id);
+    }
+    for (const candidate of newCandidates) {
+      if (!hasLeadProfileEvidence({ source: 'linkedin', ...candidate })) continue;
+      const leadId = createdByKey.get(candidate.linkedinProfileKey);
+      if (leadId) cleanupLeadIds.add(leadId);
+    }
+    for (const leadId of cleanupLeadIds) {
+      await enqueueLeadProfileCleanup(db, leadId);
     }
     const memberships = candidates
       .map((candidate) => {
@@ -1323,6 +1539,19 @@ app.post('/internal/lead-score-queue/drain', async (c) => {
   return c.json(result);
 });
 
+app.post('/internal/lead-profile-queue/drain', async (c) => {
+  const configuredSecret = c.env.WORKFLOW_RUNNER_SECRET;
+  const authorization = c.req.header('Authorization');
+  if (!configuredSecret || authorization !== `Bearer ${configuredSecret}`) {
+    return c.json({ error: 'Unauthorized.' }, 401);
+  }
+
+  const requestedLimit = Number(c.req.query('limit') ?? 5);
+  const limit = Math.min(5, Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : 5));
+  const db = getDb(c.env, schema) as CrmDb;
+  return c.json(await drainLeadProfileQueue(db, c.env, limit));
+});
+
 app.use('/api/*', requireAuth);
 app.use('/api/admin/*', requireSuperadmin());
 
@@ -1393,6 +1622,7 @@ async function getConfiguredAiEnv(db: CrmDb, env: Env, actorUserId?: string | nu
       // Lead scoring is intentionally pinned to the cheapest Flash route.
       'lead-scorer': DEFAULT_AI_MODELS.cheap,
       'prospect-profile': DEFAULT_AI_MODELS.cheap,
+      'profile-normalizer': DEFAULT_AI_MODELS.cheap,
       'linkedin-connection-writer': DEFAULT_AI_MODELS.cheap,
     }),
     AI_USAGE_RECORDER: async (record) => {
@@ -1442,31 +1672,11 @@ async function generateAndSaveLeadScore(
   lead: typeof schema.leads.$inferSelect,
   env: Env
 ) {
-  const aiEnv = await getConfiguredAiEnv(db, env, lead.ownerId);
+  const normalizedLead = await normalizeAndSaveLeadProfile(db, lead, env);
+  const aiEnv = await getConfiguredAiEnv(db, env, normalizedLead.ownerId);
   if (!ai.isAiConfigured(aiEnv)) return null;
 
-  const assessment = await ai.qualifyLead(
-    {
-      firstName: lead.firstName,
-      lastName: lead.lastName,
-      email: lead.email,
-      companyName: lead.companyName,
-      status: lead.journeyStage,
-      source: lead.source,
-      notes: [
-        lead.notes,
-        lead.headline ? `Headline: ${lead.headline}` : null,
-        lead.location ? `Location: ${lead.location}` : null,
-        lead.about ? `About: ${lead.about}` : null,
-        lead.experience ? `Experience: ${lead.experience}` : null,
-        lead.education ? `Education: ${lead.education}` : null,
-        lead.skills ? `Skills: ${lead.skills}` : null,
-      ]
-        .filter(Boolean)
-        .join('\n'),
-    },
-    aiEnv
-  );
+  const assessment = await ai.qualifyLead(structuredLeadQualificationInput(normalizedLead), aiEnv);
   if (!assessment) return null;
 
   const scoreValues = leadQualificationValues(lead.id, assessment);
@@ -1484,6 +1694,117 @@ async function generateAndSaveLeadScore(
     })
     .returning();
   return saved ?? null;
+}
+
+async function drainLeadProfileQueue(db: CrmDb, env: Env, limit: number) {
+  const now = new Date();
+  await db
+    .update(schema.leadProfileJobs)
+    .set({
+      status: 'failed',
+      lockedAt: null,
+      nextAttemptAt: now,
+      lastError: 'Recovered stale profile cleanup lock.',
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(schema.leadProfileJobs.status, 'processing'),
+        sql`${schema.leadProfileJobs.lockedAt} < now() - interval '30 minutes'`
+      )
+    );
+
+  const jobs = await db
+    .select()
+    .from(schema.leadProfileJobs)
+    .where(
+      and(
+        inArray(schema.leadProfileJobs.status, ['pending', 'failed']),
+        lte(schema.leadProfileJobs.nextAttemptAt, now)
+      )
+    )
+    .orderBy(asc(schema.leadProfileJobs.nextAttemptAt))
+    .limit(limit);
+
+  const result = { claimed: 0, normalized: 0, skipped: 0, failed: 0 };
+  for (const job of jobs) {
+    const [claimed] = await db
+      .update(schema.leadProfileJobs)
+      .set({
+        status: 'processing',
+        attempts: sql`${schema.leadProfileJobs.attempts} + 1`,
+        lockedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(schema.leadProfileJobs.id, job.id),
+          inArray(schema.leadProfileJobs.status, ['pending', 'failed']),
+          lte(schema.leadProfileJobs.nextAttemptAt, now)
+        )
+      )
+      .returning();
+    if (!claimed) continue;
+    result.claimed += 1;
+
+    try {
+      const [lead] = await db
+        .select()
+        .from(schema.leads)
+        .where(and(eq(schema.leads.id, job.leadId), isNull(schema.leads.deletedAt)))
+        .limit(1);
+      if (!lead || !hasLeadProfileEvidence(lead)) {
+        if (lead) {
+          await db
+            .update(schema.leads)
+            .set({ profileNormalizationStatus: 'not_queued', updatedAt: new Date() })
+            .where(eq(schema.leads.id, lead.id));
+        }
+        result.skipped += 1;
+      } else {
+        await normalizeAndSaveLeadProfile(db, lead, env);
+        result.normalized += 1;
+      }
+      await db
+        .update(schema.leadProfileJobs)
+        .set({
+          status: 'completed',
+          completedAt: new Date(),
+          lockedAt: null,
+          lastError: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.leadProfileJobs.id, job.id));
+    } catch (error) {
+      const message = (error instanceof Error ? error.message : 'Unknown cleanup failure').slice(
+        0,
+        1000
+      );
+      const backoffMinutes = Math.min(360, 5 * 2 ** Math.max(0, claimed.attempts - 1));
+      await Promise.all([
+        db
+          .update(schema.leadProfileJobs)
+          .set({
+            status: 'failed',
+            nextAttemptAt: new Date(Date.now() + backoffMinutes * 60_000),
+            lockedAt: null,
+            lastError: message,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.leadProfileJobs.id, job.id)),
+        db
+          .update(schema.leads)
+          .set({
+            profileNormalizationStatus: 'failed',
+            profileNormalizationWarnings: [message],
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.leads.id, job.leadId)),
+      ]);
+      result.failed += 1;
+    }
+  }
+  return result;
 }
 
 async function drainLeadScoreQueue(db: CrmDb, env: Env, limit: number) {
@@ -1615,28 +1936,11 @@ async function generateAndSaveLeadAiAssessment(
   lead: typeof schema.leads.$inferSelect,
   env: Env
 ) {
-  const aiEnv = await getConfiguredAiEnv(db, env, lead.ownerId);
+  const normalizedLead = await normalizeAndSaveLeadProfile(db, lead, env);
+  const aiEnv = await getConfiguredAiEnv(db, env, normalizedLead.ownerId);
   if (!ai.isAiConfigured(aiEnv)) return null;
 
-  const input: ai.LeadQualificationInput = {
-    firstName: lead.firstName,
-    lastName: lead.lastName,
-    email: lead.email,
-    companyName: lead.companyName,
-    status: lead.journeyStage,
-    source: lead.source,
-    notes: [
-      lead.notes,
-      lead.headline ? `Headline: ${lead.headline}` : null,
-      lead.location ? `Location: ${lead.location}` : null,
-      lead.about ? `About: ${lead.about}` : null,
-      lead.experience ? `Experience: ${lead.experience}` : null,
-      lead.education ? `Education: ${lead.education}` : null,
-      lead.skills ? `Skills: ${lead.skills}` : null,
-    ]
-      .filter(Boolean)
-      .join('\n'),
-  };
+  const input = structuredLeadQualificationInput(normalizedLead);
   const [assessment, connectionNote] = await Promise.all([
     ai.qualifyLead(input, aiEnv),
     ai.draftLinkedinConnectionNote(input, aiEnv),
@@ -1911,6 +2215,12 @@ app.post('/api/contacts', async (c) => {
     lastName: body.lastName,
     email: body.email,
     phone: body.phone ?? null,
+    headline: body.headline ?? null,
+    location: body.location ?? null,
+    about: body.about ?? null,
+    experience: body.experience ?? null,
+    education: body.education ?? null,
+    skills: body.skills ?? null,
     title: body.title ?? null,
     companyId: body.companyId ?? null,
     ownerId: caller.userId,
@@ -2735,6 +3045,9 @@ app.post('/api/leads', async (c) => {
 
   const [result] = await db.insert(schema.leads).values(data).returning();
   if (!result) return c.json({ error: 'Internal error' }, 500);
+  if (hasLeadProfileEvidence(result)) {
+    await enqueueLeadProfileCleanup(db, result.id);
+  }
   await withAudit(db, schema.auditLog, {
     actorUserId: caller.userId,
     action: 'create',
@@ -3068,6 +3381,12 @@ app.put('/api/leads/:id', async (c) => {
   if (body.lastName !== undefined) update.lastName = body.lastName;
   if (body.email !== undefined) update.email = body.email;
   if (body.phone !== undefined) update.phone = body.phone;
+  if (body.headline !== undefined) update.headline = body.headline;
+  if (body.location !== undefined) update.location = body.location;
+  if (body.about !== undefined) update.about = body.about;
+  if (body.experience !== undefined) update.experience = body.experience;
+  if (body.education !== undefined) update.education = body.education;
+  if (body.skills !== undefined) update.skills = body.skills;
   if (body.companyName !== undefined) update.companyName = body.companyName;
   if (body.companyDomain !== undefined) update.companyDomain = body.companyDomain;
   if (body.linkedinUrl !== undefined) update.linkedinUrl = body.linkedinUrl;
@@ -3139,6 +3458,15 @@ app.put('/api/leads/:id', async (c) => {
     .set(update)
     .where(eq(schema.leads.id, id))
     .returning();
+  if (
+    result &&
+    ['headline', 'location', 'about', 'experience', 'education', 'skills'].some(
+      (field) => body[field] !== undefined
+    ) &&
+    hasLeadProfileEvidence(result)
+  ) {
+    await enqueueLeadProfileCleanup(db, result.id);
+  }
   if (!result) return c.json({ error: 'Internal error' }, 500);
   await withAudit(db, schema.auditLog, {
     actorUserId: caller.userId,
@@ -5176,6 +5504,12 @@ app.post('/api/import/leads', async (c) => {
         phone: row.phone ?? null,
         companyName: row.companyName ?? null,
         companyDomain: row.companyDomain ?? null,
+        headline: row.headline ?? row.title ?? null,
+        location: row.location ?? null,
+        about: row.about ?? null,
+        experience: row.experience ?? null,
+        education: row.education ?? null,
+        skills: row.skills ?? null,
         linkedinUrl: importLinkedInUrl,
         linkedinProfileKey: linkedinProfileKey(importLinkedInUrl),
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -5196,6 +5530,9 @@ app.post('/api/import/leads', async (c) => {
       .returning();
     if (!result) return c.json({ error: 'Internal error' }, 500);
     created.push(result);
+    if (hasLeadProfileEvidence(result)) {
+      await enqueueLeadProfileCleanup(db, result.id);
+    }
 
     // Future leads intentionally have no outreach channels until activated.
     if (result.journeyStage !== 'future') {

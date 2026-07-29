@@ -35,6 +35,9 @@ import {
   Check,
   LoaderCircle,
   Save,
+  GraduationCap,
+  Briefcase,
+  MapPin,
 } from 'lucide-react';
 import { cn } from '../lib/utils.js';
 import { useEffect, useState } from 'react';
@@ -676,6 +679,142 @@ export default function LeadDetail() {
               </div>
             )}
           </div>
+
+          {(lead.profileSummary ||
+            (Array.isArray(lead.educationEntries) && lead.educationEntries.length > 0) ||
+            (Array.isArray(lead.experienceEntries) && lead.experienceEntries.length > 0) ||
+            (Array.isArray(lead.skillNames) && lead.skillNames.length > 0) ||
+            ['pending', 'processing', 'failed'].includes(lead.profileNormalizationStatus)) && (
+            <section className="mt-6 border-t border-slate-100 pt-6">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                <h2 className="flex items-center gap-2 text-base font-semibold text-slate-900">
+                  <Sparkles size={18} className="text-violet-600" />
+                  Clean profile
+                </h2>
+                {['pending', 'processing'].includes(lead.profileNormalizationStatus) && (
+                  <span className="flex items-center gap-1.5 rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700">
+                    <LoaderCircle size={13} className="animate-spin" />
+                    Cleaning captured profile
+                  </span>
+                )}
+                {lead.profileNormalizationStatus === 'failed' && (
+                  <span className="flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700">
+                    <AlertTriangle size={13} />
+                    Cleanup will retry
+                  </span>
+                )}
+              </div>
+
+              {lead.profileSummary && (
+                <div className="mb-5 rounded-lg border border-slate-200 bg-slate-50/60 p-4">
+                  <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                    Summary
+                  </h3>
+                  <p className="text-sm leading-relaxed text-slate-700">{lead.profileSummary}</p>
+                  {(lead.headline || lead.location) && (
+                    <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
+                      {lead.headline && <span>{lead.headline}</span>}
+                      {lead.location && (
+                        <span className="flex items-center gap-1">
+                          <MapPin size={12} /> {lead.location}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
+                {Array.isArray(lead.educationEntries) && lead.educationEntries.length > 0 && (
+                  <div>
+                    <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-800">
+                      <GraduationCap size={16} className="text-blue-600" />
+                      Education
+                    </h3>
+                    <div className="space-y-2">
+                      {lead.educationEntries.map((entry, index) => (
+                        <div
+                          key={`${entry.institution}-${index}`}
+                          className="rounded-lg border border-slate-200 p-3"
+                        >
+                          <div className="text-sm font-semibold text-slate-800">
+                            {entry.institution}
+                          </div>
+                          {(entry.degree || entry.fieldOfStudy) && (
+                            <div className="mt-0.5 text-sm text-slate-600">
+                              {[entry.degree, entry.fieldOfStudy].filter(Boolean).join(' · ')}
+                            </div>
+                          )}
+                          {(entry.startDate || entry.endDate) && (
+                            <div className="mt-1 text-xs text-slate-400">
+                              {[entry.startDate, entry.endDate].filter(Boolean).join(' – ')}
+                            </div>
+                          )}
+                          {entry.description && (
+                            <p className="mt-2 text-xs leading-relaxed text-slate-600">
+                              {entry.description}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {Array.isArray(lead.experienceEntries) && lead.experienceEntries.length > 0 && (
+                  <div>
+                    <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-800">
+                      <Briefcase size={16} className="text-emerald-600" />
+                      Experience
+                    </h3>
+                    <div className="space-y-2">
+                      {lead.experienceEntries.map((entry, index) => (
+                        <div
+                          key={`${entry.title}-${entry.organization ?? ''}-${index}`}
+                          className="rounded-lg border border-slate-200 p-3"
+                        >
+                          <div className="text-sm font-semibold text-slate-800">{entry.title}</div>
+                          {entry.organization && (
+                            <div className="mt-0.5 text-sm text-slate-600">
+                              {entry.organization}
+                            </div>
+                          )}
+                          {(entry.startDate || entry.endDate || entry.isCurrent) && (
+                            <div className="mt-1 text-xs text-slate-400">
+                              {[entry.startDate, entry.isCurrent ? 'Present' : entry.endDate]
+                                .filter(Boolean)
+                                .join(' – ')}
+                            </div>
+                          )}
+                          {entry.description && (
+                            <p className="mt-2 text-xs leading-relaxed text-slate-600">
+                              {entry.description}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {Array.isArray(lead.skillNames) && lead.skillNames.length > 0 && (
+                <div className="mt-5">
+                  <h3 className="mb-2 text-sm font-semibold text-slate-800">Skills</h3>
+                  <div className="flex flex-wrap gap-1.5">
+                    {lead.skillNames.map((skill) => (
+                      <span
+                        key={skill}
+                        className="rounded-full border border-blue-100 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700"
+                      >
+                        {skill}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </section>
+          )}
 
           {/* Tags (inline above notes) */}
           {lead.tags && lead.tags.length > 0 && (

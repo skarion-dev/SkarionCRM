@@ -32,6 +32,26 @@ describe('prospect ingestion', () => {
     );
   });
 
+  it('preserves rich captured profile fields for cleanup', () => {
+    const result = normalizeProspectCsvRecord(
+      {
+        Name: 'Grace Hopper',
+        LinkedIn: 'https://www.linkedin.com/in/grace-hopper',
+        Summary: 'Computer scientist and naval officer.',
+        Education: 'Yale University — PhD Mathematics',
+        Experience: 'Rear Admiral — U.S. Navy',
+        Skills: 'Compilers, COBOL',
+      },
+      4
+    );
+    expect(result.row).toMatchObject({
+      about: 'Computer scientist and naval officer.',
+      education: 'Yale University — PhD Mathematics',
+      experience: 'Rear Admiral — U.S. Navy',
+      skills: 'Compilers, COBOL',
+    });
+  });
+
   it('rejects non-LinkedIn URLs', () => {
     expect(normalizeProspectCsvRecord({ url: 'https://example.com/person' }, 3).error).toContain(
       'LinkedIn'

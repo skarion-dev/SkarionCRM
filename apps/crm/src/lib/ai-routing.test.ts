@@ -8,6 +8,7 @@ describe('AI model routing', () => {
     expect(AI_AGENTS.find((agent) => agent.id === 'next-best-action')?.tier).toBe('cheap');
     expect(AI_AGENTS.find((agent) => agent.id === 'document-ocr')?.tier).toBe('cheap');
     expect(AI_AGENTS.find((agent) => agent.id === 'outreach-writer')?.tier).toBe('cheap');
+    expect(AI_AGENTS.find((agent) => agent.id === 'profile-normalizer')?.tier).toBe('cheap');
   });
 
   it('reserves the reasoning tier for executive analysis', () => {

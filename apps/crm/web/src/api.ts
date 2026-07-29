@@ -444,6 +444,25 @@ export type OutreachStatus =
   | 'not_interested'
   | 'bad_fit';
 
+export interface LeadEducationEntry {
+  institution: string;
+  degree: string | null;
+  fieldOfStudy: string | null;
+  startDate: string | null;
+  endDate: string | null;
+  description: string | null;
+}
+
+export interface LeadExperienceEntry {
+  title: string;
+  organization: string | null;
+  location: string | null;
+  startDate: string | null;
+  endDate: string | null;
+  isCurrent: boolean;
+  description: string | null;
+}
+
 export interface Lead {
   id: string;
   workspaceId: string;
@@ -457,6 +476,14 @@ export interface Lead {
   experience: string | null;
   education: string | null;
   skills: string | null;
+  profileSummary: string | null;
+  educationEntries: LeadEducationEntry[] | null;
+  experienceEntries: LeadExperienceEntry[] | null;
+  skillNames: string[] | null;
+  profileNormalizationStatus: 'not_queued' | 'pending' | 'processing' | 'completed' | 'failed';
+  profileNormalizationVersion: number;
+  profileNormalizationWarnings: string[] | null;
+  profileNormalizedAt: string | null;
   companyName: string | null;
   companyDomain: string | null;
   linkedinUrl: string | null;

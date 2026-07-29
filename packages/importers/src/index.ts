@@ -34,6 +34,12 @@ export interface LeadImportRow {
   companyDomain?: string;
   linkedinUrl?: string;
   title?: string;
+  headline?: string;
+  location?: string;
+  about?: string;
+  experience?: string;
+  education?: string;
+  skills?: string;
   source?: string;
   status?: string;
   notes?: string;
@@ -401,9 +407,18 @@ export function parseLeadsCsv(csvText: string): ImportResult<LeadImportRow> {
 
     // Build notes from available fields
     const allNotes = notes;
-    const headline = findColumn(row, ['headline', 'head line', 'summary', 'about']);
+    const headline = findColumn(row, ['headline', 'head line']);
     const location = findColumn(row, ['location', 'city', 'country']);
     const education = findColumn(row, ['education', 'school', 'university', 'degree']);
+    const about = findColumn(row, ['about', 'summary', 'bio']);
+    const experience = findColumn(row, [
+      'experience',
+      'workexperience',
+      'work experience',
+      'employment',
+      'workhistory',
+    ]);
+    const skills = findColumn(row, ['skills', 'skillset', 'skill set', 'topskills']);
     const industry = findColumn(row, ['industry', 'sector']);
     const profileUrl = findColumn(row, [
       'profileurl',
@@ -418,6 +433,9 @@ export function parseLeadsCsv(csvText: string): ImportResult<LeadImportRow> {
     if (headline) noteParts.push(`Headline: ${headline}`);
     if (location) noteParts.push(`Location: ${location}`);
     if (education) noteParts.push(`Education: ${education}`);
+    if (about) noteParts.push(`About: ${about}`);
+    if (experience) noteParts.push(`Experience: ${experience}`);
+    if (skills) noteParts.push(`Skills: ${skills}`);
     if (industry) noteParts.push(`Industry: ${industry}`);
     if (profileUrl) noteParts.push(`Profile: ${profileUrl}`);
     if (score) noteParts.push(`Score: ${score}`);
@@ -437,7 +455,14 @@ export function parseLeadsCsv(csvText: string): ImportResult<LeadImportRow> {
         findColumn(row, ['companydomain', 'company domain', 'domain', 'website']) || undefined,
       linkedinUrl: linkedinUrl || undefined,
       title,
+      headline: headline || title,
+      location,
+      about,
+      experience,
+      education,
+      skills,
       source: [
+        'linkedin',
         'website',
         'referral',
         'social_media',

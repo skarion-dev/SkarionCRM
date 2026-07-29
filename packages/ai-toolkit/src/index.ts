@@ -190,6 +190,7 @@ export type AiAgentId =
   | 'reporting-ceo'
   | 'lead-intake'
   | 'prospect-profile'
+  | 'profile-normalizer'
   | 'document-ocr'
   | 'linkedin-connection-writer'
   | 'outreach-writer'
@@ -231,6 +232,13 @@ export const AI_AGENTS: ReadonlyArray<{
     name: 'Prospect Profile Agent',
     description:
       'Normalizes extension captures, measures profile completeness, and prepares accepted prospects for scoring.',
+    tier: 'cheap',
+  },
+  {
+    id: 'profile-normalizer',
+    name: 'Profile Cleanup Agent',
+    description:
+      'Converts raw LinkedIn summaries, education, experience, and skills into clean structured CRM data.',
     tier: 'cheap',
   },
   {

@@ -82,6 +82,14 @@ export const profileCaptureStatusEnum = crmSchema.enum('profile_capture_status',
   'failed',
 ]);
 
+export const profileNormalizationStatusEnum = crmSchema.enum('profile_normalization_status', [
+  'not_queued',
+  'pending',
+  'processing',
+  'completed',
+  'failed',
+]);
+
 export const opportunityStageEnum = crmSchema.enum('opportunity_stage', [
   'prospecting',
   'qualification',
@@ -275,6 +283,16 @@ export const leads = crmSchema.table(
     experience: text('experience'),
     education: text('education'),
     skills: text('skills'),
+    profileSummary: text('profile_summary'),
+    educationEntries: jsonb('education_entries'),
+    experienceEntries: jsonb('experience_entries'),
+    skillNames: jsonb('skill_names'),
+    profileNormalizationStatus: profileNormalizationStatusEnum('profile_normalization_status')
+      .default('not_queued')
+      .notNull(),
+    profileNormalizationVersion: integer('profile_normalization_version').default(0).notNull(),
+    profileNormalizationWarnings: jsonb('profile_normalization_warnings'),
+    profileNormalizedAt: timestamp('profile_normalized_at', { withTimezone: true }),
     companyName: text('company_name'),
     companyDomain: text('company_domain'),
     linkedinUrl: text('linkedin_url'),
@@ -323,6 +341,7 @@ export const leads = crmSchema.table(
     index('idx_leads_lead_sequence').on(table.leadSequence),
     index('idx_leads_review_queue').on(table.workspaceId, table.reviewState, table.createdAt),
     index('idx_leads_capture_status').on(table.profileCaptureStatus),
+    index('idx_leads_profile_normalization').on(table.profileNormalizationStatus),
     index('idx_leads_batch').on(table.batchId),
     // Replaces the old plain idx_leads_linkedin index — this one is unique so
     // the database itself rejects a second lead for the same canonical URL
@@ -496,6 +515,27 @@ export const leadScoreJobs = crmSchema.table(
   (table) => [
     uniqueIndex('idx_lead_score_jobs_lead').on(table.leadId),
     index('idx_lead_score_jobs_queue').on(table.status, table.nextAttemptAt),
+  ]
+);
+
+export const leadProfileJobs = crmSchema.table(
+  'lead_profile_jobs',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    leadId: uuid('lead_id')
+      .notNull()
+      .references(() => leads.id, { onDelete: 'cascade' }),
+    status: text('status').default('pending').notNull(),
+    attempts: integer('attempts').default(0).notNull(),
+    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).defaultNow().notNull(),
+    lockedAt: timestamp('locked_at', { withTimezone: true }),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    lastError: text('last_error'),
+    ...timestamps(),
+  },
+  (table) => [
+    uniqueIndex('idx_lead_profile_jobs_lead').on(table.leadId),
+    index('idx_lead_profile_jobs_queue').on(table.status, table.nextAttemptAt),
   ]
 );
 

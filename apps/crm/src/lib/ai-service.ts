@@ -1022,6 +1022,185 @@ Return ONE clear, actionable next step (e.g., "Send a follow-up email about X", 
   });
 }
 
+// ── LinkedIn profile cleanup ────────────────────────────────────────────────
+
+export interface NormalizedEducationEntry {
+  institution: string;
+  degree: string | null;
+  fieldOfStudy: string | null;
+  startDate: string | null;
+  endDate: string | null;
+  description: string | null;
+}
+
+export interface NormalizedExperienceEntry {
+  title: string;
+  organization: string | null;
+  location: string | null;
+  startDate: string | null;
+  endDate: string | null;
+  isCurrent: boolean;
+  description: string | null;
+}
+
+export interface NormalizedLeadProfile {
+  summary: string;
+  education: NormalizedEducationEntry[];
+  experience: NormalizedExperienceEntry[];
+  skills: string[];
+  confidence: 'high' | 'medium' | 'low';
+  warnings: string[];
+}
+
+export interface LeadProfileNormalizationInput {
+  name: string;
+  headline: string | null;
+  location: string | null;
+  about: string | null;
+  education: string | null;
+  experience: string | null;
+  skills: string | null;
+  legacyNotes?: string | null;
+}
+
+function cleanAiText(value: unknown, maxLength: number): string | null {
+  if (typeof value !== 'string') return null;
+  const cleaned = value.trim().replace(/\s+/g, ' ');
+  return cleaned ? cleaned.slice(0, maxLength) : null;
+}
+
+export function sanitizeNormalizedLeadProfile(value: unknown): NormalizedLeadProfile | null {
+  if (!value || typeof value !== 'object') return null;
+  const input = value as Record<string, unknown>;
+  const summary = cleanAiText(input.summary, 1600);
+  if (!summary) return null;
+
+  const education = (Array.isArray(input.education) ? input.education : [])
+    .slice(0, 20)
+    .map((entry) => {
+      const row = entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : {};
+      const institution = cleanAiText(row.institution, 240);
+      return institution
+        ? {
+            institution,
+            degree: cleanAiText(row.degree, 240),
+            fieldOfStudy: cleanAiText(row.fieldOfStudy, 240),
+            startDate: cleanAiText(row.startDate, 80),
+            endDate: cleanAiText(row.endDate, 80),
+            description: cleanAiText(row.description, 1200),
+          }
+        : null;
+    })
+    .filter((entry): entry is NormalizedEducationEntry => Boolean(entry));
+
+  const experience = (Array.isArray(input.experience) ? input.experience : [])
+    .slice(0, 30)
+    .map((entry) => {
+      const row = entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : {};
+      const title = cleanAiText(row.title, 240);
+      return title
+        ? {
+            title,
+            organization: cleanAiText(row.organization, 240),
+            location: cleanAiText(row.location, 240),
+            startDate: cleanAiText(row.startDate, 80),
+            endDate: cleanAiText(row.endDate, 80),
+            isCurrent: row.isCurrent === true,
+            description: cleanAiText(row.description, 1600),
+          }
+        : null;
+    })
+    .filter((entry): entry is NormalizedExperienceEntry => Boolean(entry));
+
+  const cleanedSkills = (Array.isArray(input.skills) ? input.skills : [])
+    .map((skill) => cleanAiText(skill, 120))
+    .filter((skill): skill is string => Boolean(skill));
+  const skills = cleanedSkills
+    .filter(
+      (skill, index) =>
+        cleanedSkills.findIndex((candidate) => candidate.toLowerCase() === skill.toLowerCase()) ===
+        index
+    )
+    .slice(0, 80);
+  const warnings = (Array.isArray(input.warnings) ? input.warnings : [])
+    .map((warning) => cleanAiText(warning, 300))
+    .filter((warning): warning is string => Boolean(warning))
+    .slice(0, 20);
+  const confidence =
+    input.confidence === 'high' || input.confidence === 'medium' ? input.confidence : 'low';
+
+  return { summary, education, experience, skills, confidence, warnings };
+}
+
+export async function normalizeLeadProfile(
+  profile: LeadProfileNormalizationInput,
+  env: Env
+): Promise<NormalizedLeadProfile | null> {
+  if (!isAiConfigured(env)) return null;
+
+  const prompt = `You are Skarion's Profile Cleanup Agent. Convert a noisy
+LinkedIn capture into clean, factual CRM data.
+
+RULES
+- Use only the supplied text. Never infer or invent employers, schools,
+  credentials, dates, locations, skills, graduation status, nationality, visa
+  status, or job-search intent.
+- Remove duplicated UI labels, follower/connection counts, navigation text,
+  and repeated lines.
+- The summary must be 2-4 concise sentences describing current focus, relevant
+  background, and notable skills using neutral language.
+- Preserve partial dates exactly when full dates are unavailable.
+- Put each distinct school and role in its own record.
+- Skills must be specific, deduplicated names rather than sentences.
+- Add a warning when text is ambiguous or a record cannot be separated
+  confidently. Empty arrays are valid.
+
+PROFILE
+Name: ${profile.name}
+${profile.headline ? `Headline: ${profile.headline.substring(0, 1000)}` : ''}
+${profile.location ? `Location: ${profile.location.substring(0, 500)}` : ''}
+${profile.about ? `About:\n${profile.about.substring(0, 6000)}` : ''}
+${profile.experience ? `Experience:\n${profile.experience.substring(0, 12000)}` : ''}
+${profile.education ? `Education:\n${profile.education.substring(0, 8000)}` : ''}
+${profile.skills ? `Skills:\n${profile.skills.substring(0, 6000)}` : ''}
+${profile.legacyNotes ? `Legacy captured notes:\n${profile.legacyNotes.substring(0, 6000)}` : ''}
+
+Return ONLY valid JSON:
+{
+  "summary": "",
+  "education": [
+    {
+      "institution": "",
+      "degree": null,
+      "fieldOfStudy": null,
+      "startDate": null,
+      "endDate": null,
+      "description": null
+    }
+  ],
+  "experience": [
+    {
+      "title": "",
+      "organization": null,
+      "location": null,
+      "startDate": null,
+      "endDate": null,
+      "isCurrent": false,
+      "description": null
+    }
+  ],
+  "skills": [],
+  "confidence": "high | medium | low",
+  "warnings": []
+}`;
+
+  const result = await extractStructured<unknown>(prompt, env, {
+    agent: 'profile-normalizer',
+    tier: 'cheap',
+  });
+  return sanitizeNormalizedLeadProfile(result);
+}
+
 // ── Lead qualification and LinkedIn connection notes ───────────────────────
 
 export interface LeadQualificationInput {
@@ -1033,6 +1212,10 @@ export interface LeadQualificationInput {
   status: string;
   source: string;
   notes: string | null;
+  profileSummary?: string | null;
+  education?: NormalizedEducationEntry[] | null;
+  experience?: NormalizedExperienceEntry[] | null;
+  skills?: string[] | null;
 }
 
 export interface LeadQualificationAssessment {
@@ -1169,6 +1352,10 @@ ${lead.companyName ? `Company: ${lead.companyName}` : ''}
 ${lead.title ? `Title: ${lead.title}` : ''}
 Status: ${lead.status}
 Source: ${lead.source}
+${lead.profileSummary ? `Clean profile summary: ${lead.profileSummary}` : ''}
+${lead.education?.length ? `Education records:\n${JSON.stringify(lead.education).substring(0, 8000)}` : ''}
+${lead.experience?.length ? `Experience records:\n${JSON.stringify(lead.experience).substring(0, 12000)}` : ''}
+${lead.skills?.length ? `Verified skills: ${lead.skills.join(', ').substring(0, 4000)}` : ''}
 ${lead.notes ? `Profile and conversation evidence:\n${lead.notes.substring(0, 18000)}` : 'No profile or conversation evidence supplied.'}
 
 Return ONLY valid JSON:
@@ -1301,6 +1488,10 @@ Name: ${lead.firstName} ${lead.lastName}
 ${lead.companyName ? `Company: ${lead.companyName}` : ''}
 ${lead.title ? `Title: ${lead.title}` : ''}
 Source: ${lead.source}
+${lead.profileSummary ? `Clean profile summary: ${lead.profileSummary}` : ''}
+${lead.education?.length ? `Education records: ${JSON.stringify(lead.education).substring(0, 5000)}` : ''}
+${lead.experience?.length ? `Experience records: ${JSON.stringify(lead.experience).substring(0, 7000)}` : ''}
+${lead.skills?.length ? `Verified skills: ${lead.skills.join(', ').substring(0, 2500)}` : ''}
 ${lead.notes ? lead.notes.substring(0, 12000) : 'No additional profile evidence supplied.'}`;
 
   const note = await chatCompletionSingle(prompt, env, {

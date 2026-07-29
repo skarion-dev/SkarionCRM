@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { cosineSimilarity, normalizeLinkedinConnectionNote } from './ai-service.js';
+import {
+  cosineSimilarity,
+  normalizeLinkedinConnectionNote,
+  sanitizeNormalizedLeadProfile,
+} from './ai-service.js';
 
 describe('LinkedIn connection note normalization', () => {
   it('removes formatting and makes the note one paste-ready paragraph', () => {
@@ -14,6 +18,43 @@ describe('LinkedIn connection note normalization', () => {
     const note = normalizeLinkedinConnectionNote(`Hi Sam, ${'fiber design '.repeat(40)}🚀`);
     expect([...note].length).toBeLessThanOrEqual(300);
     expect(note.endsWith('...')).toBe(true);
+  });
+});
+
+describe('profile normalization sanitization', () => {
+  it('keeps factual structured profile data and removes duplicate skills', () => {
+    expect(
+      sanitizeNormalizedLeadProfile({
+        summary: '  Electrical engineer focused on power systems.  ',
+        education: [
+          {
+            institution: 'State University',
+            degree: 'BSEE',
+            fieldOfStudy: 'Electrical Engineering',
+            startDate: '2021',
+            endDate: '2025',
+          },
+        ],
+        experience: [
+          {
+            title: 'Engineering Intern',
+            organization: 'Grid Co',
+            isCurrent: false,
+          },
+        ],
+        skills: ['AutoCAD', 'autocad', 'Power Systems'],
+        confidence: 'high',
+        warnings: [],
+      })
+    ).toMatchObject({
+      summary: 'Electrical engineer focused on power systems.',
+      skills: ['AutoCAD', 'Power Systems'],
+      confidence: 'high',
+    });
+  });
+
+  it('rejects a response without a usable summary', () => {
+    expect(sanitizeNormalizedLeadProfile({ education: [], skills: [] })).toBeNull();
   });
 });
 
