@@ -406,6 +406,7 @@ export interface Contact {
 }
 
 export type LeadJourneyStage =
+  | 'future'
   | 'new'
   | 'ready_to_reach_out'
   | 'connection_sent'

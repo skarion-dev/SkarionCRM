@@ -1,4 +1,5 @@
 export const LEAD_JOURNEY_STAGES = [
+  'future',
   'new',
   'ready_to_reach_out',
   'connection_sent',
@@ -18,22 +19,38 @@ export const LEAD_JOURNEY_STAGES = [
 export type LeadJourneyStage = (typeof LEAD_JOURNEY_STAGES)[number];
 
 const ACTIVE_STAGE_RANK: Partial<Record<LeadJourneyStage, number>> = {
-  new: 0,
-  ready_to_reach_out: 1,
-  connection_sent: 2,
-  connected: 3,
-  engaged: 4,
-  qualified: 5,
-  meeting_booked: 6,
-  opportunity: 7,
-  follow_up: 8,
-  converted: 9,
+  future: 0,
+  new: 1,
+  ready_to_reach_out: 2,
+  connection_sent: 3,
+  connected: 4,
+  engaged: 5,
+  qualified: 6,
+  meeting_booked: 7,
+  opportunity: 8,
+  follow_up: 9,
+  converted: 10,
 };
 
 const MANUAL_SIDE_STAGES = new Set<LeadJourneyStage>(['nurture', 'disqualified', 'lost']);
+const ACTIVATION_STAGES = new Set<LeadJourneyStage>([
+  'new',
+  'ready_to_reach_out',
+  'connection_sent',
+  'connected',
+  'engaged',
+  'qualified',
+  'meeting_booked',
+  'opportunity',
+  'follow_up',
+]);
 
 export function isLeadJourneyStage(value: unknown): value is LeadJourneyStage {
   return typeof value === 'string' && (LEAD_JOURNEY_STAGES as readonly string[]).includes(value);
+}
+
+export function isLeadActivationStage(stage: LeadJourneyStage): boolean {
+  return ACTIVATION_STAGES.has(stage);
 }
 
 export function journeyStageFromLegacy(input: {
@@ -97,7 +114,7 @@ export function mergeJourneyWithChannelStages(
     .filter((stage): stage is LeadJourneyStage => Boolean(stage));
   const activeChannelStages = channelJourneyStages.filter((stage) => stage !== 'no_response');
   if (activeChannelStages.length === 0) {
-    return channelJourneyStages.length > 0 && (ACTIVE_STAGE_RANK[current] ?? 0) < 4
+    return channelJourneyStages.length > 0 && (ACTIVE_STAGE_RANK[current] ?? 0) < 5
       ? 'no_response'
       : current;
   }
@@ -143,6 +160,20 @@ export function normalizeTagNames(values: unknown): string[] {
     .map((value) => value.trim().replace(/\s+/g, ' '))
     .filter((value) => value.length > 0 && value.length <= 60);
   return [...new Map(tags.map((tag) => [tag.toLowerCase(), tag])).values()];
+}
+
+export function hasLeadTag(values: unknown, expectedTag: string): boolean {
+  const expected = expectedTag.trim().toLowerCase();
+  return normalizeTagNames(values).some((tag) => tag.toLowerCase() === expected);
+}
+
+export function journeyStageForTags(stage: LeadJourneyStage, tags: unknown): LeadJourneyStage {
+  return hasLeadTag(tags, 'future') ? 'future' : stage;
+}
+
+export function syncFutureTagForJourney(values: unknown, stage: LeadJourneyStage): string[] {
+  const withoutFuture = normalizeTagNames(values).filter((tag) => tag.toLowerCase() !== 'future');
+  return stage === 'future' ? normalizeTagNames([...withoutFuture, 'Future']) : withoutFuture;
 }
 
 export function tagSlug(name: string): string {

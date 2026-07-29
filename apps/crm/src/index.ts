@@ -88,12 +88,16 @@ import {
 } from './lib/ceo-reporting.js';
 import {
   formatBatchTag,
+  hasLeadTag,
+  isLeadActivationStage,
   isLeadJourneyStage,
+  journeyStageForTags,
   journeyStageFromLegacy,
   LEAD_JOURNEY_STAGES,
   legacyFieldsForJourney,
   mergeJourneyWithChannelStages,
   normalizeTagNames,
+  syncFutureTagForJourney,
   tagSlug,
   type LeadJourneyStage,
 } from './lib/leadJourney.js';
@@ -188,7 +192,7 @@ async function reviewProspect(
   const now = new Date();
   const accepted = disposition !== 'disqualified';
   const journeyStage: LeadJourneyStage =
-    disposition === 'disqualified' ? 'disqualified' : disposition === 'future' ? 'nurture' : 'new';
+    disposition === 'disqualified' ? 'disqualified' : disposition === 'future' ? 'future' : 'new';
   const legacy = legacyFieldsForJourney(journeyStage);
   const profileName = profileString(profile ?? {}, 'name');
   const name = profileName ? deriveProspectName(profileName, lead.linkedinUrl ?? '') : null;
@@ -212,7 +216,14 @@ async function reviewProspect(
     mergeLeadTags(
       lead.tags,
       [dispositionTag(disposition)],
-      captureReceived ? ['needs profile capture'] : []
+      [
+        'Excellent Fit',
+        'Worth Trying',
+        'Maybe',
+        'Future',
+        'Disqualified',
+        ...(captureReceived ? ['needs profile capture'] : []),
+      ]
     ),
     actorUserId
   );
@@ -285,6 +296,15 @@ async function reviewProspect(
       .values({ leadId: lead.id })
       .onConflictDoNothing({ target: schema.leadScoreJobs.leadId });
     await autoCreateLeadChannels(db, updated);
+  } else if (disposition === 'future') {
+    await db
+      .delete(schema.leadScoreJobs)
+      .where(
+        and(
+          eq(schema.leadScoreJobs.leadId, lead.id),
+          inArray(schema.leadScoreJobs.status, ['pending', 'failed'])
+        )
+      );
   }
   await withAudit(db, schema.auditLog, {
     actorUserId,
@@ -1067,13 +1087,14 @@ app.post('/extension/leads', async (c) => {
     );
   }
 
-  const extensionJourneyStage = journeyStageFromLegacy({
+  const extensionBaseJourneyStage = journeyStageFromLegacy({
     status: typeof body.status === 'string' ? body.status : 'new',
     outreachStatus:
       typeof body.outreachStatus === 'string' ? body.outreachStatus : 'not_approached',
   });
-  const extensionLegacy = legacyFieldsForJourney(extensionJourneyStage);
   const extensionTags = await ensureTagDefinitions(db, body.tags, ownerId);
+  const extensionJourneyStage = journeyStageForTags(extensionBaseJourneyStage, extensionTags);
+  const extensionLegacy = legacyFieldsForJourney(extensionJourneyStage);
   const extensionIdentity = await nextLeadIdentity(db);
   const data = {
     ...extensionIdentity,
@@ -1147,7 +1168,9 @@ app.post('/extension/leads', async (c) => {
 
   // Keep lead_channels in step with the lead — the Leads UI derives its
   // outreach tabs from these rows.
-  c.executionCtx.waitUntil(autoCreateLeadChannels(db, result).catch(() => {}));
+  if (result.journeyStage !== 'future') {
+    c.executionCtx.waitUntil(autoCreateLeadChannels(db, result).catch(() => {}));
+  }
 
   let aiAssessment = null;
   if (shouldAutoGenerateLinkedinConnectionNote(result)) {
@@ -2660,14 +2683,15 @@ app.post('/api/leads', async (c) => {
   }
 
   const body = await c.req.json();
-  const journeyStage = isLeadJourneyStage(body.journeyStage)
+  const requestedTags = normalizeTagNames(body.tags);
+  const baseJourneyStage = isLeadJourneyStage(body.journeyStage)
     ? body.journeyStage
     : journeyStageFromLegacy({
         status: body.status,
         outreachStatus: body.outreachStatus,
       });
+  const journeyStage = journeyStageForTags(baseJourneyStage, requestedTags);
   const legacy = legacyFieldsForJourney(journeyStage);
-  const requestedTags = normalizeTagNames(body.tags);
   if (!isSuperadmin && role !== 'manager') {
     const unknownTags = await unknownTagNames(db, requestedTags);
     if (unknownTags.length > 0) {
@@ -2721,16 +2745,20 @@ app.post('/api/leads', async (c) => {
   });
 
   // Auto-create lead_channels rows for the standard channels present on the lead
-  c.executionCtx.waitUntil(autoCreateLeadChannels(db, result).catch(() => {}));
+  if (result.journeyStage !== 'future') {
+    c.executionCtx.waitUntil(autoCreateLeadChannels(db, result).catch(() => {}));
+  }
 
   // Trigger workflow event for lead_created rules
-  c.executionCtx.waitUntil(
-    triggerWorkflowEvent(c.env, 'lead_created', {
-      id: result.id,
-      source: result.source,
-      ownerId: result.ownerId,
-    })
-  );
+  if (result.journeyStage !== 'future') {
+    c.executionCtx.waitUntil(
+      triggerWorkflowEvent(c.env, 'lead_created', {
+        id: result.id,
+        source: result.source,
+        ownerId: result.ownerId,
+      })
+    );
+  }
 
   // Basic email stub — will be wired to Resend in a future ticket
   if (result.email) {
@@ -3035,6 +3063,7 @@ app.put('/api/leads/:id', async (c) => {
 
   const body = await c.req.json();
   const update: Record<string, unknown> = {};
+  let updatedTags: string[] | undefined;
   if (body.firstName !== undefined) update.firstName = body.firstName;
   if (body.lastName !== undefined) update.lastName = body.lastName;
   if (body.email !== undefined) update.email = body.email;
@@ -3053,6 +3082,7 @@ app.put('/api/leads/:id', async (c) => {
     if (isSuperadmin || role === 'manager') {
       await ensureTagDefinitions(db, tags, caller.userId);
       update.tags = tags;
+      updatedTags = tags;
     } else {
       const definitions = await db
         .select({ name: schema.tagDefinitions.name })
@@ -3062,6 +3092,7 @@ app.put('/api/leads/:id', async (c) => {
         return c.json({ error: 'Members can only assign existing tags.' }, 400);
       }
       update.tags = tags;
+      updatedTags = tags;
     }
   }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -3077,6 +3108,24 @@ app.put('/api/leads/:id', async (c) => {
     update.journeyStage = journeyStage;
     update.status = legacy.status;
     update.outreachStatus = legacy.outreachStatus;
+    const syncedTags = syncFutureTagForJourney(updatedTags ?? existing.tags, journeyStage);
+    if (journeyStage === 'future') {
+      await ensureTagDefinitions(db, ['Future'], caller.userId, true);
+    }
+    update.tags = syncedTags;
+    updatedTags = syncedTags;
+  } else if (updatedTags) {
+    const journeyStage = hasLeadTag(updatedTags, 'future')
+      ? 'future'
+      : existing.journeyStage === 'future'
+        ? 'new'
+        : existing.journeyStage;
+    if (journeyStage !== existing.journeyStage) {
+      const legacy = legacyFieldsForJourney(journeyStage);
+      update.journeyStage = journeyStage;
+      update.status = legacy.status;
+      update.outreachStatus = legacy.outreachStatus;
+    }
   }
   if (body.notes !== undefined) update.notes = body.notes;
   if (body.ownerId !== undefined && isSuperadmin) update.ownerId = body.ownerId;
@@ -3100,6 +3149,38 @@ app.put('/api/leads/:id', async (c) => {
     after: result,
     app: 'crm',
   });
+
+  if (result.journeyStage === 'future' && existing.journeyStage !== 'future') {
+    await db
+      .delete(schema.leadScoreJobs)
+      .where(
+        and(
+          eq(schema.leadScoreJobs.leadId, result.id),
+          inArray(schema.leadScoreJobs.status, ['pending', 'failed'])
+        )
+      );
+  } else if (existing.journeyStage === 'future' && isLeadActivationStage(result.journeyStage)) {
+    await db
+      .insert(schema.leadScoreJobs)
+      .values({ leadId: result.id })
+      .onConflictDoNothing({ target: schema.leadScoreJobs.leadId });
+    c.executionCtx.waitUntil(
+      Promise.all([
+        autoCreateLeadChannels(db, result),
+        triggerWorkflowEvent(c.env, 'lead_created', {
+          id: result.id,
+          source: result.source,
+          ownerId: result.ownerId,
+        }),
+        result.source === 'linkedin'
+          ? generateAndSaveLeadAiAssessment(db, result, c.env).catch((error) => {
+              console.error('Future lead activation AI assessment failed:', error);
+              return null;
+            })
+          : Promise.resolve(null),
+      ]).then(() => undefined)
+    );
+  }
 
   // Auto-embed for RAG chatbot
   c.executionCtx.waitUntil(
@@ -3712,14 +3793,19 @@ app.post('/api/leads/bulk', async (c) => {
       return c.json({ error: 'Invalid lead journey stage.' }, 400);
     }
     const legacy = legacyFieldsForJourney(requestedStage);
+    if (requestedStage === 'future') {
+      await ensureTagDefinitions(db, ['Future'], caller.userId, true);
+    }
     const now = new Date();
     for (const lead of allLeads) {
+      const nextTags = syncFutureTagForJourney(lead.tags, requestedStage);
       await db
         .update(schema.leads)
         .set({
           journeyStage: requestedStage,
           status: legacy.status,
           outreachStatus: legacy.outreachStatus,
+          tags: nextTags,
           updatedAt: now,
         })
         .where(eq(schema.leads.id, lead.id));
@@ -3734,10 +3820,32 @@ app.post('/api/leads/bulk', async (c) => {
           journeyStage: requestedStage,
           status: legacy.status,
           outreachStatus: legacy.outreachStatus,
+          tags: nextTags,
           updatedAt: now,
         },
         app: 'crm',
       });
+      if (lead.journeyStage === 'future' && isLeadActivationStage(requestedStage)) {
+        await db
+          .insert(schema.leadScoreJobs)
+          .values({ leadId: lead.id })
+          .onConflictDoNothing({ target: schema.leadScoreJobs.leadId });
+        await autoCreateLeadChannels(db, lead);
+        await triggerWorkflowEvent(c.env, 'lead_created', {
+          id: lead.id,
+          source: lead.source,
+          ownerId: lead.ownerId,
+        });
+      } else if (lead.journeyStage !== 'future' && requestedStage === 'future') {
+        await db
+          .delete(schema.leadScoreJobs)
+          .where(
+            and(
+              eq(schema.leadScoreJobs.leadId, lead.id),
+              inArray(schema.leadScoreJobs.status, ['pending', 'failed'])
+            )
+          );
+      }
       updatedCount++;
     }
   } else if (action === 'update_outreach_status') {
@@ -3789,10 +3897,19 @@ app.post('/api/leads/bulk', async (c) => {
         const existing = Array.isArray(lead.tags) ? (lead.tags as string[]) : [];
         nextTags = [...new Set([...existing, ...tags])];
       }
+      const nextJourneyStage = hasLeadTag(nextTags, 'future')
+        ? 'future'
+        : lead.journeyStage === 'future'
+          ? 'new'
+          : lead.journeyStage;
+      const nextLegacy = legacyFieldsForJourney(nextJourneyStage);
       await db
         .update(schema.leads)
         .set({
           tags: nextTags,
+          journeyStage: nextJourneyStage,
+          status: nextLegacy.status,
+          outreachStatus: nextLegacy.outreachStatus,
           updatedAt: now,
         })
         .where(eq(schema.leads.id, lead.id));
@@ -3802,9 +3919,37 @@ app.post('/api/leads/bulk', async (c) => {
         resourceType: 'lead',
         resourceId: lead.id,
         before: lead,
-        after: { ...lead, tags: nextTags, updatedAt: now },
+        after: {
+          ...lead,
+          tags: nextTags,
+          journeyStage: nextJourneyStage,
+          status: nextLegacy.status,
+          outreachStatus: nextLegacy.outreachStatus,
+          updatedAt: now,
+        },
         app: 'crm',
       });
+      if (lead.journeyStage === 'future' && isLeadActivationStage(nextJourneyStage)) {
+        await db
+          .insert(schema.leadScoreJobs)
+          .values({ leadId: lead.id })
+          .onConflictDoNothing({ target: schema.leadScoreJobs.leadId });
+        await autoCreateLeadChannels(db, lead);
+        await triggerWorkflowEvent(c.env, 'lead_created', {
+          id: lead.id,
+          source: lead.source,
+          ownerId: lead.ownerId,
+        });
+      } else if (lead.journeyStage !== 'future' && nextJourneyStage === 'future') {
+        await db
+          .delete(schema.leadScoreJobs)
+          .where(
+            and(
+              eq(schema.leadScoreJobs.leadId, lead.id),
+              inArray(schema.leadScoreJobs.status, ['pending', 'failed'])
+            )
+          );
+      }
       updatedCount++;
     }
   } else if (action === 'assign_owner') {
@@ -5012,10 +5157,11 @@ app.post('/api/import/leads', async (c) => {
       ? await ensureTagDefinitions(db, [rowBatchTag], caller.userId, true)
       : [];
     const finalTags = normalizeTagNames([...rowUserTags, ...rowBatchTags]);
-    const journeyStage = journeyStageFromLegacy({
+    const baseJourneyStage = journeyStageFromLegacy({
       status: row.status,
       outreachStatus: row.outreachStatus,
     });
+    const journeyStage = journeyStageForTags(baseJourneyStage, finalTags);
     const legacy = legacyFieldsForJourney(journeyStage);
     const importIdentity = await nextLeadIdentity(db);
     const importLinkedInUrl = canonicalizeLinkedinUrl(row.linkedinUrl);
@@ -5051,8 +5197,10 @@ app.post('/api/import/leads', async (c) => {
     if (!result) return c.json({ error: 'Internal error' }, 500);
     created.push(result);
 
-    // Auto-create lead_channels rows for the standard channels present on the lead
-    await autoCreateLeadChannels(db, result);
+    // Future leads intentionally have no outreach channels until activated.
+    if (result.journeyStage !== 'future') {
+      await autoCreateLeadChannels(db, result);
+    }
   }
 
   // Finalize batch counts
@@ -7023,11 +7171,10 @@ app.post('/api/leads/import/document/confirm', async (c) => {
   }
 
   // Create lead
-  const documentJourneyStage = journeyStageFromLegacy({
+  const documentBaseJourneyStage = journeyStageFromLegacy({
     status: leadData.status,
     outreachStatus: leadData.outreachStatus,
   });
-  const documentLegacy = legacyFieldsForJourney(documentJourneyStage);
   const documentBatchTag = formatBatchTag(body.batchNumber ?? leadData.batchNumber);
   const requestedDocumentTags = normalizeTagNames(leadData.tags);
   if (!isSuperadmin && role !== 'manager') {
@@ -7047,6 +7194,8 @@ app.post('/api/leads/import/document/confirm', async (c) => {
     ? await ensureTagDefinitions(db, [documentBatchTag], caller.userId, true)
     : [];
   const documentTags = normalizeTagNames([...documentUserTags, ...documentBatchTags]);
+  const documentJourneyStage = journeyStageForTags(documentBaseJourneyStage, documentTags);
+  const documentLegacy = legacyFieldsForJourney(documentJourneyStage);
   const documentIdentity = await nextLeadIdentity(db);
   const [lead] = await db
     .insert(schema.leads)

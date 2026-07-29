@@ -1,6 +1,8 @@
 export interface LeadAutomationCandidate {
   source: string;
   status: string;
+  journeyStage?: string | null;
+  tags?: unknown;
 }
 
 /**
@@ -9,5 +11,9 @@ export interface LeadAutomationCandidate {
  * generate action without incurring AI usage during creation.
  */
 export function shouldAutoGenerateLinkedinConnectionNote(lead: LeadAutomationCandidate): boolean {
-  return lead.source === 'linkedin' && lead.status === 'new';
+  const isFuture =
+    lead.journeyStage === 'future' ||
+    (Array.isArray(lead.tags) &&
+      lead.tags.some((tag) => typeof tag === 'string' && tag.trim().toLowerCase() === 'future'));
+  return lead.source === 'linkedin' && lead.status === 'new' && !isFuture;
 }

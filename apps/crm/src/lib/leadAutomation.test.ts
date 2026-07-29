@@ -16,4 +16,15 @@ describe('LinkedIn connection note automation', () => {
       false
     );
   });
+
+  it('does not spend AI tokens on future leads', () => {
+    expect(
+      shouldAutoGenerateLinkedinConnectionNote({
+        source: 'linkedin',
+        status: 'new',
+        journeyStage: 'future',
+        tags: ['Future'],
+      })
+    ).toBe(false);
+  });
 });

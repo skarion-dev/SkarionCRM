@@ -3,7 +3,7 @@ import { and, eq, isNull, sql } from 'drizzle-orm';
 import { getDb } from '@skarion/db-kit';
 import * as schema from '../db/schema.js';
 import { formatLeadNumber } from '../lib/leadNumber.js';
-import { normalizeTagNames, tagSlug } from '../lib/leadJourney.js';
+import { hasLeadTag, normalizeTagNames, tagSlug } from '../lib/leadJourney.js';
 
 type CuratedCandidate = {
   sourceRow: number;
@@ -278,6 +278,8 @@ const result = await (async (tx: typeof db) => {
       if (!candidate || sequence === undefined) {
         throw new Error('Lead number sequence returned no value.');
       }
+      const tags = mergedTags([], [batchName, ...candidate.tags]);
+      const journeyStage = hasLeadTag(tags, 'future') ? 'future' : 'new';
       leadValues.push({
         leadNumber: formatLeadNumber(typeof sequence === 'string' ? BigInt(sequence) : sequence),
         leadSequence:
@@ -289,12 +291,12 @@ const result = await (async (tx: typeof db) => {
         linkedinProfileKey: canonicalLinkedIn(candidate.linkedinUrl),
         source: 'linkedin',
         status: 'new',
-        journeyStage: 'new',
+        journeyStage,
         outreachStatus: 'not_approached',
         notes: candidate.notes,
         sourceSheet: batchName,
         originalRowNumber: candidate.sourceRow,
-        tags: mergedTags([], [batchName, ...candidate.tags]),
+        tags,
         ownerId,
         batchId: batch.id,
         idempotencyKey: `curated:${tagSlug(batchName)}:${canonicalLinkedIn(candidate.linkedinUrl)}`,
@@ -308,13 +310,16 @@ const result = await (async (tx: typeof db) => {
           .insert(schema.leads)
           .values(leadValues)
           .onConflictDoNothing()
-          .returning({ id: schema.leads.id })
+          .returning({ id: schema.leads.id, journeyStage: schema.leads.journeyStage })
       : [];
   const createdLeadIds = createdLeads.map((lead) => lead.id);
+  const activatedLeadIds = createdLeads
+    .filter((lead) => lead.journeyStage !== 'future')
+    .map((lead) => lead.id);
 
-  if (createdLeadIds.length > 0) {
+  if (activatedLeadIds.length > 0) {
     await tx.insert(schema.leadChannels).values(
-      createdLeadIds.map((leadId) => ({
+      activatedLeadIds.map((leadId) => ({
         leadId,
         channel: 'linkedin' as const,
         stage: 'not_started' as const,
