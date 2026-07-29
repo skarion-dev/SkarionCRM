@@ -273,6 +273,20 @@ export function useGenerateLeadAiAssessment(id: string) {
   });
 }
 
+export function useUpdateLeadConnectionNote(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (connectionNote: string) =>
+      crmFetch<{ assessment: LeadAiAssessment }>(`/api/leads/${id}/ai-assessment/connection-note`, {
+        method: 'PATCH',
+        body: JSON.stringify({ connectionNote }),
+      }),
+    onSuccess: (data) => {
+      qc.setQueryData(['leads', id, 'ai-assessment'], data);
+    },
+  });
+}
+
 export function useCompany(id: string, enabled = true) {
   return useCrmQuery(
     ['companies', id],

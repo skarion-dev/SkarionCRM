@@ -407,6 +407,7 @@ export interface Contact {
 
 export type LeadStatus = 'new' | 'contacted' | 'qualified' | 'disqualified' | 'converted';
 export type LeadSource =
+  | 'linkedin'
   | 'website'
   | 'referral'
   | 'social_media'

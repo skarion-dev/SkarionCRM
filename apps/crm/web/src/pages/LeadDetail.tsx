@@ -6,6 +6,8 @@ import {
   useImportBatches,
   useLeadAiAssessment,
   useGenerateLeadAiAssessment,
+  useUpdateLeadConnectionNote,
+  useLogOutreachAction,
 } from '../hooks/use-api.js';
 import { showToast } from '../stores/toast.js';
 import {
@@ -36,9 +38,10 @@ import {
   Copy,
   Check,
   LoaderCircle,
+  Save,
 } from 'lucide-react';
 import { cn } from '../lib/utils.js';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import ActivityTimeline from '../components/ActivityTimeline.js';
 import ActivityForm from '../components/ActivityForm.js';
 import LeadForm from '../components/forms/LeadForm.js';
@@ -79,6 +82,7 @@ const STATUS_PIPELINE: {
 
 const OUTREACH_PIPELINE: { key: string; label: string }[] = [
   { key: 'not_approached', label: 'Not Approached' },
+  { key: 'connection_request_sent', label: 'Connection Sent' },
   { key: 'approached', label: 'Approached' },
   { key: 'connected', label: 'Connected' },
   { key: 'replied', label: 'Replied' },
@@ -171,13 +175,23 @@ export default function LeadDetail() {
   const { data, isLoading } = useLead(id ?? '');
   const { data: aiAssessmentData } = useLeadAiAssessment(id ?? '', Boolean(id));
   const generateAiAssessment = useGenerateLeadAiAssessment(id ?? '');
+  const updateConnectionNote = useUpdateLeadConnectionNote(id ?? '');
+  const updateOutreachStage = useLogOutreachAction(id ?? '');
   const deleteMutation = useDeleteEntity();
   const updateLead = useUpdateEntity('leads');
   const { data: batches } = useImportBatches();
   const [editOpen, setEditOpen] = useState(false);
   const [activityType, setActivityType] = useState<ActivityType | null>(null);
   const [statusDropdownOpen, setStatusDropdownOpen] = useState(false);
-  const [connectionNoteCopied, setConnectionNoteCopied] = useState(false);
+  const [connectionNoteDraft, setConnectionNoteDraft] = useState('');
+  const [connectionNoteAction, setConnectionNoteAction] = useState<
+    'copied' | 'copied-and-sent' | null
+  >(null);
+  const aiAssessment = aiAssessmentData?.assessment ?? generateAiAssessment.data?.assessment;
+
+  useEffect(() => {
+    setConnectionNoteDraft(aiAssessment?.connectionNote ?? '');
+  }, [aiAssessment?.connectionNote, aiAssessment?.updatedAt]);
 
   if (isLoading) return <div className="text-slate-500">Loading lead...</div>;
   if (!data?.lead)
@@ -206,10 +220,14 @@ export default function LeadDetail() {
     );
 
   const lead = data.lead;
-  const aiAssessment = generateAiAssessment.data?.assessment ?? aiAssessmentData?.assessment;
   const nextStatus = getNextStatus(lead.status);
   const isPlaceholderEmail = (lead.email ?? '').includes('@placeholder.skarion');
   const batch = lead.batchId ? batches?.find((b) => b.id === lead.batchId) : undefined;
+  const connectionNoteCharacterCount = [...connectionNoteDraft].length;
+  const connectionNoteDirty = aiAssessment
+    ? connectionNoteDraft.trim() !== aiAssessment.connectionNote
+    : false;
+  const connectionNoteBusy = updateConnectionNote.isPending || updateOutreachStage.isPending;
 
   const handleStatusChange = (newStatus: string) => {
     updateLead.mutate(
@@ -238,7 +256,10 @@ export default function LeadDetail() {
 
   const handleGenerateConnectionNote = () => {
     generateAiAssessment.mutate(undefined, {
-      onSuccess: () => showToast('Connection note and lead score generated', 'success'),
+      onSuccess: (result) => {
+        setConnectionNoteDraft(result.assessment.connectionNote);
+        showToast('Connection note and lead score generated', 'success');
+      },
       onError: (error) =>
         showToast(
           error instanceof Error ? error.message : 'Failed to generate the connection note',
@@ -247,15 +268,73 @@ export default function LeadDetail() {
     });
   };
 
-  const handleCopyConnectionNote = async () => {
-    if (!aiAssessment?.connectionNote) return;
+  const validatedConnectionNote = () => {
+    const note = connectionNoteDraft.trim();
+    const characterCount = [...note].length;
+    if (!note) {
+      showToast('Connection note cannot be empty', 'error');
+      return null;
+    }
+    if (characterCount > 300) {
+      showToast('Connection note must be 300 characters or fewer', 'error');
+      return null;
+    }
+    return note;
+  };
+
+  const persistConnectionNote = async (note: string) => {
+    if (note !== aiAssessment?.connectionNote) {
+      await updateConnectionNote.mutateAsync(note);
+      setConnectionNoteDraft(note);
+    }
+  };
+
+  const handleSaveConnectionNote = async () => {
+    const note = validatedConnectionNote();
+    if (!note) return;
     try {
-      await navigator.clipboard.writeText(aiAssessment.connectionNote);
-      setConnectionNoteCopied(true);
-      showToast('Connection note copied', 'success');
-      window.setTimeout(() => setConnectionNoteCopied(false), 2000);
-    } catch {
-      showToast('Could not copy the connection note', 'error');
+      await persistConnectionNote(note);
+      showToast('Connection note saved', 'success');
+    } catch (error) {
+      showToast(
+        error instanceof Error ? error.message : 'Could not save the connection note',
+        'error'
+      );
+    }
+  };
+
+  const handleCopyConnectionNote = async (markConnectionSent = false) => {
+    const note = validatedConnectionNote();
+    if (!note) return;
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(note);
+      copied = true;
+      await persistConnectionNote(note);
+      if (markConnectionSent) {
+        await updateOutreachStage.mutateAsync({
+          channel: 'linkedin',
+          action: 'set_stage',
+          stage: 'connection_request_sent',
+        });
+      }
+      setConnectionNoteAction(markConnectionSent ? 'copied-and-sent' : 'copied');
+      showToast(
+        markConnectionSent
+          ? 'Connection note copied and marked as connection request sent'
+          : 'Connection note copied',
+        'success'
+      );
+      window.setTimeout(() => setConnectionNoteAction(null), 2500);
+    } catch (error) {
+      showToast(
+        copied
+          ? 'Note copied, but the CRM update failed. Please try the status action again.'
+          : error instanceof Error
+            ? error.message
+            : 'Could not copy the connection note',
+        'error'
+      );
     }
   };
 
@@ -364,15 +443,17 @@ export default function LeadDetail() {
                   'px-3 py-1 rounded-full text-sm font-medium capitalize',
                   lead.outreachStatus === 'not_approached'
                     ? 'bg-slate-100 text-slate-600'
-                    : lead.outreachStatus === 'approached'
-                      ? 'bg-amber-100 text-amber-700'
-                      : lead.outreachStatus === 'connected'
-                        ? 'bg-blue-100 text-blue-700'
-                        : lead.outreachStatus === 'replied'
-                          ? 'bg-green-100 text-green-700'
-                          : lead.outreachStatus === 'booked_call'
-                            ? 'bg-purple-100 text-purple-700'
-                            : 'bg-slate-100 text-slate-600'
+                    : lead.outreachStatus === 'connection_request_sent'
+                      ? 'bg-blue-100 text-blue-700'
+                      : lead.outreachStatus === 'approached'
+                        ? 'bg-amber-100 text-amber-700'
+                        : lead.outreachStatus === 'connected'
+                          ? 'bg-blue-100 text-blue-700'
+                          : lead.outreachStatus === 'replied'
+                            ? 'bg-green-100 text-green-700'
+                            : lead.outreachStatus === 'booked_call'
+                              ? 'bg-purple-100 text-purple-700'
+                              : 'bg-slate-100 text-slate-600'
                 )}
               >
                 {lead.outreachStatus?.replace(/_/g, ' ') ?? 'not approached'}
@@ -443,7 +524,7 @@ export default function LeadDetail() {
               onClick={handleGenerateConnectionNote}
               disabled={generateAiAssessment.isPending}
               className="flex items-center gap-1.5 px-3 py-2 rounded-md text-sm font-medium bg-violet-600 text-white hover:bg-violet-700 disabled:bg-violet-300 disabled:cursor-wait transition-colors"
-              title="Read the saved LinkedIn profile details, score this lead, and draft a connection request note"
+              title="Read the saved lead details, score this lead, and draft a LinkedIn connection request note"
             >
               {generateAiAssessment.isPending ? (
                 <LoaderCircle size={16} className="animate-spin" />
@@ -557,17 +638,48 @@ export default function LeadDetail() {
                     </span>
                   </div>
                   <p className="mt-1 text-xs text-violet-700">
-                    Generated from the LinkedIn profile details saved on this lead.
+                    Generated from the lead details saved in CRM. Edit the note before copying if
+                    needed.
                   </p>
                 </div>
-                <button
-                  type="button"
-                  onClick={handleCopyConnectionNote}
-                  className="flex items-center gap-1.5 rounded-md bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-700 transition-colors"
-                >
-                  {connectionNoteCopied ? <Check size={15} /> : <Copy size={15} />}
-                  {connectionNoteCopied ? 'Copied' : 'Copy Note'}
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  {connectionNoteDirty && (
+                    <button
+                      type="button"
+                      onClick={handleSaveConnectionNote}
+                      disabled={connectionNoteBusy}
+                      className="flex items-center gap-1.5 rounded-md border border-violet-300 bg-white px-3 py-2 text-sm font-medium text-violet-700 hover:bg-violet-50 disabled:cursor-wait disabled:opacity-60 transition-colors"
+                    >
+                      <Save size={15} />
+                      Save Changes
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => handleCopyConnectionNote(false)}
+                    disabled={connectionNoteBusy}
+                    className="flex items-center gap-1.5 rounded-md bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:cursor-wait disabled:bg-violet-300 transition-colors"
+                  >
+                    {connectionNoteAction === 'copied' ? <Check size={15} /> : <Copy size={15} />}
+                    {connectionNoteAction === 'copied' ? 'Copied' : 'Copy Note'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleCopyConnectionNote(true)}
+                    disabled={connectionNoteBusy}
+                    className="flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:cursor-wait disabled:bg-blue-300 transition-colors"
+                    title="Copy the edited note and set the LinkedIn outreach stage to connection request sent"
+                  >
+                    {connectionNoteAction === 'copied-and-sent' ? (
+                      <Check size={15} />
+                    ) : (
+                      <Send size={15} />
+                    )}
+                    {connectionNoteAction === 'copied-and-sent'
+                      ? 'Copied + Marked Sent'
+                      : 'Copy + Connection Sent'}
+                  </button>
+                </div>
               </div>
 
               {aiAssessment.reasoningSummary && (
@@ -584,17 +696,20 @@ export default function LeadDetail() {
                   <span
                     className={cn(
                       'text-xs font-medium',
-                      aiAssessment.connectionNoteCharacterCount <= 300
-                        ? 'text-slate-500'
-                        : 'text-red-600'
+                      connectionNoteCharacterCount <= 300 ? 'text-slate-500' : 'text-red-600'
                     )}
                   >
-                    {aiAssessment.connectionNoteCharacterCount}/300 characters
+                    {connectionNoteCharacterCount}/300 characters
                   </span>
                 </div>
-                <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-800">
-                  {aiAssessment.connectionNote}
-                </p>
+                <textarea
+                  value={connectionNoteDraft}
+                  onChange={(event) => setConnectionNoteDraft(event.target.value)}
+                  maxLength={300}
+                  rows={4}
+                  className="w-full resize-y rounded-md border border-slate-200 px-3 py-2 text-sm leading-relaxed text-slate-800 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
+                  aria-label="Editable LinkedIn connection note"
+                />
               </div>
             </div>
           )}

@@ -18,6 +18,7 @@ interface LeadFormProps {
 
 const statuses: LeadStatus[] = ['new', 'contacted', 'qualified', 'disqualified', 'converted'];
 const sources: LeadSource[] = [
+  'linkedin',
   'website',
   'referral',
   'social_media',

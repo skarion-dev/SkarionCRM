@@ -53,6 +53,7 @@ import {
 } from './lib/leadDedup.js';
 import { nextLeadNumber } from './lib/leadNumber.js';
 import { buildLeadConditions, parseCommaList, resolveLeadSortColumn } from './lib/leadFilters.js';
+import { shouldAutoGenerateLinkedinConnectionNote } from './lib/leadAutomation.js';
 import {
   buildCeoSystemInstruction,
   parseCeoQuestion,
@@ -80,7 +81,7 @@ const LEAD_CHANNEL_STAGE_RANK: Record<string, number> = {
 const STAGE_TO_OUTREACH_STATUS: Record<string, string> = {
   not_started: 'not_approached',
   warm_up_needed: 'not_approached',
-  connection_request_sent: 'approached',
+  connection_request_sent: 'connection_request_sent',
   connection_accepted: 'approached',
   message_sent: 'approached',
   awaiting_reply: 'approached',
@@ -537,10 +538,12 @@ app.post('/extension/leads', async (c) => {
   c.executionCtx.waitUntil(autoCreateLeadChannels(db, result).catch(() => {}));
 
   let aiAssessment = null;
-  try {
-    aiAssessment = await generateAndSaveLeadAiAssessment(db, result, c.env);
-  } catch (error) {
-    console.error('LinkedIn lead AI assessment failed:', error);
+  if (shouldAutoGenerateLinkedinConnectionNote(result)) {
+    try {
+      aiAssessment = await generateAndSaveLeadAiAssessment(db, result, c.env);
+    } catch (error) {
+      console.error('LinkedIn lead AI assessment failed:', error);
+    }
   }
 
   return c.json(
@@ -1314,7 +1317,16 @@ app.post('/api/leads', async (c) => {
     ).catch(() => {})
   );
 
-  return c.json({ lead: result }, 201);
+  let aiAssessment = null;
+  if (shouldAutoGenerateLinkedinConnectionNote(result)) {
+    try {
+      aiAssessment = await generateAndSaveLeadAiAssessment(db, result, c.env);
+    } catch (error) {
+      console.error('LinkedIn lead AI assessment failed:', error);
+    }
+  }
+
+  return c.json({ lead: result, aiAssessment }, 201);
 });
 
 function escapeCsv(val: unknown): string {
@@ -4632,6 +4644,61 @@ app.post('/api/leads/:id/ai-assessment', async (c) => {
   }
   const assessment = await generateAndSaveLeadAiAssessment(db, lead, c.env);
   if (!assessment) return c.json({ error: ai.AI_NOT_CONFIGURED_MSG }, 503);
+  return c.json({ assessment });
+});
+
+app.patch('/api/leads/:id/ai-assessment/connection-note', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const id = c.req.param('id');
+  const role = getRole(c);
+  const isSuperadmin = c.get('isSuperadmin');
+  const caller = { userId: c.get('userId'), isSuperadmin };
+  const [lead] = await db
+    .select()
+    .from(schema.leads)
+    .where(and(eq(schema.leads.id, id), isNull(schema.leads.deletedAt)));
+  if (!lead) return c.json({ error: 'Not found.' }, 404);
+  if (!can(isSuperadmin, role, 'edit', { ownerId: lead.ownerId }, caller)) {
+    return c.json({ error: 'Forbidden.' }, 403);
+  }
+
+  const body = await c.req.json();
+  const connectionNote = typeof body.connectionNote === 'string' ? body.connectionNote.trim() : '';
+  const characterCount = [...connectionNote].length;
+  if (!connectionNote) return c.json({ error: 'Connection note cannot be empty.' }, 400);
+  if (characterCount > 300) {
+    return c.json({ error: 'LinkedIn connection notes cannot exceed 300 characters.' }, 400);
+  }
+
+  const [existing] = await db
+    .select()
+    .from(schema.leadAiAssessments)
+    .where(eq(schema.leadAiAssessments.leadId, id));
+  if (!existing) {
+    return c.json({ error: 'Generate a connection note before editing it.' }, 404);
+  }
+
+  const [assessment] = await db
+    .update(schema.leadAiAssessments)
+    .set({
+      connectionNote,
+      connectionNoteCharacterCount: characterCount,
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.leadAiAssessments.leadId, id))
+    .returning();
+  if (!assessment) return c.json({ error: 'Internal error' }, 500);
+
+  await withAudit(db, schema.auditLog, {
+    actorUserId: caller.userId,
+    action: 'edit',
+    resourceType: 'lead_ai_assessment',
+    resourceId: id,
+    before: existing,
+    after: assessment,
+    app: 'crm',
+  });
+
   return c.json({ assessment });
 });
 
