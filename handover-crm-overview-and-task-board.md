@@ -1,7 +1,11 @@
 # Handover — Skarion CRM overview + leads/task-board revamp (2026-07-28/29)
 
 Repo: [github.com/skarion-dev/SkarionCRM](https://github.com/skarion-dev/SkarionCRM)
-Latest commit: [`f5939e0`](https://github.com/skarion-dev/SkarionCRM/commit/f5939e01b9cf05e18f7c5259f671a55181d9db2a)
+This work landed at [`f5939e0`](https://github.com/skarion-dev/SkarionCRM/commit/f5939e01b9cf05e18f7c5259f671a55181d9db2a).
+Note: `main` has since moved further ahead — someone else pushed a
+"prospect review workflow" feature (curated batch imports, a review
+disposition flow, a reworked extension popup) on top of this in parallel.
+That work is not described here; see `main`'s own history for it.
 
 ## What this CRM is
 
