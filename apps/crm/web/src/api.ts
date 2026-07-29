@@ -700,6 +700,8 @@ export interface DashboardData {
       matchedItems: number;
       ignoredItems: number;
       flaggedItems: number;
+      originalFilename: string;
+      details: { conversations?: number; recoveredLegacyImport?: boolean };
       createdAt: string;
       completedAt: string | null;
     } | null;

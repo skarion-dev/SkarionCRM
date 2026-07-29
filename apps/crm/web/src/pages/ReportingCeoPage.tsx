@@ -781,6 +781,16 @@ export default function ReportingCeoPage() {
                 ? new Date(linkedinSync.data.lastMessageDump.createdAt).toLocaleString()
                 : 'Never'}
             </p>
+            {linkedinSync.data?.lastMessageDump && (
+              <p className="mt-1 text-[11px] font-medium text-slate-600">
+                {new Intl.NumberFormat().format(
+                  linkedinSync.data.lastMessageDump.details?.conversations ?? 0
+                )}{' '}
+                conversations ·{' '}
+                {new Intl.NumberFormat().format(linkedinSync.data.lastMessageDump.matchedItems)}{' '}
+                messages logged · {linkedinSync.data.lastMessageDump.status}
+              </p>
+            )}
           </div>
 
           <div className="rounded-lg border border-slate-200 bg-white p-3">

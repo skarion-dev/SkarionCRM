@@ -933,6 +933,7 @@ export interface LinkedinSyncImportRun {
   matchedItems: number;
   ignoredItems: number;
   flaggedItems: number;
+  details: { conversations?: number; recoveredLegacyImport?: boolean };
   createdAt: string;
   completedAt: string | null;
 }

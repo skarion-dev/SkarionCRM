@@ -457,6 +457,14 @@ export default function Dashboard() {
                         ? new Date(data.linkedinSync.lastInvitationDump.createdAt).toLocaleString()
                         : 'never'}
                     </p>
+                    {data.linkedinSync.lastMessageDump && (
+                      <p className="mt-1 text-[11px] font-medium text-slate-600">
+                        {number(data.linkedinSync.lastMessageDump.details?.conversations)}{' '}
+                        conversations · {number(data.linkedinSync.lastMessageDump.newItems)} new
+                        messages · {number(data.linkedinSync.lastMessageDump.matchedItems)} logged ·{' '}
+                        {data.linkedinSync.lastMessageDump.status}
+                      </p>
+                    )}
                   </div>
                   <span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold text-amber-800">
                     {number(data.linkedinSync.openFlags)} review flags

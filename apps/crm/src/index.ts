@@ -89,6 +89,7 @@ import {
   type LinkedInExportRow,
 } from './lib/linkedinExport.js';
 import {
+  ensureLinkedInMessageKeys,
   invitationExternalKey,
   linkedinConversationHasReply,
   linkedinMessageClassificationPrompt,
@@ -1943,15 +1944,29 @@ async function drainLinkedinMessageSyncQueue(db: CrmDb, env: Env, limit: number)
       if (!importRun) throw new Error('LinkedIn import run no longer exists.');
 
       const aiEnv = await getConfiguredAiEnv(db, env, importRun.importedBy);
-      const rawClassification = ai.isAiConfigured(aiEnv)
-        ? await ai.extractStructured<unknown>(linkedinMessageClassificationPrompt(payload), aiEnv, {
-            agent: 'linkedin-message-updater',
-            tier: 'cheap',
-            temperature: 0,
-          })
-        : null;
+      const needsClassification =
+        Boolean(claimed.leadId) ||
+        shouldClassifyUnmatchedConversation({ messages: payload.fullConversationExcerpt });
+      const rawClassification =
+        needsClassification && ai.isAiConfigured(aiEnv)
+          ? await ai.extractStructured<unknown>(
+              linkedinMessageClassificationPrompt(payload),
+              aiEnv,
+              {
+                agent: 'linkedin-message-updater',
+                tier: 'cheap',
+                temperature: 0,
+              }
+            )
+          : null;
       const classification =
-        sanitizeLinkedInMessageClassification(rawClassification) ??
+        (!needsClassification
+          ? {
+              skarionRelated: false,
+              confidence: 'high' as const,
+              rationale: 'Short unmatched conversation has no Skarion or career-related signals.',
+            }
+          : sanitizeLinkedInMessageClassification(rawClassification)) ??
         (claimed.attempts >= 3
           ? {
               skarionRelated: Boolean(claimed.leadId),
@@ -1961,16 +1976,17 @@ async function drainLinkedinMessageSyncQueue(db: CrmDb, env: Env, limit: number)
             }
           : null);
       if (!classification) throw new Error('Message classifier did not return valid JSON.');
+      const messages = await ensureLinkedInMessageKeys(payload.conversationId, payload.messages);
 
       if (!classification.skarionRelated) {
         await db
           .update(schema.linkedinSyncImports)
           .set({
-            ignoredItems: sql`${schema.linkedinSyncImports.ignoredItems} + ${payload.messages.length}`,
+            ignoredItems: sql`${schema.linkedinSyncImports.ignoredItems} + ${messages.length}`,
             updatedAt: new Date(),
           })
           .where(eq(schema.linkedinSyncImports.id, claimed.importId));
-        result.ignored += payload.messages.length;
+        result.ignored += messages.length;
       } else if (!claimed.leadId) {
         const [createdFlag] = await db
           .insert(schema.linkedinSyncFlags)
@@ -2010,16 +2026,16 @@ async function drainLinkedinMessageSyncQueue(db: CrmDb, env: Env, limit: number)
           await db
             .update(schema.linkedinSyncImports)
             .set({
-              ignoredItems: sql`${schema.linkedinSyncImports.ignoredItems} + ${payload.messages.length}`,
+              ignoredItems: sql`${schema.linkedinSyncImports.ignoredItems} + ${messages.length}`,
               updatedAt: new Date(),
             })
             .where(eq(schema.linkedinSyncImports.id, claimed.importId));
-          result.ignored += payload.messages.length;
+          result.ignored += messages.length;
         } else {
           const insertedMessages = await db
             .insert(schema.linkedinMessageRecords)
             .values(
-              payload.messages.map((message) => ({
+              messages.map((message) => ({
                 importId: claimed.importId,
                 externalMessageKey: message.externalMessageKey,
                 externalConversationId: payload.conversationId,

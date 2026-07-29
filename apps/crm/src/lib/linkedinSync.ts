@@ -9,7 +9,7 @@ export interface LinkedInMessageJobPayload {
   otherPartyName: string;
   otherPartyProfileUrl: string | null;
   ownerProfileUrl: string;
-  messages: LinkedInMessageDelta[];
+  messages: Array<LinkedInConversationMessage & { externalMessageKey?: string }>;
   fullConversationMessageCount: number;
   fullConversationExcerpt: LinkedInConversationMessage[];
 }
@@ -43,6 +43,19 @@ export async function linkedinMessageKey(
       message.subject,
       message.content,
     ].join('\u001f')
+  );
+}
+
+export async function ensureLinkedInMessageKeys(
+  conversationId: string,
+  messages: Array<LinkedInConversationMessage & { externalMessageKey?: string }>
+): Promise<LinkedInMessageDelta[]> {
+  return Promise.all(
+    messages.map(async (message) => ({
+      ...message,
+      externalMessageKey:
+        message.externalMessageKey?.trim() || (await linkedinMessageKey(conversationId, message)),
+    }))
   );
 }
 

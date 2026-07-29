@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ensureLinkedInMessageKeys,
   invitationExternalKey,
   linkedinConversationHasReply,
   linkedinMessageKey,
@@ -8,6 +9,21 @@ import {
 } from './linkedinSync.js';
 
 describe('linkedin sync helpers', () => {
+  it('recovers deterministic message keys for legacy conversation imports', async () => {
+    const message = {
+      sentAt: '2026-07-28T12:00:00.000Z',
+      direction: 'inbound' as const,
+      senderName: 'Candidate',
+      senderProfileUrl: 'https://www.linkedin.com/in/candidate',
+      content: 'Thanks for reaching out.',
+      subject: '',
+    };
+    const [recovered] = await ensureLinkedInMessageKeys('conversation-1', [message]);
+    const [repeated] = await ensureLinkedInMessageKeys('conversation-1', [message]);
+    expect(recovered?.externalMessageKey).toBeTruthy();
+    expect(repeated?.externalMessageKey).toBe(recovered?.externalMessageKey);
+  });
+
   it('creates stable message keys while distinguishing message content', async () => {
     const base = {
       sentAt: '2026-07-27T18:43:40.000Z',
