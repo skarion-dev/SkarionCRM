@@ -923,6 +923,103 @@ export function useImportCeoLinkedInExport() {
   });
 }
 
+export interface LinkedinSyncImportRun {
+  id: string;
+  kind: 'messages' | 'invitations';
+  originalFilename: string;
+  status: string;
+  totalRows: number;
+  newItems: number;
+  matchedItems: number;
+  ignoredItems: number;
+  flaggedItems: number;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface LinkedinSyncQueueSummary {
+  active: number;
+  waiting: number;
+  processing: number;
+  retrying: number;
+  completed24h: number;
+  latestCompletedAt: string | null;
+}
+
+export interface LinkedinSyncStatus {
+  observedAt: string;
+  lastMessageDump: LinkedinSyncImportRun | null;
+  lastInvitationDump: LinkedinSyncImportRun | null;
+  messageImports: LinkedinSyncImportRun[];
+  invitationImports: LinkedinSyncImportRun[];
+  queues: {
+    messages: LinkedinSyncQueueSummary;
+    invitations: LinkedinSyncQueueSummary;
+  };
+  openFlags: Array<{
+    id: string;
+    otherPartyName: string;
+    otherPartyProfileUrl: string | null;
+    messageCount: number;
+    reason: string;
+    createdAt: string;
+  }>;
+}
+
+export interface LinkedinSyncImportResult {
+  success: true;
+  duplicate: boolean;
+  import: LinkedinSyncImportRun;
+  queuedJobs?: number;
+  newMessages?: number;
+  pendingJobs?: number;
+  acceptedJobs?: number;
+  unmatched?: number;
+  summary: string;
+  historyMessage: CeoChatMessage | null;
+}
+
+function useLinkedinSyncImport(kind: 'messages' | 'invitations') {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ file, ownerProfileUrl }: { file: File; ownerProfileUrl?: string }) => {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('sourceTimezone', Intl.DateTimeFormat().resolvedOptions().timeZone);
+      if (ownerProfileUrl?.trim()) formData.append('ownerProfileUrl', ownerProfileUrl.trim());
+      return crmFetch<LinkedinSyncImportResult>(`/api/ceo-chat/import-linkedin-${kind}`, {
+        method: 'POST',
+        body: formData,
+      });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['linkedin-sync', 'status'] });
+      qc.invalidateQueries({ queryKey: ['ceo-chat', 'history'] });
+      qc.invalidateQueries({ queryKey: ['dashboard'] });
+      qc.invalidateQueries({ queryKey: ['leads'] });
+      qc.invalidateQueries({ queryKey: ['lead-channels'] });
+    },
+  });
+}
+
+export function useImportLinkedinMessages() {
+  return useLinkedinSyncImport('messages');
+}
+
+export function useImportLinkedinInvitations() {
+  return useLinkedinSyncImport('invitations');
+}
+
+export function useLinkedinSyncStatus(enabled = true) {
+  return useQuery({
+    queryKey: ['linkedin-sync', 'status'],
+    queryFn: () => crmFetch<LinkedinSyncStatus>('/api/linkedin-sync/status'),
+    enabled,
+    refetchInterval: 5_000,
+    refetchIntervalInBackground: false,
+  });
+}
+
 // ─── SEARCH ───
 
 export interface SearchResult {

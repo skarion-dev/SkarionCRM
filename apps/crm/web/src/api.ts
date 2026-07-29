@@ -691,6 +691,35 @@ export interface DashboardData {
     profile: DashboardQueueSummary;
     scoring: DashboardQueueSummary;
   };
+  linkedinSync: {
+    lastMessageDump: {
+      id: string;
+      status: string;
+      totalRows: number;
+      newItems: number;
+      matchedItems: number;
+      ignoredItems: number;
+      flaggedItems: number;
+      createdAt: string;
+      completedAt: string | null;
+    } | null;
+    lastInvitationDump: {
+      id: string;
+      status: string;
+      totalRows: number;
+      newItems: number;
+      matchedItems: number;
+      ignoredItems: number;
+      flaggedItems: number;
+      createdAt: string;
+      completedAt: string | null;
+    } | null;
+    openFlags: number;
+    queues: {
+      messages: DashboardQueueSummary;
+      invitations: DashboardQueueSummary;
+    };
+  };
   priorityLeads: DashboardLead[];
   recentLeads: Array<
     Pick<

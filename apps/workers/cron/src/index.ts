@@ -14,11 +14,14 @@ const QUEUE_BATCH_SIZE = 30;
 type QueueDrainResult = {
   profileCleanup: unknown;
   leadScoring: unknown;
+  linkedinSync: unknown;
 };
 
 async function drainEndpoint(env: Env, path: string): Promise<unknown> {
+  const url = new URL(`https://crm.internal${path}`);
+  if (!url.searchParams.has('limit')) url.searchParams.set('limit', String(QUEUE_BATCH_SIZE));
   const response = await env.CRM_SERVICE.fetch(
-    new Request(`https://crm.internal${path}?limit=${QUEUE_BATCH_SIZE}`, {
+    new Request(url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${env.WORKFLOW_RUNNER_SECRET}`,
@@ -37,7 +40,11 @@ async function drainAiQueues(env: Env): Promise<QueueDrainResult> {
   // structured profile. Pending Prospect Review rows are prioritized by CRM.
   const profileCleanup = await drainEndpoint(env, '/internal/lead-profile-queue/drain');
   const leadScoring = await drainEndpoint(env, '/internal/lead-score-queue/drain');
-  return { profileCleanup, leadScoring };
+  const linkedinSync = await drainEndpoint(
+    env,
+    '/internal/linkedin-sync-queue/drain?messageLimit=5&invitationLimit=25'
+  );
+  return { profileCleanup, leadScoring, linkedinSync };
 }
 
 export default {

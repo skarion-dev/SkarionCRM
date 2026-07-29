@@ -89,6 +89,15 @@ import {
   type LinkedInExportRow,
 } from './lib/linkedinExport.js';
 import {
+  invitationExternalKey,
+  linkedinMessageClassificationPrompt,
+  linkedinMessageKey,
+  sanitizeLinkedInMessageClassification,
+  sha256,
+  shouldClassifyUnmatchedConversation,
+  type LinkedInMessageJobPayload,
+} from './lib/linkedinSync.js';
+import {
   buildCeoSystemInstruction,
   parseCeoQuestion,
   type CeoReportingSnapshot,
@@ -1844,6 +1853,436 @@ app.post('/internal/lead-profile-queue/drain', async (c) => {
   return c.json(await drainLeadProfileQueue(db, c.env, limit));
 });
 
+async function finalizeLinkedinSyncImport(db: CrmDb, importId: string): Promise<void> {
+  const [remaining] = await db
+    .select({
+      count: sql<number>`count(*) filter (where ${schema.linkedinSyncJobs.status} in ('pending', 'processing', 'failed'))::int`,
+    })
+    .from(schema.linkedinSyncJobs)
+    .where(eq(schema.linkedinSyncJobs.importId, importId));
+  if ((Number(remaining?.count) || 0) > 0) return;
+  await db
+    .update(schema.linkedinSyncImports)
+    .set({ status: 'completed', completedAt: new Date(), updatedAt: new Date() })
+    .where(eq(schema.linkedinSyncImports.id, importId));
+}
+
+async function drainLinkedinMessageSyncQueue(db: CrmDb, env: Env, limit: number) {
+  const now = new Date();
+  await db
+    .update(schema.linkedinSyncJobs)
+    .set({
+      status: 'failed',
+      lockedAt: null,
+      nextAttemptAt: now,
+      lastError: 'Recovered stale LinkedIn message updater lock.',
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(schema.linkedinSyncJobs.kind, 'message_conversation'),
+        eq(schema.linkedinSyncJobs.status, 'processing'),
+        sql`${schema.linkedinSyncJobs.lockedAt} < now() - interval '30 minutes'`
+      )
+    );
+
+  const jobs = await db
+    .select()
+    .from(schema.linkedinSyncJobs)
+    .where(
+      and(
+        eq(schema.linkedinSyncJobs.kind, 'message_conversation'),
+        inArray(schema.linkedinSyncJobs.status, ['pending', 'failed']),
+        lte(schema.linkedinSyncJobs.nextAttemptAt, now)
+      )
+    )
+    .orderBy(asc(schema.linkedinSyncJobs.nextAttemptAt), asc(schema.linkedinSyncJobs.createdAt))
+    .limit(limit);
+  const result = { claimed: 0, logged: 0, ignored: 0, flagged: 0, failed: 0 };
+
+  for (const job of jobs) {
+    const [claimed] = await db
+      .update(schema.linkedinSyncJobs)
+      .set({
+        status: 'processing',
+        attempts: sql`${schema.linkedinSyncJobs.attempts} + 1`,
+        lockedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(schema.linkedinSyncJobs.id, job.id),
+          inArray(schema.linkedinSyncJobs.status, ['pending', 'failed']),
+          lte(schema.linkedinSyncJobs.nextAttemptAt, now)
+        )
+      )
+      .returning();
+    if (!claimed) continue;
+    result.claimed += 1;
+    const payload = claimed.payload as LinkedInMessageJobPayload;
+
+    try {
+      const [importRun] = await db
+        .select()
+        .from(schema.linkedinSyncImports)
+        .where(eq(schema.linkedinSyncImports.id, claimed.importId))
+        .limit(1);
+      if (!importRun) throw new Error('LinkedIn import run no longer exists.');
+
+      const aiEnv = await getConfiguredAiEnv(db, env, importRun.importedBy);
+      const rawClassification = ai.isAiConfigured(aiEnv)
+        ? await ai.extractStructured<unknown>(linkedinMessageClassificationPrompt(payload), aiEnv, {
+            agent: 'linkedin-message-updater',
+            tier: 'cheap',
+            temperature: 0,
+          })
+        : null;
+      const classification =
+        sanitizeLinkedInMessageClassification(rawClassification) ??
+        (claimed.attempts >= 3
+          ? {
+              skarionRelated: Boolean(claimed.leadId),
+              confidence: 'low' as const,
+              rationale:
+                'AI routing was unavailable after three attempts; existing-lead conversations were preserved as a safe fallback.',
+            }
+          : null);
+      if (!classification) throw new Error('Message classifier did not return valid JSON.');
+
+      if (!classification.skarionRelated) {
+        await db
+          .update(schema.linkedinSyncImports)
+          .set({
+            ignoredItems: sql`${schema.linkedinSyncImports.ignoredItems} + ${payload.messages.length}`,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.linkedinSyncImports.id, claimed.importId));
+        result.ignored += payload.messages.length;
+      } else if (!claimed.leadId) {
+        const [createdFlag] = await db
+          .insert(schema.linkedinSyncFlags)
+          .values({
+            importId: claimed.importId,
+            externalConversationId: payload.conversationId,
+            otherPartyName: payload.otherPartyName,
+            otherPartyProfileUrl: payload.otherPartyProfileUrl,
+            messageCount: payload.fullConversationMessageCount,
+            reason: classification.rationale,
+          })
+          .onConflictDoNothing()
+          .returning();
+        if (createdFlag) {
+          await db
+            .update(schema.linkedinSyncImports)
+            .set({
+              flaggedItems: sql`${schema.linkedinSyncImports.flaggedItems} + 1`,
+              updatedAt: new Date(),
+            })
+            .where(eq(schema.linkedinSyncImports.id, claimed.importId));
+          result.flagged += 1;
+        }
+      } else {
+        const [lead] = await db
+          .select()
+          .from(schema.leads)
+          .where(
+            and(
+              eq(schema.leads.id, claimed.leadId),
+              isNull(schema.leads.deletedAt),
+              eq(schema.leads.reviewState, 'accepted')
+            )
+          )
+          .limit(1);
+        if (!lead) {
+          await db
+            .update(schema.linkedinSyncImports)
+            .set({
+              ignoredItems: sql`${schema.linkedinSyncImports.ignoredItems} + ${payload.messages.length}`,
+              updatedAt: new Date(),
+            })
+            .where(eq(schema.linkedinSyncImports.id, claimed.importId));
+          result.ignored += payload.messages.length;
+        } else {
+          const insertedMessages = await db
+            .insert(schema.linkedinMessageRecords)
+            .values(
+              payload.messages.map((message) => ({
+                importId: claimed.importId,
+                externalMessageKey: message.externalMessageKey,
+                externalConversationId: payload.conversationId,
+                leadId: lead.id,
+                direction: message.direction,
+                senderName: message.senderName,
+                senderProfileUrl: message.senderProfileUrl,
+                content: message.content,
+                subject: message.subject,
+                sentAt: new Date(message.sentAt),
+              }))
+            )
+            .onConflictDoNothing()
+            .returning();
+
+          for (const message of insertedMessages) {
+            await db
+              .insert(schema.activities)
+              .values({
+                type: 'linkedin_outreach',
+                subject:
+                  message.direction === 'outbound'
+                    ? 'LinkedIn message sent'
+                    : 'LinkedIn message received',
+                content: message.content,
+                leadId: lead.id,
+                contactId: null,
+                companyId: null,
+                opportunityId: null,
+                externalSource: 'linkedin_message',
+                externalId: message.externalMessageKey,
+                actorId: importRun.importedBy,
+                happenedAt: message.sentAt,
+              })
+              .onConflictDoNothing();
+          }
+
+          const conversationMessages = await db
+            .select()
+            .from(schema.linkedinMessageRecords)
+            .where(
+              and(
+                eq(schema.linkedinMessageRecords.externalConversationId, payload.conversationId),
+                eq(schema.linkedinMessageRecords.leadId, lead.id)
+              )
+            )
+            .orderBy(asc(schema.linkedinMessageRecords.sentAt));
+          const last = conversationMessages[conversationMessages.length - 1];
+          if (last) {
+            const outboundCount = conversationMessages.filter(
+              (message) => message.direction === 'outbound'
+            ).length;
+            await upsertImportedLinkedInChannel(db, lead, {
+              stage: last.direction === 'outbound' ? 'awaiting_reply' : 'replied',
+              lastAttemptAt: last.sentAt,
+              attemptCount: outboundCount,
+            });
+            const conversationValues = {
+              externalConversationId: payload.conversationId,
+              leadId: lead.id,
+              otherPartyName: payload.otherPartyName,
+              otherPartyProfileUrl: payload.otherPartyProfileUrl,
+              ownerProfileUrl: payload.ownerProfileUrl,
+              messageCount: conversationMessages.length,
+              outboundCount,
+              lastMessageAt: last.sentAt,
+              lastMessageFromUs: last.direction === 'outbound',
+              messages: conversationMessages.map((message) => ({
+                sentAt: message.sentAt.toISOString(),
+                direction: message.direction,
+                senderName: message.senderName,
+                senderProfileUrl: message.senderProfileUrl,
+                content: message.content,
+                subject: message.subject,
+              })),
+              importedBy: importRun.importedBy,
+              updatedAt: new Date(),
+            };
+            await db
+              .insert(schema.linkedinConversations)
+              .values(conversationValues)
+              .onConflictDoUpdate({
+                target: [
+                  schema.linkedinConversations.importedBy,
+                  schema.linkedinConversations.externalConversationId,
+                ],
+                set: conversationValues,
+              });
+          }
+          await db
+            .update(schema.linkedinSyncImports)
+            .set({
+              matchedItems: sql`${schema.linkedinSyncImports.matchedItems} + ${insertedMessages.length}`,
+              updatedAt: new Date(),
+            })
+            .where(eq(schema.linkedinSyncImports.id, claimed.importId));
+          result.logged += insertedMessages.length;
+        }
+      }
+
+      await db
+        .update(schema.linkedinSyncJobs)
+        .set({
+          status: 'completed',
+          completedAt: new Date(),
+          lockedAt: null,
+          lastError: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.linkedinSyncJobs.id, claimed.id));
+      await finalizeLinkedinSyncImport(db, claimed.importId);
+    } catch (error) {
+      const message = (
+        error instanceof Error ? error.message : 'LinkedIn message sync failed'
+      ).slice(0, 1000);
+      const backoffMinutes = Math.min(120, 2 ** Math.max(0, claimed.attempts));
+      await db
+        .update(schema.linkedinSyncJobs)
+        .set({
+          status: 'failed',
+          nextAttemptAt: new Date(Date.now() + backoffMinutes * 60_000),
+          lockedAt: null,
+          lastError: message,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.linkedinSyncJobs.id, claimed.id));
+      result.failed += 1;
+    }
+  }
+  return result;
+}
+
+async function drainLinkedinInvitationSyncQueue(db: CrmDb, limit: number) {
+  const now = new Date();
+  const jobs = await db
+    .select()
+    .from(schema.linkedinSyncJobs)
+    .where(
+      and(
+        eq(schema.linkedinSyncJobs.kind, 'invitation_reconcile'),
+        inArray(schema.linkedinSyncJobs.status, ['pending', 'failed']),
+        lte(schema.linkedinSyncJobs.nextAttemptAt, now)
+      )
+    )
+    .orderBy(asc(schema.linkedinSyncJobs.nextAttemptAt), asc(schema.linkedinSyncJobs.createdAt))
+    .limit(limit);
+  const result = { claimed: 0, pending: 0, accepted: 0, skipped: 0, failed: 0 };
+
+  for (const job of jobs) {
+    const [claimed] = await db
+      .update(schema.linkedinSyncJobs)
+      .set({
+        status: 'processing',
+        attempts: sql`${schema.linkedinSyncJobs.attempts} + 1`,
+        lockedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(schema.linkedinSyncJobs.id, job.id),
+          inArray(schema.linkedinSyncJobs.status, ['pending', 'failed'])
+        )
+      )
+      .returning();
+    if (!claimed) continue;
+    result.claimed += 1;
+    try {
+      const payload = claimed.payload as {
+        action: 'pending' | 'accepted';
+        profileUrl: string;
+        otherPartyName: string;
+        sentAt: string;
+      };
+      const [lead] = claimed.leadId
+        ? await db
+            .select()
+            .from(schema.leads)
+            .where(
+              and(
+                eq(schema.leads.id, claimed.leadId),
+                isNull(schema.leads.deletedAt),
+                eq(schema.leads.reviewState, 'accepted')
+              )
+            )
+            .limit(1)
+        : [];
+      if (!lead) {
+        result.skipped += 1;
+      } else {
+        const [importRun] = await db
+          .select()
+          .from(schema.linkedinSyncImports)
+          .where(eq(schema.linkedinSyncImports.id, claimed.importId))
+          .limit(1);
+        if (!importRun) throw new Error('LinkedIn invitation import run no longer exists.');
+        const accepted = payload.action === 'accepted';
+        await upsertImportedLinkedInChannel(db, lead, {
+          stage: accepted ? 'connection_accepted' : 'connection_request_sent',
+          lastAttemptAt: accepted ? new Date() : new Date(payload.sentAt),
+          attemptCount: 1,
+        });
+        await db
+          .insert(schema.activities)
+          .values({
+            type: 'linkedin_outreach',
+            subject: accepted
+              ? 'LinkedIn connection accepted (pending snapshot reconciliation)'
+              : 'LinkedIn connection request pending',
+            content: accepted
+              ? 'The lead was no longer present in the latest complete pending-invitations export.'
+              : null,
+            leadId: lead.id,
+            contactId: null,
+            companyId: null,
+            opportunityId: null,
+            externalSource: 'linkedin_invitation_sync',
+            externalId: claimed.externalKey,
+            actorId: importRun.importedBy,
+            happenedAt: accepted ? new Date() : new Date(payload.sentAt),
+          })
+          .onConflictDoNothing();
+        await db
+          .update(schema.linkedinSyncImports)
+          .set({
+            matchedItems: sql`${schema.linkedinSyncImports.matchedItems} + 1`,
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.linkedinSyncImports.id, claimed.importId));
+        if (accepted) result.accepted += 1;
+        else result.pending += 1;
+      }
+      await db
+        .update(schema.linkedinSyncJobs)
+        .set({
+          status: 'completed',
+          completedAt: new Date(),
+          lockedAt: null,
+          lastError: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.linkedinSyncJobs.id, claimed.id));
+      await finalizeLinkedinSyncImport(db, claimed.importId);
+    } catch (error) {
+      await db
+        .update(schema.linkedinSyncJobs)
+        .set({
+          status: 'failed',
+          nextAttemptAt: new Date(Date.now() + 5 * 60_000),
+          lockedAt: null,
+          lastError: (error instanceof Error
+            ? error.message
+            : 'Invitation reconciliation failed'
+          ).slice(0, 1000),
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.linkedinSyncJobs.id, claimed.id));
+      result.failed += 1;
+    }
+  }
+  return result;
+}
+
+app.post('/internal/linkedin-sync-queue/drain', async (c) => {
+  const configuredSecret = c.env.WORKFLOW_RUNNER_SECRET;
+  const authorization = c.req.header('Authorization');
+  if (!configuredSecret || authorization !== `Bearer ${configuredSecret}`) {
+    return c.json({ error: 'Unauthorized.' }, 401);
+  }
+  const db = getDb(c.env, schema) as CrmDb;
+  const messageLimit = Math.min(10, Math.max(1, Number(c.req.query('messageLimit') ?? 5)));
+  const invitationLimit = Math.min(50, Math.max(1, Number(c.req.query('invitationLimit') ?? 25)));
+  const messageUpdater = await drainLinkedinMessageSyncQueue(db, c.env, messageLimit);
+  const invitationReconciler = await drainLinkedinInvitationSyncQueue(db, invitationLimit);
+  return c.json({ messageUpdater, invitationReconciler });
+});
+
 app.use('/api/*', requireAuth);
 app.use('/api/admin/*', requireSuperadmin());
 
@@ -2194,19 +2633,76 @@ app.get('/api/dashboard', async (c) => {
   `);
 
   const rows = (result as unknown as { rows?: Array<{ dashboard: unknown }> }).rows ?? [];
-  return c.json(
-    rows[0]?.dashboard ?? {
-      observedAt: new Date(),
-      kpis: {},
-      prospectReview: {},
-      journey: [],
-      queues: {},
-      priorityLeads: [],
-      recentLeads: [],
-      tasks: [],
-      aiUsage: null,
-    }
-  );
+  const [lastMessageDumpRows, lastInvitationDumpRows, linkedinQueueRows, [flagCount]] =
+    await Promise.all([
+      db
+        .select()
+        .from(schema.linkedinSyncImports)
+        .where(eq(schema.linkedinSyncImports.kind, 'messages'))
+        .orderBy(desc(schema.linkedinSyncImports.createdAt))
+        .limit(1),
+      db
+        .select()
+        .from(schema.linkedinSyncImports)
+        .where(eq(schema.linkedinSyncImports.kind, 'invitations'))
+        .orderBy(desc(schema.linkedinSyncImports.createdAt))
+        .limit(1),
+      db
+        .select({
+          kind: schema.linkedinSyncJobs.kind,
+          waiting: sql<number>`count(*) filter (where ${schema.linkedinSyncJobs.status} = 'pending')::int`,
+          processing: sql<number>`count(*) filter (where ${schema.linkedinSyncJobs.status} = 'processing')::int`,
+          retrying: sql<number>`count(*) filter (where ${schema.linkedinSyncJobs.status} = 'failed')::int`,
+          completed24h: sql<number>`count(*) filter (
+            where ${schema.linkedinSyncJobs.status} = 'completed'
+            and ${schema.linkedinSyncJobs.completedAt} >= now() - interval '24 hours'
+          )::int`,
+          latestCompletedAt: sql<Date | null>`max(${schema.linkedinSyncJobs.completedAt})`,
+        })
+        .from(schema.linkedinSyncJobs)
+        .groupBy(schema.linkedinSyncJobs.kind),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(schema.linkedinSyncFlags)
+        .where(eq(schema.linkedinSyncFlags.status, 'open')),
+    ]);
+  const linkedinQueue = (kind: string) => {
+    const row = linkedinQueueRows.find((item) => item.kind === kind);
+    const waiting = Number(row?.waiting) || 0;
+    const processing = Number(row?.processing) || 0;
+    const retrying = Number(row?.retrying) || 0;
+    return {
+      active: waiting + processing + retrying,
+      waiting,
+      processing,
+      retrying,
+      completed24h: Number(row?.completed24h) || 0,
+      latestCompletedAt: row?.latestCompletedAt?.toISOString() ?? null,
+    };
+  };
+  const dashboard = (rows[0]?.dashboard ?? {
+    observedAt: new Date(),
+    kpis: {},
+    prospectReview: {},
+    journey: [],
+    queues: {},
+    priorityLeads: [],
+    recentLeads: [],
+    tasks: [],
+    aiUsage: null,
+  }) as Record<string, unknown>;
+  return c.json({
+    ...dashboard,
+    linkedinSync: {
+      lastMessageDump: lastMessageDumpRows[0] ?? null,
+      lastInvitationDump: lastInvitationDumpRows[0] ?? null,
+      openFlags: Number(flagCount?.count) || 0,
+      queues: {
+        messages: linkedinQueue('message_conversation'),
+        invitations: linkedinQueue('invitation_reconcile'),
+      },
+    },
+  });
 });
 
 function leadQualificationValues(leadId: string, assessment: ai.LeadQualificationAssessment) {
@@ -7647,7 +8143,7 @@ async function upsertImportedLinkedInChannel(
   db: CrmDb,
   lead: typeof schema.leads.$inferSelect,
   patch: {
-    stage: 'awaiting_reply' | 'replied' | 'connection_request_sent';
+    stage: 'awaiting_reply' | 'replied' | 'connection_request_sent' | 'connection_accepted';
     lastAttemptAt: Date;
     attemptCount: number;
   }
@@ -7659,8 +8155,14 @@ async function upsertImportedLinkedInChannel(
       and(eq(schema.leadChannels.leadId, lead.id), eq(schema.leadChannels.channel, 'linkedin'))
     );
   if (existing) {
+    const canApplyConnectionRequest =
+      patch.stage !== 'connection_request_sent' ||
+      existing.stage === 'not_started' ||
+      existing.stage === 'connection_request_sent';
     const useIncomingState =
-      !existing.lastAttemptAt || existing.lastAttemptAt <= patch.lastAttemptAt;
+      patch.stage === 'connection_accepted' ||
+      (canApplyConnectionRequest &&
+        (!existing.lastAttemptAt || existing.lastAttemptAt <= patch.lastAttemptAt));
     await db
       .update(schema.leadChannels)
       .set({
@@ -7734,6 +8236,530 @@ app.delete('/api/ceo-chat/history', async (c) => {
     app: 'crm',
   });
   return c.json({ success: true });
+});
+
+async function linkedinLeadLookup(db: CrmDb) {
+  const rows = await db.select().from(schema.leads).where(isNull(schema.leads.deletedAt));
+  const byProfileUrl = new Map<string, typeof schema.leads.$inferSelect>();
+  const byName = new Map<string, Array<typeof schema.leads.$inferSelect>>();
+  for (const lead of rows) {
+    const profileUrl = canonicalizeLinkedinUrl(lead.linkedinUrl);
+    if (profileUrl) byProfileUrl.set(profileUrl, lead);
+    const key = normalizedLeadName(lead.firstName, lead.lastName);
+    const matches = byName.get(key) ?? [];
+    matches.push(lead);
+    byName.set(key, matches);
+  }
+  return {
+    rows,
+    resolve(profileUrl: string | null, displayName: string) {
+      if (profileUrl) {
+        const exact = byProfileUrl.get(profileUrl);
+        if (exact) return exact;
+      }
+      const { firstName, lastName } = splitLinkedInDisplayName(displayName);
+      const matches = byName.get(normalizedLeadName(firstName, lastName)) ?? [];
+      return matches.length === 1 ? matches[0]! : null;
+    },
+  };
+}
+
+async function existingLinkedinMessageKeys(db: CrmDb, keys: string[]): Promise<Set<string>> {
+  const found = new Set<string>();
+  for (const chunk of chunksOf(keys, 250)) {
+    if (chunk.length === 0) continue;
+    const rows = await db
+      .select({ key: schema.linkedinMessageRecords.externalMessageKey })
+      .from(schema.linkedinMessageRecords)
+      .where(inArray(schema.linkedinMessageRecords.externalMessageKey, chunk));
+    rows.forEach((row) => found.add(row.key));
+  }
+  return found;
+}
+
+async function createLinkedinImportHistoryMessage(
+  db: CrmDb,
+  userId: string,
+  importRun: typeof schema.linkedinSyncImports.$inferSelect,
+  summary: string
+) {
+  const [historyMessage] = await db
+    .insert(schema.chatMessages)
+    .values({
+      userId,
+      role: 'ceo_assistant',
+      content: summary,
+      contextIds: [
+        {
+          resourceType: `linkedin_${importRun.kind}_import`,
+          resourceId: importRun.id,
+        },
+      ],
+    })
+    .returning({
+      id: schema.chatMessages.id,
+      createdAt: schema.chatMessages.createdAt,
+    });
+  return historyMessage
+    ? {
+        id: historyMessage.id,
+        role: 'assistant' as const,
+        content: summary,
+        createdAt: historyMessage.createdAt.toISOString(),
+      }
+    : null;
+}
+
+app.post('/api/ceo-chat/import-linkedin-messages', async (c) => {
+  if (!c.get('isSuperadmin')) return c.json({ error: 'Forbidden.' }, 403);
+  const userId = c.get('userId');
+  const rateLimit = checkRateLimit(`ceo-linkedin-message-import:${userId}`, 6, 10 * 60 * 1000);
+  if (!rateLimit.allowed) {
+    c.header('Retry-After', String(rateLimit.retryAfter ?? 60));
+    return c.json({ error: 'Too many message imports. Please wait and try again.' }, 429);
+  }
+
+  const formData = await c.req.formData();
+  const file = formData.get('file');
+  if (!isLinkedInUploadFile(file))
+    return c.json({ error: 'Choose one Messages CSV/XLSX file.' }, 400);
+  if (file.size > 20 * 1024 * 1024) return c.json({ error: 'File must be 20 MB or smaller.' }, 413);
+
+  const parsedSheets = await parseLinkedInExportUpload(file);
+  const messageRows = parsedSheets
+    .filter((sheet) => detectLinkedInExportKind(sheet.rows) === 'messages')
+    .flatMap((sheet) => sheet.rows);
+  if (messageRows.length === 0) {
+    return c.json({ error: 'This is not a LinkedIn Messages export.' }, 400);
+  }
+  const suppliedOwnerProfileUrl = canonicalizeLinkedinUrl(formData.get('ownerProfileUrl'));
+  const conversations = summarizeLinkedInConversations(messageRows, suppliedOwnerProfileUrl);
+  if (!conversations.ownerProfileUrl) {
+    return c.json(
+      { error: 'Could not identify your profile URL. Enter it and retry this Messages export.' },
+      400
+    );
+  }
+
+  const db = getDb(c.env, schema) as CrmDb;
+  const fileHash = await sha256(await file.arrayBuffer());
+  const [prior] = await db
+    .select()
+    .from(schema.linkedinSyncImports)
+    .where(
+      and(
+        eq(schema.linkedinSyncImports.importedBy, userId),
+        eq(schema.linkedinSyncImports.kind, 'messages'),
+        eq(schema.linkedinSyncImports.fileHash, fileHash)
+      )
+    )
+    .limit(1);
+  if (prior) {
+    return c.json({
+      success: true,
+      duplicate: true,
+      import: prior,
+      summary: 'This exact Messages export was already stored. No duplicate jobs were created.',
+      historyMessage: null,
+    });
+  }
+
+  const keyedConversations = await Promise.all(
+    conversations.conversations.map(async (conversation) => ({
+      conversation,
+      messages: await Promise.all(
+        conversation.messages.map(async (message) => ({
+          ...message,
+          externalMessageKey: await linkedinMessageKey(conversation.conversationId, message),
+        }))
+      ),
+    }))
+  );
+  const allKeys = keyedConversations.flatMap((item) =>
+    item.messages.map((message) => message.externalMessageKey)
+  );
+  const knownKeys = await existingLinkedinMessageKeys(db, allKeys);
+  const lookup = await linkedinLeadLookup(db);
+  const pendingJobs: Array<typeof schema.linkedinSyncJobs.$inferInsert> = [];
+  const seenDeltaKeys = new Set<string>();
+  let newMessages = 0;
+  let preIgnored = 0;
+
+  const [importRun] = await db
+    .insert(schema.linkedinSyncImports)
+    .values({
+      kind: 'messages',
+      fileHash,
+      originalFilename: file.name,
+      status: 'processing',
+      totalRows: messageRows.length,
+      importedBy: userId,
+      ownerProfileUrl: conversations.ownerProfileUrl,
+      sourceTimezone:
+        typeof formData.get('sourceTimezone') === 'string'
+          ? String(formData.get('sourceTimezone')).slice(0, 100)
+          : null,
+      details: {
+        conversations: conversations.conversations.length,
+        skippedRows: conversations.skippedRows,
+      },
+    })
+    .returning();
+  if (!importRun) return c.json({ error: 'Could not create the message import run.' }, 500);
+
+  for (const item of keyedConversations) {
+    const delta = item.messages.filter((message) => {
+      if (
+        knownKeys.has(message.externalMessageKey) ||
+        seenDeltaKeys.has(message.externalMessageKey)
+      ) {
+        return false;
+      }
+      seenDeltaKeys.add(message.externalMessageKey);
+      return true;
+    });
+    if (delta.length === 0) continue;
+    newMessages += delta.length;
+    const lead = lookup.resolve(
+      item.conversation.otherPartyProfileUrl,
+      item.conversation.otherPartyName
+    );
+    if (!lead && !shouldClassifyUnmatchedConversation(item.conversation)) {
+      preIgnored += delta.length;
+      continue;
+    }
+    const payload: LinkedInMessageJobPayload = {
+      conversationId: item.conversation.conversationId,
+      otherPartyName: item.conversation.otherPartyName,
+      otherPartyProfileUrl: item.conversation.otherPartyProfileUrl,
+      ownerProfileUrl: conversations.ownerProfileUrl,
+      messages: delta,
+      fullConversationMessageCount: item.conversation.messages.length,
+      fullConversationExcerpt: item.conversation.messages,
+    };
+    pendingJobs.push({
+      importId: importRun.id,
+      kind: 'message_conversation',
+      externalKey: item.conversation.conversationId,
+      leadId: lead?.id ?? null,
+      payload,
+    });
+  }
+
+  for (const chunk of chunksOf(pendingJobs, 100)) {
+    if (chunk.length > 0)
+      await db.insert(schema.linkedinSyncJobs).values(chunk).onConflictDoNothing();
+  }
+  const finalStatus = pendingJobs.length === 0 ? 'completed' : 'processing';
+  const [updatedImport] = await db
+    .update(schema.linkedinSyncImports)
+    .set({
+      status: finalStatus,
+      newItems: newMessages,
+      ignoredItems: preIgnored,
+      completedAt: finalStatus === 'completed' ? new Date() : null,
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.linkedinSyncImports.id, importRun.id))
+    .returning();
+  const summary = [
+    '### LinkedIn Messages queued',
+    '',
+    `- **Rows in this export:** ${messageRows.length}`,
+    `- **New messages versus prior imports:** ${newMessages}`,
+    `- **Conversation jobs queued:** ${pendingJobs.length}`,
+    `- **Clearly unrelated unmatched messages ignored immediately:** ${preIgnored}`,
+    '',
+    'The cheap LinkedIn Message Updater processes five conversations per minute. It only logs messages against existing accepted leads; substantial unmatched Skarion conversations appear as dashboard review flags.',
+  ].join('\n');
+  const historyMessage = await createLinkedinImportHistoryMessage(
+    db,
+    userId,
+    updatedImport!,
+    summary
+  );
+  await withAudit(db, schema.auditLog, {
+    actorUserId: userId,
+    action: 'import',
+    resourceType: 'linkedin_messages_delta',
+    resourceId: importRun.id,
+    after: { file: file.name, rows: messageRows.length, newMessages, jobs: pendingJobs.length },
+    app: 'crm',
+  });
+  return c.json({
+    success: true,
+    duplicate: false,
+    import: updatedImport,
+    queuedJobs: pendingJobs.length,
+    newMessages,
+    summary,
+    historyMessage,
+  });
+});
+
+app.post('/api/ceo-chat/import-linkedin-invitations', async (c) => {
+  if (!c.get('isSuperadmin')) return c.json({ error: 'Forbidden.' }, 403);
+  const userId = c.get('userId');
+  const rateLimit = checkRateLimit(`ceo-linkedin-invitation-import:${userId}`, 6, 10 * 60 * 1000);
+  if (!rateLimit.allowed) {
+    c.header('Retry-After', String(rateLimit.retryAfter ?? 60));
+    return c.json({ error: 'Too many invitation imports. Please wait and try again.' }, 429);
+  }
+  const formData = await c.req.formData();
+  const file = formData.get('file');
+  if (!isLinkedInUploadFile(file)) {
+    return c.json({ error: 'Choose one Invitations CSV/XLSX file.' }, 400);
+  }
+  if (file.size > 20 * 1024 * 1024) return c.json({ error: 'File must be 20 MB or smaller.' }, 413);
+  const parsedSheets = await parseLinkedInExportUpload(file);
+  const invitationRows = parsedSheets
+    .filter((sheet) => detectLinkedInExportKind(sheet.rows) === 'invitations')
+    .flatMap((sheet) => sheet.rows);
+  if (invitationRows.length === 0) {
+    return c.json({ error: 'This is not a LinkedIn Invitations export.' }, 400);
+  }
+  const sourceTimezone =
+    typeof formData.get('sourceTimezone') === 'string'
+      ? String(formData.get('sourceTimezone')).slice(0, 100)
+      : null;
+  const invitations = summarizeLinkedInInvitations(invitationRows, sourceTimezone);
+  const db = getDb(c.env, schema) as CrmDb;
+  const fileHash = await sha256(await file.arrayBuffer());
+  const [prior] = await db
+    .select()
+    .from(schema.linkedinSyncImports)
+    .where(
+      and(
+        eq(schema.linkedinSyncImports.importedBy, userId),
+        eq(schema.linkedinSyncImports.kind, 'invitations'),
+        eq(schema.linkedinSyncImports.fileHash, fileHash)
+      )
+    )
+    .limit(1);
+  if (prior) {
+    return c.json({
+      success: true,
+      duplicate: true,
+      import: prior,
+      summary: 'This exact Invitations export was already stored. No statuses were changed twice.',
+      historyMessage: null,
+    });
+  }
+
+  const lookup = await linkedinLeadLookup(db);
+  const uniqueInvitations = new Map(
+    invitations.invitations.map((invitation) => [invitation.otherPartyProfileUrl, invitation])
+  );
+  const [importRun] = await db
+    .insert(schema.linkedinSyncImports)
+    .values({
+      kind: 'invitations',
+      fileHash,
+      originalFilename: file.name,
+      status: 'processing',
+      totalRows: invitationRows.length,
+      importedBy: userId,
+      sourceTimezone,
+      details: {
+        pendingInvitations: uniqueInvitations.size,
+        skippedRows: invitations.skippedRows,
+        completeSnapshot: true,
+      },
+    })
+    .returning();
+  if (!importRun) return c.json({ error: 'Could not create the invitation import run.' }, 500);
+
+  const entries: Array<typeof schema.linkedinInvitationSnapshotEntries.$inferInsert> = [];
+  const jobs: Array<typeof schema.linkedinSyncJobs.$inferInsert> = [];
+  const pendingUrls = new Set(uniqueInvitations.keys());
+  let unmatched = 0;
+  for (const invitation of uniqueInvitations.values()) {
+    const lead = lookup.resolve(invitation.otherPartyProfileUrl, invitation.otherPartyName);
+    entries.push({
+      importId: importRun.id,
+      otherPartyProfileUrl: invitation.otherPartyProfileUrl,
+      otherPartyName: invitation.otherPartyName,
+      sentAt: invitation.sentAt,
+      leadId: lead?.id ?? null,
+    });
+    if (!lead || lead.reviewState !== 'accepted') {
+      unmatched += 1;
+      continue;
+    }
+    jobs.push({
+      importId: importRun.id,
+      kind: 'invitation_reconcile',
+      externalKey: invitationExternalKey(invitation.otherPartyProfileUrl, 'pending'),
+      leadId: lead.id,
+      payload: {
+        action: 'pending',
+        profileUrl: invitation.otherPartyProfileUrl,
+        otherPartyName: invitation.otherPartyName,
+        sentAt: invitation.sentAt.toISOString(),
+      },
+    });
+  }
+
+  for (const lead of lookup.rows) {
+    const profileUrl = canonicalizeLinkedinUrl(lead.linkedinUrl);
+    if (
+      lead.reviewState !== 'accepted' ||
+      lead.journeyStage !== 'connection_sent' ||
+      !profileUrl ||
+      pendingUrls.has(profileUrl)
+    ) {
+      continue;
+    }
+    jobs.push({
+      importId: importRun.id,
+      kind: 'invitation_reconcile',
+      externalKey: invitationExternalKey(profileUrl, 'accepted'),
+      leadId: lead.id,
+      payload: {
+        action: 'accepted',
+        profileUrl,
+        otherPartyName: `${lead.firstName} ${lead.lastName}`.trim(),
+        sentAt: new Date().toISOString(),
+      },
+    });
+  }
+
+  for (const chunk of chunksOf(entries, 150)) {
+    if (chunk.length > 0) {
+      await db.insert(schema.linkedinInvitationSnapshotEntries).values(chunk).onConflictDoNothing();
+    }
+  }
+  for (const chunk of chunksOf(jobs, 100)) {
+    if (chunk.length > 0)
+      await db.insert(schema.linkedinSyncJobs).values(chunk).onConflictDoNothing();
+  }
+  const pendingJobs = jobs.filter(
+    (job) => (job.payload as { action?: string }).action === 'pending'
+  ).length;
+  const acceptedJobs = jobs.length - pendingJobs;
+  const finalStatus = jobs.length === 0 ? 'completed' : 'processing';
+  const [updatedImport] = await db
+    .update(schema.linkedinSyncImports)
+    .set({
+      status: finalStatus,
+      newItems: jobs.length,
+      ignoredItems: unmatched,
+      completedAt: finalStatus === 'completed' ? new Date() : null,
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.linkedinSyncImports.id, importRun.id))
+    .returning();
+  const summary = [
+    '### Pending LinkedIn invitations queued',
+    '',
+    `- **Outgoing pending invitations in snapshot:** ${uniqueInvitations.size}`,
+    `- **Existing leads queued as still pending:** ${pendingJobs}`,
+    `- **Connection-sent leads queued as newly accepted:** ${acceptedJobs}`,
+    `- **Profiles not found as accepted leads:** ${unmatched}`,
+    '',
+    'This snapshot is preserved for audit. The Pending Connection Reconciler updates existing leads only and processes 25 status changes per minute.',
+  ].join('\n');
+  const historyMessage = await createLinkedinImportHistoryMessage(
+    db,
+    userId,
+    updatedImport!,
+    summary
+  );
+  await withAudit(db, schema.auditLog, {
+    actorUserId: userId,
+    action: 'import',
+    resourceType: 'linkedin_invitation_snapshot',
+    resourceId: importRun.id,
+    after: {
+      file: file.name,
+      pendingInvitations: uniqueInvitations.size,
+      pendingJobs,
+      acceptedJobs,
+      unmatched,
+    },
+    app: 'crm',
+  });
+  return c.json({
+    success: true,
+    duplicate: false,
+    import: updatedImport,
+    queuedJobs: jobs.length,
+    pendingJobs,
+    acceptedJobs,
+    unmatched,
+    summary,
+    historyMessage,
+  });
+});
+
+app.get('/api/linkedin-sync/status', async (c) => {
+  if (!c.get('isSuperadmin')) return c.json({ error: 'Forbidden.' }, 403);
+  const db = getDb(c.env, schema) as CrmDb;
+  const [messageImports, invitationImports, queueRows, openFlags] = await Promise.all([
+    db
+      .select()
+      .from(schema.linkedinSyncImports)
+      .where(eq(schema.linkedinSyncImports.kind, 'messages'))
+      .orderBy(desc(schema.linkedinSyncImports.createdAt))
+      .limit(5),
+    db
+      .select()
+      .from(schema.linkedinSyncImports)
+      .where(eq(schema.linkedinSyncImports.kind, 'invitations'))
+      .orderBy(desc(schema.linkedinSyncImports.createdAt))
+      .limit(5),
+    db
+      .select({
+        kind: schema.linkedinSyncJobs.kind,
+        waiting: sql<number>`count(*) filter (where ${schema.linkedinSyncJobs.status} = 'pending')::int`,
+        processing: sql<number>`count(*) filter (where ${schema.linkedinSyncJobs.status} = 'processing')::int`,
+        retrying: sql<number>`count(*) filter (where ${schema.linkedinSyncJobs.status} = 'failed')::int`,
+        completed24h: sql<number>`count(*) filter (
+          where ${schema.linkedinSyncJobs.status} = 'completed'
+          and ${schema.linkedinSyncJobs.completedAt} >= now() - interval '24 hours'
+        )::int`,
+        latestCompletedAt: sql<Date | null>`max(${schema.linkedinSyncJobs.completedAt})`,
+      })
+      .from(schema.linkedinSyncJobs)
+      .groupBy(schema.linkedinSyncJobs.kind),
+    db
+      .select()
+      .from(schema.linkedinSyncFlags)
+      .where(eq(schema.linkedinSyncFlags.status, 'open'))
+      .orderBy(desc(schema.linkedinSyncFlags.createdAt))
+      .limit(25),
+  ]);
+  const queue = (kind: string) => {
+    const row = queueRows.find((item) => item.kind === kind);
+    const waiting = Number(row?.waiting) || 0;
+    const processing = Number(row?.processing) || 0;
+    const retrying = Number(row?.retrying) || 0;
+    return {
+      active: waiting + processing + retrying,
+      waiting,
+      processing,
+      retrying,
+      completed24h: Number(row?.completed24h) || 0,
+      latestCompletedAt: row?.latestCompletedAt?.toISOString() ?? null,
+    };
+  };
+  return c.json({
+    observedAt: new Date().toISOString(),
+    lastMessageDump: messageImports[0] ?? null,
+    lastInvitationDump: invitationImports[0] ?? null,
+    messageImports,
+    invitationImports,
+    queues: {
+      messages: queue('message_conversation'),
+      invitations: queue('invitation_reconcile'),
+    },
+    openFlags: openFlags.map((flag) => ({
+      ...flag,
+      createdAt: flag.createdAt.toISOString(),
+      updatedAt: flag.updatedAt.toISOString(),
+      reviewedAt: flag.reviewedAt?.toISOString() ?? null,
+    })),
+  });
 });
 
 app.post('/api/ceo-chat/import-linkedin', async (c) => {

@@ -136,4 +136,20 @@ describe('LinkedIn export parsing', () => {
       otherPartyProfileUrl: lead,
     });
   });
+
+  it('interprets timezone-free invitation timestamps in the uploader timezone', () => {
+    const result = summarizeLinkedInInvitations(
+      [
+        {
+          From: 'Saki',
+          To: 'Example Lead',
+          'Sent At': '7/27/26, 8:46 AM',
+          Direction: 'OUTGOING',
+          inviteeProfileUrl: lead,
+        },
+      ],
+      'America/New_York'
+    );
+    expect(result.invitations[0]?.sentAt.toISOString()).toBe('2026-07-27T12:46:00.000Z');
+  });
 });

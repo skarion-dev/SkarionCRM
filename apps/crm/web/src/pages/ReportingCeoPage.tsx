@@ -26,13 +26,14 @@ import {
   User,
   Upload,
   FileSpreadsheet,
-  X,
 } from 'lucide-react';
 import { crmStream } from '../api.js';
 import {
   useCeoChatHistory,
   useClearCeoChatHistory,
-  useImportCeoLinkedInExport,
+  useImportLinkedinInvitations,
+  useImportLinkedinMessages,
+  useLinkedinSyncStatus,
   type CeoChatMessage,
 } from '../hooks/use-api.js';
 import { useAuthStore } from '../stores/auth.js';
@@ -396,19 +397,22 @@ export default function ReportingCeoPage() {
   const isSuperadmin = useAuthStore((state) => state.user?.isSuperadmin ?? false);
   const { data: history, isLoading: historyLoading, refetch } = useCeoChatHistory();
   const clearHistory = useClearCeoChatHistory();
-  const importLinkedIn = useImportCeoLinkedInExport();
+  const importMessages = useImportLinkedinMessages();
+  const importInvitations = useImportLinkedinInvitations();
+  const linkedinSync = useLinkedinSyncStatus(isSuperadmin);
   const [messages, setMessages] = useState<CeoChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamStatus, setStreamStatus] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [importFiles, setImportFiles] = useState<File[]>([]);
+  const [messageFile, setMessageFile] = useState<File | null>(null);
+  const [invitationFile, setInvitationFile] = useState<File | null>(null);
   const [ownerProfileUrl, setOwnerProfileUrl] = useState('');
-  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
   const initializedRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const messageFileInputRef = useRef<HTMLInputElement>(null);
+  const invitationFileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!initializedRef.current && history?.messages) {
@@ -545,37 +549,50 @@ export default function ReportingCeoPage() {
     });
   };
 
-  const selectImportFiles = (files: File[]) => {
-    const supported = files.filter((file) => /\.(csv|xlsx)$/i.test(file.name)).slice(0, 4);
-    if (supported.length === 0) {
-      showToast('Choose LinkedIn Messages or Invitations CSV/XLSX files', 'error');
-      return;
-    }
-    if (files.length > 4) showToast('Only the first four files were selected', 'warning');
-    setImportFiles(supported);
-  };
-
-  const handleLinkedInImport = () => {
-    if (importFiles.length === 0 || importLinkedIn.isPending) return;
-    importLinkedIn.mutate(
-      { files: importFiles, ownerProfileUrl },
+  const handleMessageImport = () => {
+    if (!messageFile || importMessages.isPending) return;
+    importMessages.mutate(
+      { file: messageFile, ownerProfileUrl },
       {
         onSuccess: (result) => {
           if (result.historyMessage) {
             setMessages((current) => [...current, result.historyMessage!]);
           }
-          setImportFiles([]);
-          setOwnerProfileUrl(result.ownerProfileUrl ?? ownerProfileUrl);
-          if (fileInputRef.current) fileInputRef.current.value = '';
+          setMessageFile(null);
+          if (messageFileInputRef.current) messageFileInputRef.current.value = '';
           showToast(
-            `Imported ${result.totalMessages} messages and matched ${
-              result.matchedConversations + result.matchedInvitations
-            } lead records`,
+            result.duplicate
+              ? 'That exact message dump was already imported'
+              : `Queued ${result.newMessages ?? 0} new messages`,
             'success'
           );
         },
         onError: (caught) =>
-          showToast(caught instanceof Error ? caught.message : 'LinkedIn import failed', 'error'),
+          showToast(caught instanceof Error ? caught.message : 'Message import failed', 'error'),
+      }
+    );
+  };
+
+  const handleInvitationImport = () => {
+    if (!invitationFile || importInvitations.isPending) return;
+    importInvitations.mutate(
+      { file: invitationFile },
+      {
+        onSuccess: (result) => {
+          if (result.historyMessage) {
+            setMessages((current) => [...current, result.historyMessage!]);
+          }
+          setInvitationFile(null);
+          if (invitationFileInputRef.current) invitationFileInputRef.current.value = '';
+          showToast(
+            result.duplicate
+              ? 'That exact invitation snapshot was already imported'
+              : `Queued ${result.queuedJobs ?? 0} connection status updates`,
+            'success'
+          );
+        },
+        onError: (caught) =>
+          showToast(caught instanceof Error ? caught.message : 'Invitation sync failed', 'error'),
       }
     );
   };
@@ -701,100 +718,136 @@ export default function ReportingCeoPage() {
         )}
       </div>
 
-      <div
-        onDragEnter={(event) => {
-          event.preventDefault();
-          setIsDraggingFiles(true);
-        }}
-        onDragOver={(event) => event.preventDefault()}
-        onDragLeave={(event) => {
-          if (event.currentTarget === event.target) setIsDraggingFiles(false);
-        }}
-        onDrop={(event) => {
-          event.preventDefault();
-          setIsDraggingFiles(false);
-          selectImportFiles(Array.from(event.dataTransfer.files));
-        }}
-        className={`mb-4 rounded-xl border border-dashed p-3 transition ${
-          isDraggingFiles
-            ? 'border-blue-500 bg-blue-50'
-            : 'border-slate-300 bg-slate-50/70 hover:border-blue-300'
-        }`}
-      >
-        <div className="flex flex-wrap items-center gap-3">
+      <div className="mb-4 mt-4 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+        <div className="mb-3 flex items-center gap-2">
           <div className="rounded-lg bg-emerald-100 p-2 text-emerald-700">
             <FileSpreadsheet size={19} />
           </div>
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium text-slate-800">
-              Import LinkedIn Messages and Invitations
-            </div>
+          <div>
+            <div className="text-sm font-semibold text-slate-800">LinkedIn weekly sync</div>
             <p className="text-xs text-slate-500">
-              Drop the original CSV or XLSX exports. Conversations are stored, leads are matched,
-              and outreach stages are updated.
+              Separate, idempotent imports. No lead is ever created automatically.
             </p>
           </div>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            className="hidden"
-            onChange={(event) => selectImportFiles(Array.from(event.target.files ?? []))}
-          />
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isStreaming || importLinkedIn.isPending}
-            className="flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-          >
-            <Upload size={15} />
-            Choose files
-          </button>
         </div>
 
-        {importFiles.length > 0 && (
-          <div className="mt-3 space-y-2 border-t border-slate-200 pt-3">
-            <div className="flex flex-wrap gap-2">
-              {importFiles.map((file) => (
-                <span
-                  key={`${file.name}-${file.size}`}
-                  className="inline-flex items-center gap-1.5 rounded-full bg-white px-2.5 py-1 text-xs text-slate-700 ring-1 ring-slate-200"
-                >
-                  {file.name}
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setImportFiles((current) => current.filter((item) => item !== file))
-                    }
-                    className="text-slate-400 hover:text-red-500"
-                    aria-label={`Remove ${file.name}`}
-                  >
-                    <X size={12} />
-                  </button>
-                </span>
-              ))}
+        <div className="grid gap-3 lg:grid-cols-2">
+          <div className="rounded-lg border border-slate-200 bg-white p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-slate-900">Message dump</p>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Logs only new, Skarion-related messages for existing leads.
+                </p>
+              </div>
+              <span className="rounded bg-blue-50 px-2 py-1 text-[10px] font-semibold text-blue-700">
+                {linkedinSync.data?.queues.messages.active ?? 0} queued
+              </span>
             </div>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <input
-                value={ownerProfileUrl}
-                onChange={(event) => setOwnerProfileUrl(event.target.value)}
-                placeholder="Your LinkedIn profile URL (optional; inferred from Messages)"
-                className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-400"
-              />
+            <input
+              ref={messageFileInputRef}
+              type="file"
+              accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              className="hidden"
+              onChange={(event) => setMessageFile(event.target.files?.[0] ?? null)}
+            />
+            <input
+              value={ownerProfileUrl}
+              onChange={(event) => setOwnerProfileUrl(event.target.value)}
+              placeholder="Your LinkedIn profile URL (usually inferred)"
+              className="mt-3 w-full rounded-lg border border-slate-200 px-3 py-2 text-xs outline-none focus:border-blue-400"
+            />
+            <div className="mt-2 flex gap-2">
               <button
                 type="button"
-                onClick={handleLinkedInImport}
-                disabled={importLinkedIn.isPending || isStreaming}
-                className="flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:cursor-wait disabled:bg-emerald-300"
+                onClick={() => messageFileInputRef.current?.click()}
+                className="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
               >
-                {importLinkedIn.isPending ? (
-                  <Loader2 size={15} className="animate-spin" />
-                ) : (
-                  <Upload size={15} />
-                )}
-                {importLinkedIn.isPending ? 'Updating CRM…' : 'Import and update CRM'}
+                <Upload size={14} />
+                <span className="truncate">{messageFile?.name ?? 'Choose messages.csv'}</span>
               </button>
+              <button
+                type="button"
+                onClick={handleMessageImport}
+                disabled={!messageFile || importMessages.isPending}
+                className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40"
+              >
+                {importMessages.isPending ? 'Reading…' : 'Import messages'}
+              </button>
+            </div>
+            <p className="mt-2 text-[11px] text-slate-400">
+              Last dump:{' '}
+              {linkedinSync.data?.lastMessageDump
+                ? new Date(linkedinSync.data.lastMessageDump.createdAt).toLocaleString()
+                : 'Never'}
+            </p>
+          </div>
+
+          <div className="rounded-lg border border-slate-200 bg-white p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-slate-900">Pending connections</p>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  A missing connection-sent lead is advanced to Connected.
+                </p>
+              </div>
+              <span className="rounded bg-violet-50 px-2 py-1 text-[10px] font-semibold text-violet-700">
+                {linkedinSync.data?.queues.invitations.active ?? 0} queued
+              </span>
+            </div>
+            <input
+              ref={invitationFileInputRef}
+              type="file"
+              accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              className="hidden"
+              onChange={(event) => setInvitationFile(event.target.files?.[0] ?? null)}
+            />
+            <div className="mt-[42px] flex gap-2">
+              <button
+                type="button"
+                onClick={() => invitationFileInputRef.current?.click()}
+                className="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+              >
+                <Upload size={14} />
+                <span className="truncate">{invitationFile?.name ?? 'Choose Invitations.csv'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleInvitationImport}
+                disabled={!invitationFile || importInvitations.isPending}
+                className="rounded-lg bg-violet-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40"
+              >
+                {importInvitations.isPending ? 'Reading…' : 'Sync invitations'}
+              </button>
+            </div>
+            <p className="mt-2 text-[11px] text-slate-400">
+              Last dump:{' '}
+              {linkedinSync.data?.lastInvitationDump
+                ? new Date(linkedinSync.data.lastInvitationDump.createdAt).toLocaleString()
+                : 'Never'}
+            </p>
+          </div>
+        </div>
+
+        {(linkedinSync.data?.openFlags.length ?? 0) > 0 && (
+          <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+            <p className="text-xs font-semibold text-amber-900">
+              {linkedinSync.data!.openFlags.length} unmatched conversation
+              {linkedinSync.data!.openFlags.length === 1 ? '' : 's'} may deserve a lead
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {linkedinSync.data!.openFlags.slice(0, 6).map((flag) => (
+                <a
+                  key={flag.id}
+                  href={flag.otherPartyProfileUrl ?? undefined}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded-full bg-white px-2.5 py-1 text-[11px] text-amber-900 ring-1 ring-amber-200"
+                  title={flag.reason}
+                >
+                  {flag.otherPartyName} · {flag.messageCount} messages
+                </a>
+              ))}
             </div>
           </div>
         )}

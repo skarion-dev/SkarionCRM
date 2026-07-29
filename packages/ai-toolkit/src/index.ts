@@ -193,6 +193,8 @@ export type AiAgentId =
   | 'profile-normalizer'
   | 'document-ocr'
   | 'linkedin-connection-writer'
+  | 'linkedin-message-updater'
+  | 'linkedin-invitation-reconciler'
   | 'outreach-writer'
   | 'lead-scorer'
   | 'next-best-action'
@@ -252,6 +254,20 @@ export const AI_AGENTS: ReadonlyArray<{
     name: 'LinkedIn Connection Writer',
     description:
       'Creates a verified, personalized connection note that is ready to paste and never exceeds 300 characters.',
+    tier: 'cheap',
+  },
+  {
+    id: 'linkedin-message-updater',
+    name: 'LinkedIn Message Updater',
+    description:
+      'Classifies weekly LinkedIn message deltas, logs relevant messages against existing leads, and flags substantial unmatched Skarion conversations.',
+    tier: 'cheap',
+  },
+  {
+    id: 'linkedin-invitation-reconciler',
+    name: 'Pending Connection Reconciler',
+    description:
+      'Reconciles complete pending-invitation snapshots and advances existing leads when a sent request is no longer pending.',
     tier: 'cheap',
   },
   {

@@ -615,6 +615,136 @@ export const linkedinConversations = crmSchema.table(
   ]
 );
 
+export const linkedinSyncImports = crmSchema.table(
+  'linkedin_sync_imports',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    kind: text('kind').notNull(),
+    fileHash: text('file_hash').notNull(),
+    originalFilename: text('original_filename').notNull(),
+    status: text('status').default('pending').notNull(),
+    totalRows: integer('total_rows').default(0).notNull(),
+    newItems: integer('new_items').default(0).notNull(),
+    matchedItems: integer('matched_items').default(0).notNull(),
+    ignoredItems: integer('ignored_items').default(0).notNull(),
+    flaggedItems: integer('flagged_items').default(0).notNull(),
+    importedBy: uuid('imported_by').notNull(),
+    ownerProfileUrl: text('owner_profile_url'),
+    sourceTimezone: text('source_timezone'),
+    details: jsonb('details')
+      .default(sql`'{}'::jsonb`)
+      .notNull(),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    ...timestamps(),
+  },
+  (table) => [
+    uniqueIndex('idx_linkedin_sync_import_file').on(table.importedBy, table.kind, table.fileHash),
+    index('idx_linkedin_sync_import_kind_created').on(table.kind, table.createdAt),
+    index('idx_linkedin_sync_import_status').on(table.status),
+  ]
+);
+
+export const linkedinSyncJobs = crmSchema.table(
+  'linkedin_sync_jobs',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    importId: uuid('import_id')
+      .notNull()
+      .references(() => linkedinSyncImports.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(),
+    externalKey: text('external_key').notNull(),
+    leadId: uuid('lead_id').references(() => leads.id, { onDelete: 'set null' }),
+    payload: jsonb('payload').notNull(),
+    status: text('status').default('pending').notNull(),
+    attempts: integer('attempts').default(0).notNull(),
+    nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).defaultNow().notNull(),
+    lockedAt: timestamp('locked_at', { withTimezone: true }),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    lastError: text('last_error'),
+    ...timestamps(),
+  },
+  (table) => [
+    uniqueIndex('idx_linkedin_sync_jobs_import_key').on(
+      table.importId,
+      table.kind,
+      table.externalKey
+    ),
+    index('idx_linkedin_sync_jobs_queue').on(table.status, table.nextAttemptAt),
+    index('idx_linkedin_sync_jobs_import').on(table.importId),
+  ]
+);
+
+export const linkedinMessageRecords = crmSchema.table(
+  'linkedin_message_records',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    importId: uuid('import_id')
+      .notNull()
+      .references(() => linkedinSyncImports.id, { onDelete: 'restrict' }),
+    externalMessageKey: text('external_message_key').notNull(),
+    externalConversationId: text('external_conversation_id').notNull(),
+    leadId: uuid('lead_id')
+      .notNull()
+      .references(() => leads.id, { onDelete: 'cascade' }),
+    direction: text('direction').notNull(),
+    senderName: text('sender_name').notNull(),
+    senderProfileUrl: text('sender_profile_url'),
+    content: text('content').notNull(),
+    subject: text('subject').default('').notNull(),
+    sentAt: timestamp('sent_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('idx_linkedin_message_external_key').on(table.externalMessageKey),
+    index('idx_linkedin_message_lead_sent').on(table.leadId, table.sentAt),
+    index('idx_linkedin_message_import').on(table.importId),
+  ]
+);
+
+export const linkedinSyncFlags = crmSchema.table(
+  'linkedin_sync_flags',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    importId: uuid('import_id')
+      .notNull()
+      .references(() => linkedinSyncImports.id, { onDelete: 'cascade' }),
+    externalConversationId: text('external_conversation_id').notNull(),
+    otherPartyName: text('other_party_name').notNull(),
+    otherPartyProfileUrl: text('other_party_profile_url'),
+    messageCount: integer('message_count').default(0).notNull(),
+    reason: text('reason').notNull(),
+    status: text('status').default('open').notNull(),
+    reviewedBy: uuid('reviewed_by'),
+    reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
+    ...timestamps(),
+  },
+  (table) => [
+    uniqueIndex('idx_linkedin_sync_flag_import_conversation').on(
+      table.importId,
+      table.externalConversationId
+    ),
+    index('idx_linkedin_sync_flag_status').on(table.status, table.createdAt),
+  ]
+);
+
+export const linkedinInvitationSnapshotEntries = crmSchema.table(
+  'linkedin_invitation_snapshot_entries',
+  {
+    importId: uuid('import_id')
+      .notNull()
+      .references(() => linkedinSyncImports.id, { onDelete: 'cascade' }),
+    otherPartyProfileUrl: text('other_party_profile_url').notNull(),
+    otherPartyName: text('other_party_name').notNull(),
+    sentAt: timestamp('sent_at', { withTimezone: true }).notNull(),
+    leadId: uuid('lead_id').references(() => leads.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.importId, table.otherPartyProfileUrl] }),
+    index('idx_linkedin_invitation_snapshot_lead').on(table.leadId),
+  ]
+);
+
 export const leadAttachments = crmSchema.table(
   'lead_attachments',
   {
@@ -674,6 +804,8 @@ export const activities = crmSchema.table(
     opportunityId: uuid('opportunity_id').references(() => opportunities.id, {
       onDelete: 'cascade',
     }),
+    externalSource: text('external_source'),
+    externalId: text('external_id'),
     actorId: uuid('actor_id').notNull(),
     happenedAt: timestamp('happened_at', { withTimezone: true }).defaultNow().notNull(),
     ...timestamps(),
@@ -686,6 +818,9 @@ export const activities = crmSchema.table(
     index('idx_activities_actor').on(table.actorId),
     index('idx_activities_type').on(table.type),
     index('idx_activities_happened').on(table.happenedAt),
+    uniqueIndex('idx_activities_external_source_id')
+      .on(table.externalSource, table.externalId)
+      .where(sql`${table.externalSource} IS NOT NULL AND ${table.externalId} IS NOT NULL`),
   ]
 );
 

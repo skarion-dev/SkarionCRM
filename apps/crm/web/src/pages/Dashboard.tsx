@@ -429,6 +429,41 @@ export default function Dashboard() {
               description="Scores clean profiles independently"
               queue={data.queues.scoring}
             />
+            <QueueCard
+              name="LinkedIn Message Updater"
+              description="Logs only new Skarion-related messages"
+              queue={data.linkedinSync.queues.messages}
+            />
+            <QueueCard
+              name="Pending Connection Reconciler"
+              description="Reconciles the latest pending invitation snapshot"
+              queue={data.linkedinSync.queues.invitations}
+            />
+            {user?.isSuperadmin && (
+              <Link
+                to="/ceo-chat"
+                className="block rounded-lg border border-slate-200 bg-slate-50 p-3 transition hover:border-blue-200 hover:bg-blue-50"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold text-slate-800">LinkedIn dump status</p>
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      Messages:{' '}
+                      {data.linkedinSync.lastMessageDump
+                        ? new Date(data.linkedinSync.lastMessageDump.createdAt).toLocaleString()
+                        : 'never'}
+                      {' · '}Invitations:{' '}
+                      {data.linkedinSync.lastInvitationDump
+                        ? new Date(data.linkedinSync.lastInvitationDump.createdAt).toLocaleString()
+                        : 'never'}
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold text-amber-800">
+                    {number(data.linkedinSync.openFlags)} review flags
+                  </span>
+                </div>
+              </Link>
+            )}
             {data.aiUsage && (
               <div className="rounded-lg bg-slate-950 p-4 text-white">
                 <div className="flex items-center justify-between">

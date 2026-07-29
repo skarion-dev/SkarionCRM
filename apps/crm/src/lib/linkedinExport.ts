@@ -261,7 +261,60 @@ export function summarizeLinkedInConversations(
   return { ownerProfileUrl, conversations, skippedRows };
 }
 
-export function summarizeLinkedInInvitations(rows: LinkedInExportRow[]): {
+function invitationDate(value: string, sourceTimezone?: string | null): Date {
+  if (!sourceTimezone || /(?:z|[+-]\d{2}:?\d{2})$/i.test(value.trim())) return new Date(value);
+  const match = value
+    .trim()
+    .match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4}),?\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)$/i);
+  if (!match) return new Date(value);
+  const yearValue = Number(match[3]);
+  const year = yearValue < 100 ? 2000 + yearValue : yearValue;
+  let hour = Number(match[4]) % 12;
+  if (match[7]?.toUpperCase() === 'PM') hour += 12;
+  const utcGuess = Date.UTC(
+    year,
+    Number(match[1]) - 1,
+    Number(match[2]),
+    hour,
+    Number(match[5]),
+    Number(match[6] ?? 0)
+  );
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: sourceTimezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    });
+    const zonedParts = Object.fromEntries(
+      formatter
+        .formatToParts(new Date(utcGuess))
+        .filter((part) => part.type !== 'literal')
+        .map((part) => [part.type, Number(part.value)])
+    );
+    const timezoneOffset =
+      Date.UTC(
+        zonedParts.year ?? year,
+        (zonedParts.month ?? Number(match[1])) - 1,
+        zonedParts.day ?? Number(match[2]),
+        zonedParts.hour ?? hour,
+        zonedParts.minute ?? Number(match[5]),
+        zonedParts.second ?? Number(match[6] ?? 0)
+      ) - utcGuess;
+    return new Date(utcGuess - timezoneOffset);
+  } catch {
+    return new Date(value);
+  }
+}
+
+export function summarizeLinkedInInvitations(
+  rows: LinkedInExportRow[],
+  sourceTimezone?: string | null
+): {
   invitations: LinkedInInvitationSummary[];
   skippedRows: number;
 } {
@@ -270,7 +323,7 @@ export function summarizeLinkedInInvitations(rows: LinkedInExportRow[]): {
   for (const row of rows) {
     if (rowValue(row, ['Direction']).toUpperCase() !== 'OUTGOING') continue;
     const otherPartyProfileUrl = canonicalizeLinkedinUrl(rowValue(row, ['inviteeProfileUrl']));
-    const sentAt = new Date(rowValue(row, ['Sent At']));
+    const sentAt = invitationDate(rowValue(row, ['Sent At']), sourceTimezone);
     if (!otherPartyProfileUrl || !Number.isFinite(sentAt.getTime())) {
       skippedRows += 1;
       continue;
