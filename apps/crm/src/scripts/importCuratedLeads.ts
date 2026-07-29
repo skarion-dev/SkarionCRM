@@ -101,6 +101,14 @@ function mergedTags(existing: unknown, additions: string[]): string[] {
   return normalizeTagNames([...(Array.isArray(existing) ? existing : []), ...additions]);
 }
 
+function chunksOf<T>(values: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size));
+  }
+  return chunks;
+}
+
 const db = getDb({ DATABASE_URL: databaseUrl }, schema);
 const existingLeads = await db
   .select({
@@ -407,20 +415,21 @@ const result = await (async (tx: typeof db) => {
     }
   }
 
-  const createdLeads =
-    leadValues.length > 0
-      ? await tx
-          .insert(schema.leads)
-          .values(leadValues)
-          .onConflictDoNothing()
-          .returning({ id: schema.leads.id })
-      : [];
+  const createdLeads: Array<{ id: string }> = [];
+  for (const leadChunk of chunksOf(leadValues, 150)) {
+    const inserted = await tx
+      .insert(schema.leads)
+      .values(leadChunk)
+      .onConflictDoNothing()
+      .returning({ id: schema.leads.id });
+    createdLeads.push(...inserted);
+  }
   const createdLeadIds = createdLeads.map((lead) => lead.id);
 
-  if (createdLeadIds.length > 0) {
+  for (const leadIdChunk of chunksOf(createdLeadIds, 300)) {
     await tx
       .insert(schema.leadProfileJobs)
-      .values(createdLeadIds.map((leadId) => ({ leadId })))
+      .values(leadIdChunk.map((leadId) => ({ leadId })))
       .onConflictDoNothing({ target: schema.leadProfileJobs.leadId });
   }
 
