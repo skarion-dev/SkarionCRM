@@ -185,10 +185,18 @@ function isPlatformAdmin(c: AppContext): boolean {
 }
 
 /** True if the caller is a superadmin, or a manager of the given app —
- * managers may only create accounts within the app they manage. */
+ * managers may only create accounts / manage permissions within the app
+ * they manage. */
 function canManageInvitesFor(c: AppContext, app: AppName): boolean {
   if (isPlatformAdmin(c)) return true;
   return c.get('apps')?.[app] === 'manager';
+}
+
+/** True if the caller manages at least one app — used to gate the user list,
+ * which a manager needs to see in order to manage permissions for their app. */
+function isAnyManager(c: AppContext): boolean {
+  const apps = c.get('apps');
+  return Boolean(apps) && Object.values(apps).some((role) => role === 'manager');
 }
 
 /** Hono can't statically prove a `:param` is present; routes below always register it, so a missing value is a 400, not a type error to suppress. */
@@ -609,15 +617,20 @@ app.post('/invitations/:id/resend', requireAuth, async (c) => {
 // ─────────────────────────────────────────────────────────
 
 app.get('/admin/users', requireAuth, async (c) => {
-  if (!isPlatformAdmin(c)) return c.json({ error: 'Forbidden.' }, 403);
+  if (!isPlatformAdmin(c) && !isAnyManager(c)) return c.json({ error: 'Forbidden.' }, 403);
   const db = getDb(c.env, schema);
   const users = await adminService.listUsers(db);
   return c.json({ users });
 });
 
 app.patch('/admin/users/:id/memberships', requireAuth, async (c) => {
-  if (!isPlatformAdmin(c)) return c.json({ error: 'Forbidden.' }, 403);
   const body = await c.req.json<{ memberships: { app: AppName; role: string | null }[] }>();
+  // A manager may only change memberships for the app(s) they manage — reject
+  // the whole request (rather than silently dropping entries) if it touches
+  // an app they don't manage, e.g. a crm manager editing someone's hr role.
+  if (!body.memberships.every((m) => canManageInvitesFor(c, m.app))) {
+    return c.json({ error: 'Forbidden.' }, 403);
+  }
   const db = getDb(c.env, schema);
   try {
     await adminService.updateMemberships(db, {

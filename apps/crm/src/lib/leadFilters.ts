@@ -51,9 +51,10 @@ export function buildLeadConditions(params: LeadFilterParams): SQL[] {
     eq(schema.leads.reviewState, 'accepted') as unknown as SQL,
   ];
 
-  if (!params.isSuperadmin && params.role !== 'manager') {
-    conditions.push(eq(schema.leads.ownerId, params.ownerId));
-  }
+  // All roles (member, manager, superadmin) can view every lead — only
+  // mutation is role-restricted (see the /api/leads write-guard middleware
+  // in index.ts). The explicit `owner`/`owners` filter below still lets any
+  // caller narrow the list by owner if they want to.
 
   if (params.statuses?.length) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

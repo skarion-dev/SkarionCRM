@@ -2541,6 +2541,31 @@ function getRole(c: unknown): string {
   return (apps as { crm?: string } | undefined)?.crm ?? '';
 }
 
+// Leads are member-read-only: any mutation (non-GET) under these prefixes
+// requires isSuperadmin or the 'manager' role. Centralized here rather than
+// per-route so every lead-linked write path (attachments, channels, bulk
+// actions, AI actions that write back to a lead, imports, etc.) is covered
+// by one choke point instead of relying on each handler remembering to
+// check. GET routes (viewing) are untouched — members can view all leads.
+const LEAD_WRITE_PREFIXES = [
+  '/api/leads',
+  '/api/prospects',
+  '/api/import/leads',
+  '/api/candidate-chat/lead-action',
+  '/api/ceo-chat/import-linkedin',
+];
+
+app.use('/api/*', async (c, next) => {
+  const path = c.req.path;
+  if (c.req.method !== 'GET' && LEAD_WRITE_PREFIXES.some((prefix) => path.startsWith(prefix))) {
+    const isSuperadmin = Boolean(c.get('isSuperadmin'));
+    if (!isSuperadmin && getRole(c) !== 'manager') {
+      return c.json({ error: 'Forbidden: leads are read-only for your role.' }, 403);
+    }
+  }
+  return next();
+});
+
 type AiRuntimeSettings = {
   defaultProvider: 'vertex_proxy' | 'google_ai';
   tierModels: {
