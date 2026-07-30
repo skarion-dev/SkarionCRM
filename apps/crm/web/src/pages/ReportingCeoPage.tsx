@@ -29,7 +29,7 @@ import {
   MessageSquareText,
 } from 'lucide-react';
 import { CandidateConversationMode } from '../components/candidate/CandidateConversationMode.js';
-import { crmStream } from '../api.js';
+import { crmFetch } from '../api.js';
 import {
   useCeoChatHistory,
   useClearCeoChatHistory,
@@ -54,6 +54,10 @@ interface ChartSpec {
   title: string;
   valueLabel: string;
   data: Array<{ label: string; value: number }>;
+}
+
+interface CeoChatResponse {
+  message: CeoChatMessage;
 }
 
 function parseChartSpec(raw: string): ChartSpec | null {
@@ -438,6 +442,8 @@ export default function ReportingCeoPage() {
   const sendMessage = async (question: string) => {
     const trimmed = question.trim();
     if (!trimmed || isStreaming || !isSuperadmin) return;
+    // Do not let a late history request replace this in-flight conversation.
+    initializedRef.current = true;
 
     const userMessage: CeoChatMessage = {
       id: messageId(),
@@ -461,64 +467,19 @@ export default function ReportingCeoPage() {
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      const response = await crmStream('/api/ceo-chat', {
+      setStreamStatus('Analyzing company performance…');
+      const result = await crmFetch<CeoChatResponse>('/api/ceo-chat', {
         method: 'POST',
         body: JSON.stringify({ message: trimmed }),
         signal: controller.signal,
+        headers: { Accept: 'application/json' },
       });
-      if (!response.body) throw new Error('The server did not return a response stream.');
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-      let finished = false;
-
-      while (!finished) {
-        const { done, value } = await reader.read();
-        buffer += decoder.decode(value, { stream: !done });
-        const events = buffer.split(/\r?\n\r?\n/);
-        buffer = events.pop() ?? '';
-
-        for (const block of events) {
-          const dataLine = block.split(/\r?\n/).find((line) => line.startsWith('data:'));
-          if (!dataLine) continue;
-          const event = JSON.parse(dataLine.slice(5).trim()) as {
-            type: 'ready' | 'delta' | 'done' | 'error';
-            delta?: string;
-            error?: string;
-            id?: string;
-            createdAt?: string;
-          };
-          if (event.type === 'ready') {
-            setStreamStatus('Analyzing company performance…');
-          } else if (event.type === 'delta' && event.delta) {
-            setStreamStatus('Streaming executive report…');
-            setMessages((current) =>
-              current.map((message) =>
-                message.id === assistantId
-                  ? { ...message, content: message.content + event.delta }
-                  : message
-              )
-            );
-          } else if (event.type === 'done') {
-            finished = true;
-            setMessages((current) =>
-              current.map((message) =>
-                message.id === assistantId
-                  ? {
-                      ...message,
-                      id: event.id ?? message.id,
-                      createdAt: event.createdAt ?? message.createdAt,
-                    }
-                  : message
-              )
-            );
-          } else if (event.type === 'error') {
-            throw new Error(event.error || 'The Reporting CEO could not complete this report.');
-          }
-        }
-        if (done) finished = true;
+      if (!result.message?.content?.trim()) {
+        throw new Error('The Reporting CEO returned an empty response.');
       }
+      setMessages((current) =>
+        current.map((message) => (message.id === assistantId ? result.message : message))
+      );
       void refetch();
     } catch (caught) {
       const aborted = controller.signal.aborted;

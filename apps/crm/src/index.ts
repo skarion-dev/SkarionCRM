@@ -10839,6 +10839,88 @@ app.post('/api/ceo-chat', async (c) => {
   }));
   conversation.push({ role: 'user', text: question });
 
+  // The Reporting CEO uses a regular completion for the browser UI. The
+  // Vertex proxy's OpenAI-compatible SSE variants are not consistent enough
+  // to make the executive chat depend on streamed framing. Keep the legacy
+  // stream below for older cached clients while new clients request JSON.
+  if (c.req.header('Accept')?.includes('application/json')) {
+    try {
+      const isGreeting = /^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[\s!,.?]*$/i.test(
+        question
+      );
+      const generated = isGreeting
+        ? 'Hi — I’m ready. Ask me about pipeline, lead quality, outreach, team workload, AI usage, or operational risks.'
+        : await ai.chatCompletion(conversation, aiEnv, {
+            tier: 'cheap',
+            agent: 'reporting-ceo',
+            temperature: 0.2,
+            systemInstruction: buildCeoSystemInstruction(snapshot),
+          });
+      const answer = generated?.trim().slice(0, 40_000) ?? '';
+      if (!answer) {
+        throw new Error(
+          'AI routing returned no output from the configured Vertex proxy or fallback model.'
+        );
+      }
+
+      const [saved] = await db
+        .insert(schema.chatMessages)
+        .values({
+          userId,
+          role: 'ceo_assistant',
+          content: answer,
+          contextIds: [{ resourceType: 'reporting_snapshot', resourceId: snapshot.generatedAt }],
+        })
+        .returning({
+          id: schema.chatMessages.id,
+          createdAt: schema.chatMessages.createdAt,
+        });
+
+      await withAudit(db, schema.auditLog, {
+        actorUserId: userId,
+        action: 'generate',
+        resourceType: 'ceo_report',
+        resourceId: saved?.id ?? 'completed',
+        after: {
+          snapshotGeneratedAt: snapshot.generatedAt,
+          questionCharacters: question.length,
+          answerCharacters: answer.length,
+          responseMode: 'json',
+          deterministicGreeting: isGreeting,
+        },
+        app: 'crm',
+      });
+
+      return c.json({
+        message: {
+          id: saved?.id ?? crypto.randomUUID(),
+          role: 'assistant',
+          content: answer,
+          createdAt: saved?.createdAt?.toISOString() ?? new Date().toISOString(),
+        },
+      });
+    } catch (error) {
+      console.error('Reporting CEO JSON generation failed:', error);
+      if (savedUserMessage?.id) {
+        await db
+          .delete(schema.chatMessages)
+          .where(eq(schema.chatMessages.id, savedUserMessage.id))
+          .catch((cleanupError) =>
+            console.error('Could not remove failed Reporting CEO question:', cleanupError)
+          );
+      }
+      return c.json(
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : 'The Reporting CEO could not complete this report.',
+        },
+        502
+      );
+    }
+  }
+
   const encoder = new TextEncoder();
   const stream = new TransformStream<Uint8Array, Uint8Array>();
   const writer = stream.writable.getWriter();
