@@ -553,7 +553,11 @@ export default function ReportingCeoPage() {
   };
 
   const handleMessageImport = () => {
-    if (!messageFile || importMessages.isPending) return;
+    if (importMessages.isPending) return;
+    if (!messageFile) {
+      messageFileInputRef.current?.click();
+      return;
+    }
     importMessages.mutate(
       { file: messageFile, ownerProfileUrl },
       {
@@ -577,7 +581,11 @@ export default function ReportingCeoPage() {
   };
 
   const handleInvitationImport = () => {
-    if (!invitationFile || importInvitations.isPending) return;
+    if (importInvitations.isPending) return;
+    if (!invitationFile) {
+      invitationFileInputRef.current?.click();
+      return;
+    }
     importInvitations.mutate(
       { file: invitationFile },
       {
@@ -786,10 +794,14 @@ export default function ReportingCeoPage() {
               <button
                 type="button"
                 onClick={handleMessageImport}
-                disabled={!messageFile || importMessages.isPending}
-                className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40"
+                disabled={importMessages.isPending}
+                className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
               >
-                {importMessages.isPending ? 'Reading…' : 'Import messages'}
+                {importMessages.isPending
+                  ? 'Reading…'
+                  : messageFile
+                    ? 'Import messages'
+                    : 'Choose & import'}
               </button>
             </div>
             <p className="mt-2 text-[11px] text-slate-400">
@@ -877,10 +889,14 @@ export default function ReportingCeoPage() {
               <button
                 type="button"
                 onClick={handleInvitationImport}
-                disabled={!invitationFile || importInvitations.isPending}
-                className="rounded-lg bg-violet-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40"
+                disabled={importInvitations.isPending}
+                className="rounded-lg bg-violet-600 px-3 py-2 text-xs font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
               >
-                {importInvitations.isPending ? 'Reading…' : 'Sync invitations'}
+                {importInvitations.isPending
+                  ? 'Reading…'
+                  : invitationFile
+                    ? 'Sync invitations'
+                    : 'Choose & sync'}
               </button>
             </div>
             <p className="mt-2 text-[11px] text-slate-400">

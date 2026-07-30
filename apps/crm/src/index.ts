@@ -9353,11 +9353,17 @@ app.get('/api/ceo-chat/history', async (c) => {
     .orderBy(asc(schema.chatMessages.createdAt))
     .limit(100);
 
+  const messages = rows.map((row) => ({
+    ...row,
+    role: row.role === 'ceo_user' ? ('user' as const) : ('assistant' as const),
+  }));
+  // A browser disconnect used to leave the submitted question without a
+  // persisted assistant response. Do not render that stale orphan as an
+  // apparently empty conversation.
+  while (messages.at(-1)?.role === 'user') messages.pop();
+
   return c.json({
-    messages: rows.map((row) => ({
-      ...row,
-      role: row.role === 'ceo_user' ? 'user' : 'assistant',
-    })),
+    messages,
   });
 });
 
@@ -10673,7 +10679,7 @@ app.post('/api/ceo-chat', async (c) => {
   const aiEnv = await getConfiguredAiEnv(db, c.env, userId);
   if (!ai.isAiConfigured(aiEnv)) return c.json({ error: ai.AI_NOT_CONFIGURED_MSG }, 503);
 
-  const [snapshot, recentHistoryRows] = await Promise.all([
+  const [snapshot, recentHistoryRowsWithPossibleOrphan] = await Promise.all([
     buildCeoReportingSnapshot(db),
     db
       .select({
@@ -10691,12 +10697,19 @@ app.post('/api/ceo-chat', async (c) => {
       .limit(12),
   ]);
 
-  await db.insert(schema.chatMessages).values({
-    userId,
-    role: 'ceo_user',
-    content: question,
-  });
+  const [savedUserMessage] = await db
+    .insert(schema.chatMessages)
+    .values({
+      userId,
+      role: 'ceo_user',
+      content: question,
+    })
+    .returning({ id: schema.chatMessages.id });
 
+  const recentHistoryRows =
+    recentHistoryRowsWithPossibleOrphan[0]?.role === 'ceo_user'
+      ? recentHistoryRowsWithPossibleOrphan.slice(1)
+      : recentHistoryRowsWithPossibleOrphan;
   const conversation: ai.ChatMessage[] = recentHistoryRows.reverse().map((row) => ({
     role: row.role === 'ceo_assistant' ? 'model' : 'user',
     text: row.content,
@@ -10720,7 +10733,7 @@ app.post('/api/ceo-chat', async (c) => {
 
   const generate = async () => {
     let answer = '';
-    let streamInterrupted = false;
+    let assistantSaved = false;
     try {
       await writeEvent({ type: 'ready', generatedAt: snapshot.generatedAt });
       for await (const delta of ai.chatCompletionStream(conversation, aiEnv, {
@@ -10735,13 +10748,11 @@ app.post('/api/ceo-chat', async (c) => {
         if (remaining <= 0) break;
         const safeDelta = delta.slice(0, remaining);
         answer += safeDelta;
-        if (!(await writeEvent({ type: 'delta', delta: safeDelta }))) {
-          streamInterrupted = true;
-          break;
-        }
+        // Finish generating and persist the report even if the browser tab
+        // disconnects. Future writeEvent calls become no-ops after disconnect.
+        await writeEvent({ type: 'delta', delta: safeDelta });
       }
 
-      if (streamInterrupted) return;
       if (!answer.trim()) throw new Error('The reporting model returned an empty response.');
 
       const [saved] = await db
@@ -10756,6 +10767,7 @@ app.post('/api/ceo-chat', async (c) => {
           id: schema.chatMessages.id,
           createdAt: schema.chatMessages.createdAt,
         });
+      assistantSaved = true;
 
       await withAudit(db, schema.auditLog, {
         actorUserId: userId,
@@ -10777,6 +10789,14 @@ app.post('/api/ceo-chat', async (c) => {
       });
     } catch (error) {
       console.error('Reporting CEO generation failed:', error);
+      if (!assistantSaved && savedUserMessage?.id) {
+        await db
+          .delete(schema.chatMessages)
+          .where(eq(schema.chatMessages.id, savedUserMessage.id))
+          .catch((cleanupError) =>
+            console.error('Could not remove failed Reporting CEO question:', cleanupError)
+          );
+      }
       await writeEvent({
         type: 'error',
         error: 'The Reporting CEO could not complete this report. Please try again.',

@@ -977,13 +977,60 @@ export interface IdentityUser {
   id: string;
   email: string;
   displayName: string;
+  avatarUrl: string | null;
+  lastLoginAt: string | null;
+  disabledAt: string | null;
+  createdAt: string;
   appMemberships: { app: string; role: string; grantedAt: string }[];
 }
 
-/** Fetch the list of users from the identity /admin/users endpoint. Only
- *  callable by platform admins; non-admins should treat a 403 as "empty". */
+export interface IdentityInvitation {
+  id: string;
+  email: string;
+  app: string;
+  role: string;
+  status: 'pending' | 'accepted' | 'revoked' | 'expired';
+  createdAt: string;
+  expiresAt: string;
+}
+
+/** Fetch the Identity user directory. Superadmins and app managers can use it. */
 export async function listIdentityUsers(): Promise<{ users: IdentityUser[] }> {
   return identityFetch<{ users: IdentityUser[] }>('/admin/users');
+}
+
+export function listIdentityInvitations(status = 'pending') {
+  return identityFetch<{ invitations: IdentityInvitation[] }>(
+    `/invitations?status=${encodeURIComponent(status)}`
+  );
+}
+
+export function createIdentityInvitation(email: string, role: 'manager' | 'member') {
+  return identityFetch<{ ok: true; invitation_id: string }>('/invitations', {
+    method: 'POST',
+    body: JSON.stringify({ email, app: 'crm', role }),
+  });
+}
+
+export function updateIdentityCrmMembership(userId: string, role: 'manager' | 'member' | null) {
+  return identityFetch<{ ok: true }>(`/admin/users/${userId}/memberships`, {
+    method: 'PATCH',
+    body: JSON.stringify({ memberships: [{ app: 'crm', role }] }),
+  });
+}
+
+export function setIdentityUserEnabled(userId: string, enabled: boolean) {
+  return identityFetch<{ ok: true }>(`/admin/users/${userId}/${enabled ? 'enable' : 'disable'}`, {
+    method: 'POST',
+  });
+}
+
+export function resendIdentityInvitation(id: string) {
+  return identityFetch<{ ok: true }>(`/invitations/${id}/resend`, { method: 'POST' });
+}
+
+export function revokeIdentityInvitation(id: string) {
+  return identityFetch<{ ok: true }>(`/invitations/${id}/revoke`, { method: 'POST' });
 }
 
 // ─── Extension API keys (identity superadmin only) ───

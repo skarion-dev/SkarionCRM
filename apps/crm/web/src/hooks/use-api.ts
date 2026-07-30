@@ -26,6 +26,12 @@ import {
   deleteAttachment,
   listImportBatches,
   listIdentityUsers,
+  listIdentityInvitations,
+  createIdentityInvitation,
+  updateIdentityCrmMembership,
+  setIdentityUserEnabled,
+  resendIdentityInvitation,
+  revokeIdentityInvitation,
   listExtensionApiKeys,
   createExtensionApiKey,
   revokeExtensionApiKey,
@@ -1517,6 +1523,58 @@ export function useIdentityUsers(enabled = true) {
       }
     },
     enabled,
+  });
+}
+
+export function useIdentityInvitations(enabled = true) {
+  return useQuery({
+    queryKey: ['identity-invitations', 'pending'],
+    queryFn: async () => {
+      const result = await listIdentityInvitations('pending');
+      return result.invitations;
+    },
+    enabled,
+  });
+}
+
+export function useCreateIdentityInvitation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ email, role }: { email: string; role: 'manager' | 'member' }) =>
+      createIdentityInvitation(email, role),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['identity-invitations'] }),
+  });
+}
+
+export function useUpdateIdentityCrmMembership() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ userId, role }: { userId: string; role: 'manager' | 'member' | null }) =>
+      updateIdentityCrmMembership(userId, role),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['identity-users'] }),
+  });
+}
+
+export function useSetIdentityUserEnabled() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ userId, enabled }: { userId: string; enabled: boolean }) =>
+      setIdentityUserEnabled(userId, enabled),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['identity-users'] }),
+  });
+}
+
+export function useResendIdentityInvitation() {
+  return useMutation({
+    mutationFn: (id: string) => resendIdentityInvitation(id),
+  });
+}
+
+export function useRevokeIdentityInvitation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => revokeIdentityInvitation(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['identity-invitations'] }),
   });
 }
 

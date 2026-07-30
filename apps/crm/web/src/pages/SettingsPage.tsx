@@ -14,6 +14,13 @@ import {
   useRevokeExtensionApiKey,
   useTags,
   useCreateTag,
+  useIdentityUsers,
+  useIdentityInvitations,
+  useCreateIdentityInvitation,
+  useUpdateIdentityCrmMembership,
+  useSetIdentityUserEnabled,
+  useResendIdentityInvitation,
+  useRevokeIdentityInvitation,
   type AiRuntimeSettings,
   type AiUsagePeriod,
   type AiUsageResponse,
@@ -45,8 +52,13 @@ import {
   Coins,
   Gauge,
   BarChart3,
+  UserPlus,
+  RefreshCw,
+  UserRoundCheck,
+  UserRoundX,
 } from 'lucide-react';
 import { cn } from '../lib/utils.js';
+import { showToast } from '../stores/toast.js';
 
 const TABS = [
   { id: 'profile', label: 'Profile', icon: User },
@@ -168,31 +180,7 @@ export default function SettingsPage() {
 
       {/* Team Tab */}
       {activeTab === 'team' && canManage && (
-        <div className="bg-white border border-slate-200 rounded-lg p-6">
-          <h2 className="font-semibold mb-4 flex items-center gap-2">
-            <Users size={18} className="text-slate-500" /> Team
-          </h2>
-          <div className="space-y-4">
-            <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg">
-              <div className="w-10 h-10 rounded-full bg-blue-600 text-white flex items-center justify-center text-sm font-medium">
-                {user?.name?.charAt(0) ?? user?.email?.charAt(0) ?? '?'}
-              </div>
-              <div>
-                <div className="text-sm font-medium">{user?.name ?? user?.email ?? 'You'}</div>
-                <div className="text-xs text-slate-500 capitalize">
-                  {role} {user?.isSuperadmin && '· Superadmin'}
-                </div>
-              </div>
-              <span className="ml-auto text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded font-medium">
-                You
-              </span>
-            </div>
-            <p className="text-sm text-slate-500">
-              Team management is available for managers. Contact your superadmin to add or remove
-              team members.
-            </p>
-          </div>
-        </div>
+        <TeamPanel currentUserId={user?.id ?? ''} isSuperadmin={Boolean(user?.isSuperadmin)} />
       )}
 
       {/* Pipelines Tab */}
@@ -319,6 +307,313 @@ export default function SettingsPage() {
               </div>
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TeamPanel({
+  currentUserId,
+  isSuperadmin,
+}: {
+  currentUserId: string;
+  isSuperadmin: boolean;
+}) {
+  const { data: users = [], isLoading: usersLoading, error: usersError } = useIdentityUsers();
+  const {
+    data: invitations = [],
+    isLoading: invitationsLoading,
+    error: invitationsError,
+  } = useIdentityInvitations(isSuperadmin);
+  const invite = useCreateIdentityInvitation();
+  const updateMembership = useUpdateIdentityCrmMembership();
+  const setEnabled = useSetIdentityUserEnabled();
+  const resendInvitation = useResendIdentityInvitation();
+  const revokeInvitation = useRevokeIdentityInvitation();
+  const [email, setEmail] = useState('');
+  const [inviteRole, setInviteRole] = useState<'manager' | 'member'>('member');
+
+  const crmUserCount = users.filter((identityUser) =>
+    identityUser.appMemberships.some((membership) => membership.app === 'crm')
+  ).length;
+  const crmInvitations = invitations.filter((invitation) => invitation.app === 'crm');
+
+  const submitInvite = (event: FormEvent) => {
+    event.preventDefault();
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail) return;
+    invite.mutate(
+      { email: normalizedEmail, role: inviteRole },
+      {
+        onSuccess: () => {
+          setEmail('');
+          showToast(`Invitation sent to ${normalizedEmail}`, 'success');
+        },
+        onError: (caught) =>
+          showToast(
+            caught instanceof Error ? caught.message : 'Could not send invitation',
+            'error'
+          ),
+      }
+    );
+  };
+
+  return (
+    <div className="space-y-5">
+      <div className="rounded-lg border border-slate-200 bg-white p-6">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="flex items-center gap-2 font-semibold">
+              <Users size={18} className="text-slate-500" /> CRM team
+            </h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Invite teammates, assign CRM roles, and manage account access.
+            </p>
+          </div>
+          <a
+            href="https://skarion-identity-admin-dx5.pages.dev"
+            target="_blank"
+            rel="noreferrer"
+            className="text-sm font-medium text-blue-600 hover:text-blue-700"
+          >
+            Open advanced user admin
+          </a>
+        </div>
+
+        <form onSubmit={submitInvite} className="mt-5 grid gap-2 sm:grid-cols-[1fr_150px_auto]">
+          <input
+            type="email"
+            required
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            placeholder="teammate@company.com"
+            className="rounded-md border border-slate-200 px-3 py-2 text-sm"
+          />
+          <select
+            value={inviteRole}
+            onChange={(event) => setInviteRole(event.target.value as 'manager' | 'member')}
+            className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm"
+          >
+            <option value="member">Member</option>
+            <option value="manager">Manager</option>
+          </select>
+          <button
+            type="submit"
+            disabled={!email.trim() || invite.isPending}
+            className="inline-flex items-center justify-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+          >
+            {invite.isPending ? (
+              <Loader2 size={15} className="animate-spin" />
+            ) : (
+              <UserPlus size={15} />
+            )}
+            Send invite
+          </button>
+        </form>
+      </div>
+
+      <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+        <div className="border-b border-slate-200 px-5 py-4">
+          <h3 className="font-semibold">User directory ({crmUserCount} with CRM access)</h3>
+        </div>
+        {usersLoading ? (
+          <div className="flex items-center justify-center p-8 text-slate-400">
+            <Loader2 size={18} className="mr-2 animate-spin" /> Loading team…
+          </div>
+        ) : usersError ? (
+          <p className="p-5 text-sm text-red-600">
+            {usersError instanceof Error ? usersError.message : 'Could not load users.'}
+          </p>
+        ) : users.length === 0 ? (
+          <p className="p-5 text-sm text-slate-500">No users found.</p>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {users.map((identityUser) => {
+              const membership = identityUser.appMemberships.find((item) => item.app === 'crm');
+              const isCurrentUser = identityUser.id === currentUserId;
+              return (
+                <div
+                  key={identityUser.id}
+                  className="grid items-center gap-3 px-5 py-4 md:grid-cols-[1fr_150px_150px]"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-sm font-semibold">
+                        {identityUser.displayName || identityUser.email}
+                      </span>
+                      {isCurrentUser && (
+                        <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
+                          You
+                        </span>
+                      )}
+                      {identityUser.disabledAt && (
+                        <span className="rounded bg-red-50 px-1.5 py-0.5 text-[10px] font-semibold text-red-700">
+                          Disabled
+                        </span>
+                      )}
+                    </div>
+                    <div className="truncate text-xs text-slate-500">{identityUser.email}</div>
+                    <div className="mt-1 text-[11px] text-slate-400">
+                      Last login:{' '}
+                      {identityUser.lastLoginAt
+                        ? new Date(identityUser.lastLoginAt).toLocaleString()
+                        : 'Never'}
+                    </div>
+                  </div>
+                  <select
+                    value={membership?.role ?? 'none'}
+                    disabled={updateMembership.isPending || isCurrentUser}
+                    onChange={(event) => {
+                      const role =
+                        event.target.value === 'none'
+                          ? null
+                          : (event.target.value as 'manager' | 'member');
+                      updateMembership.mutate(
+                        { userId: identityUser.id, role },
+                        {
+                          onSuccess: () =>
+                            showToast(
+                              role
+                                ? `${identityUser.displayName} is now a ${role}`
+                                : `CRM access removed from ${identityUser.displayName}`,
+                              'success'
+                            ),
+                          onError: (caught) =>
+                            showToast(
+                              caught instanceof Error ? caught.message : 'Could not update role',
+                              'error'
+                            ),
+                        }
+                      );
+                    }}
+                    className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm capitalize disabled:bg-slate-50"
+                    title={
+                      isCurrentUser ? 'Use another superadmin to change your own CRM role.' : ''
+                    }
+                  >
+                    <option value="none">No CRM access</option>
+                    <option value="member">Member</option>
+                    <option value="manager">Manager</option>
+                  </select>
+                  <div className="flex justify-end">
+                    {isSuperadmin && !isCurrentUser && (
+                      <button
+                        type="button"
+                        disabled={setEnabled.isPending}
+                        onClick={() => {
+                          const enabled = Boolean(identityUser.disabledAt);
+                          setEnabled.mutate(
+                            { userId: identityUser.id, enabled },
+                            {
+                              onSuccess: () =>
+                                showToast(
+                                  `${identityUser.displayName} ${enabled ? 'enabled' : 'disabled'}`,
+                                  'success'
+                                ),
+                              onError: (caught) =>
+                                showToast(
+                                  caught instanceof Error
+                                    ? caught.message
+                                    : 'Could not update account',
+                                  'error'
+                                ),
+                            }
+                          );
+                        }}
+                        className={cn(
+                          'inline-flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-semibold',
+                          identityUser.disabledAt
+                            ? 'border-emerald-200 text-emerald-700 hover:bg-emerald-50'
+                            : 'border-red-200 text-red-700 hover:bg-red-50'
+                        )}
+                      >
+                        {identityUser.disabledAt ? (
+                          <UserRoundCheck size={14} />
+                        ) : (
+                          <UserRoundX size={14} />
+                        )}
+                        {identityUser.disabledAt ? 'Enable' : 'Disable'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {isSuperadmin && (
+        <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+          <div className="border-b border-slate-200 px-5 py-4">
+            <h3 className="font-semibold">Pending CRM invitations ({crmInvitations.length})</h3>
+          </div>
+          {invitationsLoading ? (
+            <div className="flex items-center justify-center p-6 text-slate-400">
+              <Loader2 size={18} className="mr-2 animate-spin" /> Loading invitations…
+            </div>
+          ) : invitationsError ? (
+            <p className="p-5 text-sm text-red-600">
+              {invitationsError instanceof Error
+                ? invitationsError.message
+                : 'Could not load invitations.'}
+            </p>
+          ) : crmInvitations.length === 0 ? (
+            <p className="p-5 text-sm text-slate-500">No pending invitations.</p>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {crmInvitations.map((invitation) => (
+                <div key={invitation.id} className="flex flex-wrap items-center gap-3 px-5 py-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium">{invitation.email}</div>
+                    <div className="text-xs capitalize text-slate-500">
+                      {invitation.app} · {invitation.role} · expires{' '}
+                      {new Date(invitation.expiresAt).toLocaleDateString()}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={resendInvitation.isPending}
+                    onClick={() =>
+                      resendInvitation.mutate(invitation.id, {
+                        onSuccess: () => showToast('Invitation resent', 'success'),
+                        onError: (caught) =>
+                          showToast(
+                            caught instanceof Error
+                              ? caught.message
+                              : 'Could not resend invitation',
+                            'error'
+                          ),
+                      })
+                    }
+                    className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 px-3 py-1.5 text-xs font-medium hover:bg-slate-50"
+                  >
+                    <RefreshCw size={13} /> Resend
+                  </button>
+                  <button
+                    type="button"
+                    disabled={revokeInvitation.isPending}
+                    onClick={() =>
+                      revokeInvitation.mutate(invitation.id, {
+                        onSuccess: () => showToast('Invitation revoked', 'success'),
+                        onError: (caught) =>
+                          showToast(
+                            caught instanceof Error
+                              ? caught.message
+                              : 'Could not revoke invitation',
+                            'error'
+                          ),
+                      })
+                    }
+                    className="inline-flex items-center gap-1.5 rounded-md border border-red-200 px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50"
+                  >
+                    <Trash2 size={13} /> Revoke
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
