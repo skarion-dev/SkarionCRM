@@ -5097,7 +5097,7 @@ app.get('/api/leads', async (c) => {
 
   // Get total count
   const countResult = await db
-    .select({ count: sql<number>`count(*)` })
+    .select({ count: sql<number>`count(*)::int` })
     .from(schema.leads)
     .where(and(...conditions));
   const total = countResult[0]?.count ?? 0;
@@ -5120,7 +5120,7 @@ app.get('/api/leads', async (c) => {
 
   // Get status counts (for filters)
   const statusCountsRaw = await db
-    .select({ status: schema.leads.journeyStage, count: sql<number>`count(*)` })
+    .select({ status: schema.leads.journeyStage, count: sql<number>`count(*)::int` })
     .from(schema.leads)
     .where(and(isNull(schema.leads.deletedAt), eq(schema.leads.reviewState, 'accepted')))
     .groupBy(schema.leads.journeyStage);
@@ -5130,7 +5130,7 @@ app.get('/api/leads', async (c) => {
     number
   >;
   statusCountsRaw.forEach((s) => {
-    statusCounts[s.status as keyof typeof statusCounts] = s.count;
+    statusCounts[s.status as keyof typeof statusCounts] = Number(s.count) || 0;
   });
 
   // Optionally include channels for each lead (detail view)

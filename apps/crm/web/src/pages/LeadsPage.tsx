@@ -217,7 +217,10 @@ export default function LeadsPage() {
   const totalPages = data?.totalPages ?? 0;
   const pageNumbers = useMemo(() => visiblePageNumbers(page, totalPages), [page, totalPages]);
   const statusCounts = data?.statusCounts ?? {};
-  const allStatusTotal = Object.values(statusCounts).reduce((sum, count) => sum + count, 0);
+  const allStatusTotal = Object.values(statusCounts).reduce(
+    (sum, count) => sum + (Number(count) || 0),
+    0
+  );
   const firstVisible = total > 0 ? (page - 1) * pageSize + 1 : 0;
   const lastVisible = total > 0 ? Math.min(page * pageSize, total) : 0;
   const scoring = scoringStatus?.summary;
