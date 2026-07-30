@@ -188,6 +188,19 @@ export interface LeadsResponse {
   statusCounts: Record<string, number>;
 }
 
+function mergeLeadIntoPagedResults(
+  current: LeadsResponse | undefined,
+  lead: Partial<Lead> & { id: string }
+): LeadsResponse | undefined {
+  if (!current) return current;
+  const existingIndex = current.leads.findIndex((row) => row.id === lead.id);
+  if (existingIndex < 0) return current;
+
+  const leads = [...current.leads];
+  leads[existingIndex] = { ...leads[existingIndex], ...lead } as Lead;
+  return { ...current, leads };
+}
+
 /** Bounded server-side pagination for the leads table. Keeping the page in
  * the query key prevents rows from different pages or filter sets from being
  * accumulated, while placeholderData keeps the current page visible during
@@ -507,14 +520,17 @@ export function useProspectEvents(enabled = true) {
           if (event.eventType === 'lead.profile_normalized') {
             await qc.invalidateQueries({ queryKey: ['profile-cleanup-status'] });
             await qc.invalidateQueries({ queryKey: ['lead-scoring-status'] });
-            await qc.invalidateQueries({ queryKey: ['leads'] });
           }
           if (event.eventType === 'lead.scored') {
             await qc.invalidateQueries({ queryKey: ['lead-scoring-status'] });
-            await qc.invalidateQueries({ queryKey: ['leads'] });
           }
           const lead = event.payload?.lead;
           if (!lead) continue;
+          if (event.eventType === 'lead.profile_normalized' || event.eventType === 'lead.scored') {
+            qc.setQueriesData<LeadsResponse>({ queryKey: ['leads', 'paged'] }, (current) =>
+              mergeLeadIntoPagedResults(current, lead)
+            );
+          }
           qc.setQueriesData<ProspectsResponse>({ queryKey: ['prospects'] }, (current) => {
             if (!current) return current;
             const existingIndex = current.prospects.findIndex((row) => row.id === lead.id);

@@ -50,6 +50,7 @@ import { showToast } from '../stores/toast.js';
 import { buildLeadsQueryString, type LeadFilters } from '../lib/leadFilters.js';
 import { LEAD_JOURNEY_STAGES, journeyBadgeClass, journeyLabel } from '../lib/leadJourney.js';
 import { formatCandidateCreatedTime } from '../lib/candidateTime.js';
+import { visiblePageNumbers } from '../lib/pagination.js';
 
 const LEAD_SORT_OPTIONS = [
   ['createdAt', 'Created'],
@@ -214,6 +215,7 @@ export default function LeadsPage() {
   const leads = data?.leads ?? [];
   const total = data?.total ?? 0;
   const totalPages = data?.totalPages ?? 0;
+  const pageNumbers = useMemo(() => visiblePageNumbers(page, totalPages), [page, totalPages]);
   const statusCounts = data?.statusCounts ?? {};
   const allStatusTotal = Object.values(statusCounts).reduce((sum, count) => sum + count, 0);
   const firstVisible = total > 0 ? (page - 1) * pageSize + 1 : 0;
@@ -1379,7 +1381,7 @@ export default function LeadsPage() {
           <button
             type="button"
             onClick={() => setPage(1)}
-            disabled={page <= 1 || isFetching}
+            disabled={page <= 1}
             className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-40"
           >
             First
@@ -1387,18 +1389,34 @@ export default function LeadsPage() {
           <button
             type="button"
             onClick={() => setPage((current) => Math.max(1, current - 1))}
-            disabled={page <= 1 || isFetching}
+            disabled={page <= 1}
             className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-40"
           >
             Previous
           </button>
-          <span className="min-w-24 text-center text-sm font-medium text-slate-700">
-            Page {totalPages === 0 ? 0 : page} of {totalPages}
-          </span>
+          <div className="flex items-center gap-1" aria-label="Lead result pages">
+            {pageNumbers.map((pageNumber) => (
+              <button
+                key={pageNumber}
+                type="button"
+                onClick={() => setPage(pageNumber)}
+                aria-current={pageNumber === page ? 'page' : undefined}
+                className={cn(
+                  'min-w-8 rounded-md border px-2 py-1.5 text-sm',
+                  pageNumber === page
+                    ? 'border-blue-600 bg-blue-600 font-semibold text-white'
+                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                )}
+              >
+                {pageNumber}
+              </button>
+            ))}
+          </div>
+          <span className="text-sm text-slate-500">of {totalPages}</span>
           <button
             type="button"
             onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
-            disabled={page >= totalPages || isFetching}
+            disabled={totalPages === 0 || page >= totalPages}
             className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-40"
           >
             Next
@@ -1406,7 +1424,7 @@ export default function LeadsPage() {
           <button
             type="button"
             onClick={() => setPage(totalPages)}
-            disabled={page >= totalPages || isFetching}
+            disabled={totalPages === 0 || page >= totalPages}
             className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-40"
           >
             Last
