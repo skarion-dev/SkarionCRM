@@ -9,6 +9,7 @@ import {
   type CeoOperationalContext,
   type CeoReportingSnapshot,
 } from './ceo-reporting.js';
+import { buildSkarionOperatingKnowledge } from './skarion-operating-knowledge.js';
 
 const snapshot: CeoReportingSnapshot = {
   generatedAt: '2026-07-29T00:00:00.000Z',
@@ -56,6 +57,7 @@ const operationalContext: CeoOperationalContext = {
   tasks: [],
   activities: [],
   linkedinConversations: [],
+  agentOperations: [],
 };
 
 describe('Reporting CEO guardrails', () => {
@@ -67,9 +69,19 @@ describe('Reporting CEO guardrails', () => {
   });
 
   it('embeds verified metrics and chart constraints in the system instruction', () => {
-    const instruction = buildCeoSystemInstruction(snapshot, operationalContext);
+    const knowledge = buildSkarionOperatingKnowledge('What makes a candidate a good fit?', [
+      {
+        id: 'lead-scorer',
+        name: 'Lead Scoring Agent',
+        description: 'Scores leads',
+        tier: 'cheap',
+      },
+    ]);
+    const instruction = buildCeoSystemInstruction(snapshot, operationalContext, null, knowledge);
     expect(instruction).toContain('"leads":10');
     expect(instruction).toContain('candidate@example.com');
+    expect(instruction).toContain('Need + Fit + Openness');
+    expect(instruction).toContain('Lead Scoring Agent');
     expect(instruction).toContain('Never invent revenue');
     expect(instruction).toContain('Supported chart types are "bar", "line", and "pie"');
     expect(instruction).toContain('operational CEO agent');

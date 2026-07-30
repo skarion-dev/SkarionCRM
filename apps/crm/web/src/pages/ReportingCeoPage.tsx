@@ -48,9 +48,9 @@ import { showToast } from '../stores/toast.js';
 const CHART_COLORS = ['#2563eb', '#7c3aed', '#0891b2', '#16a34a', '#d97706', '#dc2626'];
 const SUGGESTIONS = [
   'Give me an executive briefing on pipeline, lead quality, and immediate risks.',
+  'Explain exactly what Skarion looks for in a candidate and how the Lead Scoring Agent applies it.',
   'Create charts for leads by status, source, and outreach stage.',
   'Where are the biggest operational bottlenecks in the CRM right now?',
-  'Summarize open opportunities and the actions most likely to improve conversion.',
 ];
 
 interface ChartSpec {
@@ -711,8 +711,10 @@ export default function ReportingCeoPage() {
             <h2 className="text-xl font-semibold text-slate-800">Ask for the operating picture</h2>
             <p className="mt-2 max-w-xl text-sm leading-6 text-slate-500">
               This agent reads live aggregate CRM metrics, separates facts from interpretation, and
-              loads relevant business records on demand. It can preview audited CRM changes for you
-              to approve without exposing credentials or integration secrets.
+              loads relevant business records on demand. It knows the Skarion candidate playbook,
+              qualification rubric, and every registered agent&apos;s role and stored outputs. It
+              can preview audited CRM changes for you to approve without exposing credentials or
+              integration secrets.
             </p>
             <div className="mt-6 grid w-full gap-3 sm:grid-cols-2">
               {SUGGESTIONS.map((suggestion) => (

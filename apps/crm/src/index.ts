@@ -112,6 +112,7 @@ import {
   type CeoReportingSnapshot,
   type ReportingSeriesItem,
 } from './lib/ceo-reporting.js';
+import { buildSkarionOperatingKnowledge } from './lib/skarion-operating-knowledge.js';
 import {
   buildCandidateLeadActionPrompt,
   buildCandidateLeadActionSystemInstruction,
@@ -8774,6 +8775,13 @@ async function buildCeoOperationalContext(
   const asksForEverything = /\b(?:everything|all crm|entire crm|company[- ]wide records?)\b/i.test(
     question
   );
+  const asksForDoctrine =
+    /\b(?:playbook|doctrine|policy|criteria|qualities|what (?:do|should) we look for|what makes (?:a )?candidate|how should (?:we|the agent)|what does (?:the )?.+ agent do)\b/i.test(
+      question
+    ) &&
+    !/\b(?:check|list|show|find|which|who|analy[sz]e|compare|update|change|move|mark)\b/i.test(
+      question
+    );
   const leadPatterns = [
     /\bleads?\b/i,
     /\bcandidates?\b/i,
@@ -8796,6 +8804,7 @@ async function buildCeoOperationalContext(
     /\blinkedin\b/i,
     /\brepl(?:y|ies)\b/i,
   ];
+  const agentPatterns = [/\b(?:ai\s+)?agents?\b/i, /\bmodel routing\b/i, /\bai usage\b/i];
   const explicitlyNamesEntity = [
     ...leadPatterns,
     ...contactPatterns,
@@ -8804,9 +8813,11 @@ async function buildCeoOperationalContext(
     ...taskPatterns,
     ...activityPatterns,
     ...conversationPatterns,
+    ...agentPatterns,
   ].some((pattern) => pattern.test(question));
   const wantsLeads =
-    asksForEverything || ceoQuestionIncludes(question, leadPatterns) || !explicitlyNamesEntity;
+    !asksForDoctrine &&
+    (asksForEverything || ceoQuestionIncludes(question, leadPatterns) || !explicitlyNamesEntity);
   const wantsContacts = asksForEverything || ceoQuestionIncludes(question, contactPatterns);
   const wantsCompanies = asksForEverything || ceoQuestionIncludes(question, companyPatterns);
   const wantsOpportunities =
@@ -8954,6 +8965,21 @@ async function buildCeoOperationalContext(
   if (wantsConversations) scope.push('linkedinConversations');
   if (conversationRows.length > otherLimit) truncated.push('linkedinConversations');
 
+  const agentUsageRows = await db
+    .select({
+      agentId: schema.aiUsageEvents.agentId,
+      requests: sql<number>`count(*)::int`,
+      totalTokens: sql<number>`coalesce(sum(${schema.aiUsageEvents.totalTokens}), 0)::bigint`,
+      estimatedCostUsd: sql<string>`coalesce(sum(${schema.aiUsageEvents.estimatedCostUsd}), 0)::text`,
+      successfulRequests: sql<number>`count(*) filter (where ${schema.aiUsageEvents.status} = 'success')::int`,
+      failedRequests: sql<number>`count(*) filter (where ${schema.aiUsageEvents.status} <> 'success')::int`,
+      lastUsedAt: sql<Date | null>`max(${schema.aiUsageEvents.createdAt})`,
+    })
+    .from(schema.aiUsageEvents)
+    .where(sql`${schema.aiUsageEvents.createdAt} >= now() - interval '30 days'`)
+    .groupBy(schema.aiUsageEvents.agentId);
+  scope.push('agentOperations');
+
   return {
     scope,
     recordLimit: leadLimit,
@@ -9010,6 +9036,16 @@ async function buildCeoOperationalContext(
       ...row,
       messages: Array.isArray(row.messages) ? row.messages.slice(-20) : [],
       lastMessageAt: dashboardIsoString(row.lastMessageAt),
+    })),
+    agentOperations: agentUsageRows.map((row) => ({
+      ...row,
+      agentId: row.agentId ?? 'unattributed',
+      requests: Number(row.requests) || 0,
+      totalTokens: Number(row.totalTokens) || 0,
+      estimatedCostUsd: Number(row.estimatedCostUsd) || 0,
+      successfulRequests: Number(row.successfulRequests) || 0,
+      failedRequests: Number(row.failedRequests) || 0,
+      lastUsedAt: dashboardIsoString(row.lastUsedAt),
     })),
   };
 }
@@ -11365,8 +11401,10 @@ app.post('/api/ceo-chat', async (c) => {
         tasks: [],
         activities: [],
         linkedinConversations: [],
+        agentOperations: [],
       }
     : await buildCeoOperationalContext(db, question, snapshot);
+  const institutionalKnowledge = buildSkarionOperatingKnowledge(question, AI_AGENTS);
   let proposedAction: CeoDatabaseAction | null = null;
   if (!isGreeting && detectCeoDatabaseActionIntent(question)) {
     try {
@@ -11429,7 +11467,8 @@ app.post('/api/ceo-chat', async (c) => {
             systemInstruction: buildCeoSystemInstruction(
               snapshot,
               operationalContext,
-              proposedAction
+              proposedAction,
+              institutionalKnowledge
             ),
           });
       const answer = generated?.trim().slice(0, 40_000) ?? '';
@@ -11540,7 +11579,12 @@ app.post('/api/ceo-chat', async (c) => {
         agent: 'reporting-ceo',
         temperature: 0.2,
         maxTokens: 4_000,
-        systemInstruction: buildCeoSystemInstruction(snapshot, operationalContext, null),
+        systemInstruction: buildCeoSystemInstruction(
+          snapshot,
+          operationalContext,
+          null,
+          institutionalKnowledge
+        ),
       })) {
         if (!delta) continue;
         const remaining = 40_000 - answer.length;
