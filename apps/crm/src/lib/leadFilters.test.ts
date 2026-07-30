@@ -65,6 +65,31 @@ describe('buildLeadConditions', () => {
     expect(withThreeTags).toHaveLength(3);
   });
 
+  it('requires every included tag when tagMatch is all', () => {
+    expect(
+      buildLeadConditions({
+        ...base,
+        tags: ['excellent fit', 'profile capture complete', 'batch 8'],
+        tagMatch: 'all',
+      })
+    ).toHaveLength(5);
+  });
+
+  it('adds one condition for every excluded tag', () => {
+    expect(
+      buildLeadConditions({
+        ...base,
+        excludedTags: ['future', 'needs profile capture'],
+      })
+    ).toHaveLength(4);
+  });
+
+  it('can filter to tagged or untagged leads', () => {
+    expect(buildLeadConditions({ ...base, tagPresence: 'tagged' })).toHaveLength(3);
+    expect(buildLeadConditions({ ...base, tagPresence: 'untagged' })).toHaveLength(3);
+    expect(buildLeadConditions({ ...base, tagPresence: 'any' })).toHaveLength(2);
+  });
+
   it('adds one condition per side of a date range', () => {
     expect(
       buildLeadConditions({ ...base, createdFrom: '2026-01-01', createdTo: '2026-06-01' })

@@ -11,6 +11,9 @@ export interface LeadFilters {
   outreachStatuses?: string[];
   owners?: string[];
   tags?: string[];
+  excludedTags?: string[];
+  tagMatch?: 'any' | 'all';
+  tagPresence?: 'any' | 'tagged' | 'untagged';
   batchId?: string;
   createdFrom?: string;
   createdTo?: string;
@@ -28,6 +31,10 @@ export function buildLeadsQueryString(filters: LeadFilters): string {
     qs.set('outreachStatuses', filters.outreachStatuses.join(','));
   if (filters.owners?.length) qs.set('owners', filters.owners.join(','));
   if (filters.tags?.length) qs.set('tags', filters.tags.join(','));
+  if (filters.excludedTags?.length) qs.set('excludedTags', filters.excludedTags.join(','));
+  if (filters.tagMatch && filters.tagMatch !== 'any') qs.set('tagMatch', filters.tagMatch);
+  if (filters.tagPresence && filters.tagPresence !== 'any')
+    qs.set('tagPresence', filters.tagPresence);
   if (filters.batchId) qs.set('batchId', filters.batchId);
   if (filters.createdFrom) qs.set('createdFrom', filters.createdFrom);
   if (filters.createdTo) qs.set('createdTo', filters.createdTo);

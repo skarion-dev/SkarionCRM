@@ -22,6 +22,9 @@ export interface LeadFilterParams {
   batchId?: string;
   tag?: string;
   tags?: string[];
+  excludedTags?: string[];
+  tagMatch?: 'any' | 'all';
+  tagPresence?: 'any' | 'tagged' | 'untagged';
   createdFrom?: string;
   createdTo?: string;
 }
@@ -76,14 +79,32 @@ export function buildLeadConditions(params: LeadFilterParams): SQL[] {
 
   if (params.batchId) conditions.push(eq(schema.leads.batchId, params.batchId));
 
-  // "Any of these tags" (OR) — matches how tag chips already read elsewhere
-  // in the UI, and is simpler than AND semantics for a lead-facing filter.
+  // Included tags can use broad "any" matching or strict "all" matching.
+  // Exclusions are always ANDed so a lead containing any excluded tag is
+  // hidden. Coalescing null tag arrays keeps untagged leads visible.
   const tagList = params.tags?.length ? params.tags : params.tag ? [params.tag] : [];
   if (tagList.length > 0) {
-    const tagCondition = or(
-      ...tagList.map((t) => sql`${schema.leads.tags} @> ${JSON.stringify([t])}::jsonb`)
+    const tagConditions = tagList.map(
+      (t) => sql`coalesce(${schema.leads.tags}, '[]'::jsonb) @> ${JSON.stringify([t])}::jsonb`
     );
-    if (tagCondition) conditions.push(tagCondition);
+    if (params.tagMatch === 'all') {
+      conditions.push(...tagConditions);
+    } else {
+      const tagCondition = or(...tagConditions);
+      if (tagCondition) conditions.push(tagCondition);
+    }
+  }
+
+  for (const tagName of params.excludedTags ?? []) {
+    conditions.push(
+      sql`not (coalesce(${schema.leads.tags}, '[]'::jsonb) @> ${JSON.stringify([tagName])}::jsonb)`
+    );
+  }
+
+  if (params.tagPresence === 'tagged') {
+    conditions.push(sql`jsonb_array_length(coalesce(${schema.leads.tags}, '[]'::jsonb)) > 0`);
+  } else if (params.tagPresence === 'untagged') {
+    conditions.push(sql`jsonb_array_length(coalesce(${schema.leads.tags}, '[]'::jsonb)) = 0`);
   }
 
   if (params.createdFrom) {

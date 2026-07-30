@@ -11,6 +11,7 @@ import {
   useUpdateEntity,
   useLeadScoringStatus,
   useProspectEvents,
+  useTags,
 } from '../hooks/use-api.js';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../stores/auth.js';
@@ -39,6 +40,9 @@ import {
   CheckCircle2,
   Clock3,
   Gauge,
+  Check,
+  EyeOff,
+  RotateCcw,
 } from 'lucide-react';
 import { cn } from '../lib/utils.js';
 import LeadForm from '../components/forms/LeadForm.js';
@@ -158,7 +162,11 @@ export default function LeadsPage() {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [tagFilters, setTagFilters] = useState<string[]>([]);
+  const [excludedTagFilters, setExcludedTagFilters] = useState<string[]>([]);
+  const [tagMatch, setTagMatch] = useState<'any' | 'all'>('any');
+  const [tagPresence, setTagPresence] = useState<'any' | 'tagged' | 'untagged'>('any');
   const [tagFilterInput, setTagFilterInput] = useState('');
+  const [tagSearch, setTagSearch] = useState('');
   const [ownerFilters, setOwnerFilters] = useState<string[]>([]);
 
   // Saved searches
@@ -176,6 +184,9 @@ export default function LeadsPage() {
       statuses: statusFilter === 'all' ? undefined : [statusFilter],
       owners: ownerFilters.length > 0 ? ownerFilters : undefined,
       tags: tagFilters.length > 0 ? tagFilters : undefined,
+      excludedTags: excludedTagFilters.length > 0 ? excludedTagFilters : undefined,
+      tagMatch,
+      tagPresence,
       batchId: batchFilter === 'all' ? undefined : batchFilter,
       createdFrom: dateFrom || undefined,
       createdTo: dateTo || undefined,
@@ -187,6 +198,9 @@ export default function LeadsPage() {
       statusFilter,
       ownerFilters,
       tagFilters,
+      excludedTagFilters,
+      tagMatch,
+      tagPresence,
       batchFilter,
       dateFrom,
       dateTo,
@@ -199,6 +213,7 @@ export default function LeadsPage() {
   const deleteMutation = useDeleteEntity();
   const bulkMutation = useBulkLeads();
   const { data: batches } = useImportBatches();
+  const { data: tagData } = useTags();
   const { data: identityUsers } = useIdentityUsers(canManage);
   const { data: savedSearchesData } = useSavedSearches();
   const { data: scoringStatus, isLoading: scoringStatusLoading } = useLeadScoringStatus();
@@ -211,6 +226,21 @@ export default function LeadsPage() {
     u.appMemberships?.some((m) => m.app === 'crm')
   );
   const savedSearches = savedSearchesData?.savedSearches ?? [];
+  const allTagNames = useMemo(
+    () =>
+      Array.from(
+        new Set([
+          ...(tagData?.tags.map((tag) => tag.name) ?? []),
+          ...tagFilters,
+          ...excludedTagFilters,
+        ])
+      ).sort((left, right) => left.localeCompare(right)),
+    [tagData?.tags, tagFilters, excludedTagFilters]
+  );
+  const visibleTagNames = useMemo(() => {
+    const needle = tagSearch.trim().toLowerCase();
+    return needle ? allTagNames.filter((tag) => tag.toLowerCase().includes(needle)) : allTagNames;
+  }, [allTagNames, tagSearch]);
 
   const leads = data?.leads ?? [];
   const total = data?.total ?? 0;
@@ -262,6 +292,9 @@ export default function LeadsPage() {
     setStatusFilter((saved.statuses?.[0] as LeadJourneyStage | undefined) ?? 'all');
     setOwnerFilters(saved.owners ?? []);
     setTagFilters(saved.tags ?? []);
+    setExcludedTagFilters(saved.excludedTags ?? []);
+    setTagMatch(saved.tagMatch ?? 'any');
+    setTagPresence(saved.tagPresence ?? 'any');
     setBatchFilter(saved.batchId ?? 'all');
     setDateFrom(saved.createdFrom ?? '');
     setDateTo(saved.createdTo ?? '');
@@ -269,6 +302,48 @@ export default function LeadsPage() {
     setSortOrder((saved.sortOrder as 'asc' | 'desc' | undefined) ?? 'desc');
     setSavedSearchesOpen(false);
   }, []);
+
+  const setTagDisposition = useCallback(
+    (tag: string, disposition: 'include' | 'exclude' | 'neutral') => {
+      setTagFilters((current) => {
+        const without = current.filter((item) => item !== tag);
+        return disposition === 'include' ? [...without, tag] : without;
+      });
+      setExcludedTagFilters((current) => {
+        const without = current.filter((item) => item !== tag);
+        return disposition === 'exclude' ? [...without, tag] : without;
+      });
+    },
+    []
+  );
+
+  const clearAllFilters = useCallback(() => {
+    setSearch('');
+    setDebouncedSearch('');
+    setStatusFilter('all');
+    setBatchFilter('all');
+    setDateFrom('');
+    setDateTo('');
+    setTagFilters([]);
+    setExcludedTagFilters([]);
+    setTagMatch('any');
+    setTagPresence('any');
+    setTagSearch('');
+    setOwnerFilters([]);
+    setSortBy('createdAt');
+    setSortOrder('desc');
+  }, []);
+
+  const activeFilterCount =
+    (debouncedSearch ? 1 : 0) +
+    (statusFilter === 'all' ? 0 : 1) +
+    (batchFilter === 'all' ? 0 : 1) +
+    (dateFrom ? 1 : 0) +
+    (dateTo ? 1 : 0) +
+    tagFilters.length +
+    excludedTagFilters.length +
+    ownerFilters.length +
+    (tagPresence === 'any' ? 0 : 1);
 
   const handleSaveSearch = () => {
     if (!saveSearchName.trim()) {
@@ -774,24 +849,31 @@ export default function LeadsPage() {
               dateFrom ||
               dateTo ||
               tagFilters.length > 0 ||
+              excludedTagFilters.length > 0 ||
+              tagPresence !== 'any' ||
               ownerFilters.length > 0
               ? 'border-blue-300 bg-blue-50 text-blue-700'
               : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-600'
           )}
         >
-          <SlidersHorizontal size={16} /> More Filters
+          <SlidersHorizontal size={16} /> Filters
+          {activeFilterCount > 0 && (
+            <span className="rounded-full bg-blue-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+              {activeFilterCount}
+            </span>
+          )}
         </button>
         <div className="relative">
           <button
             onClick={() => setSavedSearchesOpen((o) => !o)}
             className="flex items-center gap-2 px-3 py-2 border border-slate-200 rounded-md text-sm bg-white hover:bg-slate-50 text-slate-600"
           >
-            <Bookmark size={16} /> Saved Searches
+            <Bookmark size={16} /> Saved Views
           </button>
           {savedSearchesOpen && (
             <div className="absolute right-0 mt-1 w-80 bg-white border border-slate-200 rounded-md shadow-lg z-10 p-3">
               {savedSearches.length === 0 && (
-                <p className="text-xs text-slate-400 mb-2">No saved searches yet.</p>
+                <p className="text-xs text-slate-400 mb-2">No saved views yet.</p>
               )}
               <div className="space-y-1 max-h-56 overflow-y-auto">
                 {savedSearches.map((s) => (
@@ -822,7 +904,7 @@ export default function LeadsPage() {
               <div className="flex gap-2 mt-2 pt-2 border-t border-slate-100">
                 <input
                   type="text"
-                  placeholder="Name this search..."
+                  placeholder="Name this view..."
                   value={saveSearchName}
                   onChange={(e) => setSaveSearchName(e.target.value)}
                   className="flex-1 px-2 py-1.5 text-sm border border-slate-200 rounded-md outline-none"
@@ -840,91 +922,312 @@ export default function LeadsPage() {
         </div>
       </div>
 
-      {/* More filters panel — date range, tags, (manager+) owner */}
-      {moreFiltersOpen && (
-        <div className="bg-white border border-slate-200 rounded-lg p-4 flex flex-wrap gap-4">
-          <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1">Created from</label>
-            <input
-              type="date"
-              value={dateFrom}
-              onChange={(e) => setDateFrom(e.target.value)}
-              className="px-3 py-1.5 border border-slate-200 rounded-md text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1">Created to</label>
-            <input
-              type="date"
-              value={dateTo}
-              onChange={(e) => setDateTo(e.target.value)}
-              className="px-3 py-1.5 border border-slate-200 rounded-md text-sm"
-            />
-          </div>
-          <div className="min-w-[220px]">
-            <label className="block text-xs font-medium text-slate-500 mb-1">Tags</label>
-            <div className="flex flex-wrap gap-1 mb-1">
-              {tagFilters.map((t) => (
-                <span
-                  key={t}
-                  className="flex items-center gap-1 bg-emerald-50 text-emerald-700 rounded-full px-2 py-0.5 text-xs"
-                >
-                  {t}
-                  <button onClick={() => setTagFilters((prev) => prev.filter((x) => x !== t))}>
-                    <X size={12} />
-                  </button>
-                </span>
-              ))}
-            </div>
-            <input
-              type="text"
-              placeholder="Type a tag, press Enter"
-              value={tagFilterInput}
-              onChange={(e) => setTagFilterInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key !== 'Enter') return;
-                e.preventDefault();
-                const tag = tagFilterInput.trim();
-                if (tag && !tagFilters.includes(tag)) setTagFilters((prev) => [...prev, tag]);
-                setTagFilterInput('');
-              }}
-              className="w-full px-3 py-1.5 border border-slate-200 rounded-md text-sm outline-none"
-            />
-          </div>
-          {canManage && (
-            <div className="min-w-[220px]">
-              <label className="block text-xs font-medium text-slate-500 mb-1">Owners</label>
-              <div className="flex flex-col gap-1 max-h-28 overflow-y-auto border border-slate-200 rounded-md p-2">
-                {crmUsers.map((u) => (
-                  <label key={u.id} className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={ownerFilters.includes(u.id)}
-                      onChange={(e) =>
-                        setOwnerFilters((prev) =>
-                          e.target.checked ? [...prev, u.id] : prev.filter((id) => id !== u.id)
-                        )
-                      }
-                    />
-                    {u.displayName || u.email}
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-          {(dateFrom || dateTo || tagFilters.length > 0 || ownerFilters.length > 0) && (
+      {activeFilterCount > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-blue-100 bg-blue-50/60 px-3 py-2">
+          <span className="text-xs font-semibold uppercase tracking-wide text-blue-700">
+            Active workspace
+          </span>
+          {tagFilters.map((tag) => (
             <button
-              onClick={() => {
-                setDateFrom('');
-                setDateTo('');
-                setTagFilters([]);
-                setOwnerFilters([]);
-              }}
-              className="self-end px-3 py-1.5 text-sm text-slate-500 hover:text-slate-700"
+              key={`include-${tag}`}
+              type="button"
+              onClick={() => setTagDisposition(tag, 'neutral')}
+              className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-medium text-emerald-800 hover:bg-emerald-200"
+              title="Remove included tag"
             >
-              Clear these filters
+              <Check size={12} /> {tag} <X size={11} />
+            </button>
+          ))}
+          {excludedTagFilters.map((tag) => (
+            <button
+              key={`exclude-${tag}`}
+              type="button"
+              onClick={() => setTagDisposition(tag, 'neutral')}
+              className="inline-flex items-center gap-1 rounded-full bg-rose-100 px-2.5 py-1 text-xs font-medium text-rose-800 hover:bg-rose-200"
+              title="Remove excluded tag"
+            >
+              <EyeOff size={12} /> {tag} <X size={11} />
+            </button>
+          ))}
+          {tagPresence !== 'any' && (
+            <button
+              type="button"
+              onClick={() => setTagPresence('any')}
+              className="inline-flex items-center gap-1 rounded-full bg-violet-100 px-2.5 py-1 text-xs font-medium text-violet-800 hover:bg-violet-200"
+            >
+              {tagPresence === 'tagged' ? 'Tagged only' : 'Untagged only'} <X size={11} />
             </button>
           )}
+          <button
+            type="button"
+            onClick={clearAllFilters}
+            className="ml-auto inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-slate-600 hover:bg-white hover:text-slate-900"
+          >
+            <RotateCcw size={13} /> Reset workspace
+          </button>
+        </div>
+      )}
+
+      {/* Filter playground — dates, include/exclude tags, and owner selection. */}
+      {moreFiltersOpen && (
+        <div className="space-y-4 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-900">Filter playground</h3>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Click tags to include them, hide unwanted tags, then save the whole view.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={clearAllFilters}
+              disabled={activeFilterCount === 0}
+              className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+            >
+              <RotateCcw size={13} /> Reset all
+            </button>
+          </div>
+
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.65fr)_minmax(220px,0.7fr)]">
+            <div className="rounded-lg border border-slate-200 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="flex items-center gap-2 text-sm font-medium text-slate-800">
+                    <TagIcon size={15} /> Tags
+                    <span className="text-xs font-normal text-slate-400">
+                      {tagFilters.length} included · {excludedTagFilters.length} hidden
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    Green tags must match. Red tags are never shown.
+                  </p>
+                </div>
+                <div className="inline-flex rounded-md border border-slate-200 bg-slate-50 p-0.5">
+                  {(['any', 'all'] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setTagMatch(mode)}
+                      className={cn(
+                        'rounded px-2.5 py-1 text-xs font-medium',
+                        tagMatch === mode
+                          ? 'bg-white text-slate-900 shadow-sm'
+                          : 'text-slate-500 hover:text-slate-700'
+                      )}
+                    >
+                      Match {mode}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                <div className="flex min-w-52 flex-1 items-center gap-2 rounded-md border border-slate-200 px-2.5 py-1.5">
+                  <Search size={14} className="text-slate-400" />
+                  <input
+                    type="text"
+                    value={tagSearch}
+                    onChange={(event) => setTagSearch(event.target.value)}
+                    placeholder="Find a tag..."
+                    className="min-w-0 flex-1 text-sm outline-none"
+                  />
+                  {tagSearch && (
+                    <button type="button" onClick={() => setTagSearch('')}>
+                      <X size={13} className="text-slate-400" />
+                    </button>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTagFilters(allTagNames);
+                    setExcludedTagFilters([]);
+                  }}
+                  className="rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100"
+                >
+                  Include all
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTagFilters([]);
+                    setExcludedTagFilters([]);
+                  }}
+                  className="rounded-md border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                >
+                  Unselect all
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const included = tagFilters;
+                    setTagFilters(excludedTagFilters);
+                    setExcludedTagFilters(included);
+                  }}
+                  disabled={tagFilters.length === 0 && excludedTagFilters.length === 0}
+                  className="rounded-md border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+                >
+                  Swap include / hide
+                </button>
+              </div>
+
+              <div className="mt-3 max-h-52 overflow-y-auto rounded-md border border-slate-100 bg-slate-50/60 p-2">
+                {visibleTagNames.length === 0 ? (
+                  <div className="px-2 py-5 text-center text-xs text-slate-400">
+                    No tags match that search.
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {visibleTagNames.map((tag) => {
+                      const isIncluded = tagFilters.includes(tag);
+                      const isExcluded = excludedTagFilters.includes(tag);
+                      return (
+                        <div
+                          key={tag}
+                          className={cn(
+                            'inline-flex overflow-hidden rounded-full border text-xs font-medium',
+                            isIncluded
+                              ? 'border-emerald-200 bg-emerald-100 text-emerald-800'
+                              : isExcluded
+                                ? 'border-rose-200 bg-rose-100 text-rose-800'
+                                : 'border-slate-200 bg-white text-slate-600'
+                          )}
+                        >
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setTagDisposition(tag, isIncluded ? 'neutral' : 'include')
+                            }
+                            className="inline-flex items-center gap-1 px-2.5 py-1 hover:bg-black/5"
+                            title={isIncluded ? 'Stop requiring this tag' : 'Include this tag'}
+                          >
+                            {isIncluded && <Check size={11} />} {tag}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setTagDisposition(tag, isExcluded ? 'neutral' : 'exclude')
+                            }
+                            className="border-l border-current/10 px-1.5 py-1 hover:bg-black/5"
+                            title={isExcluded ? 'Stop hiding this tag' : 'Hide leads with this tag'}
+                            aria-label={`${isExcluded ? 'Stop hiding' : 'Hide'} ${tag}`}
+                          >
+                            {isExcluded ? <X size={11} /> : <EyeOff size={11} />}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span className="text-xs font-medium text-slate-500">Tag presence</span>
+                {(['any', 'tagged', 'untagged'] as const).map((presence) => (
+                  <button
+                    key={presence}
+                    type="button"
+                    onClick={() => setTagPresence(presence)}
+                    className={cn(
+                      'rounded-full border px-2.5 py-1 text-xs capitalize',
+                      tagPresence === presence
+                        ? 'border-violet-300 bg-violet-100 font-medium text-violet-800'
+                        : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                    )}
+                  >
+                    {presence === 'any' ? 'All leads' : `${presence} only`}
+                  </button>
+                ))}
+                <div className="ml-auto flex min-w-56 items-center gap-2">
+                  <input
+                    type="text"
+                    placeholder="Add an exact tag and press Enter"
+                    value={tagFilterInput}
+                    onChange={(event) => setTagFilterInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key !== 'Enter') return;
+                      event.preventDefault();
+                      const tag = tagFilterInput.trim();
+                      if (tag) setTagDisposition(tag, 'include');
+                      setTagFilterInput('');
+                    }}
+                    className="w-full rounded-md border border-slate-200 px-2.5 py-1.5 text-xs outline-none focus:border-blue-300"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <div className="rounded-lg border border-slate-200 p-3">
+                <div className="text-sm font-medium text-slate-800">Created date</div>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  <label className="text-xs text-slate-500">
+                    From
+                    <input
+                      type="date"
+                      value={dateFrom}
+                      onChange={(event) => setDateFrom(event.target.value)}
+                      className="mt-1 w-full rounded-md border border-slate-200 px-2 py-1.5 text-sm text-slate-700"
+                    />
+                  </label>
+                  <label className="text-xs text-slate-500">
+                    To
+                    <input
+                      type="date"
+                      value={dateTo}
+                      onChange={(event) => setDateTo(event.target.value)}
+                      className="mt-1 w-full rounded-md border border-slate-200 px-2 py-1.5 text-sm text-slate-700"
+                    />
+                  </label>
+                </div>
+              </div>
+
+              {canManage && (
+                <div className="rounded-lg border border-slate-200 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-medium text-slate-800">Owners</span>
+                    <div className="flex gap-2 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => setOwnerFilters(crmUsers.map((user) => user.id))}
+                        className="text-blue-600 hover:text-blue-800"
+                      >
+                        Select all
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setOwnerFilters([])}
+                        className="text-slate-500 hover:text-slate-700"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+                  <div className="mt-2 flex max-h-32 flex-col gap-1 overflow-y-auto">
+                    {crmUsers.map((user) => (
+                      <label
+                        key={user.id}
+                        className="flex items-center gap-2 rounded px-1 py-1 text-sm hover:bg-slate-50"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={ownerFilters.includes(user.id)}
+                          onChange={(event) =>
+                            setOwnerFilters((current) =>
+                              event.target.checked
+                                ? [...current, user.id]
+                                : current.filter((id) => id !== user.id)
+                            )
+                          }
+                        />
+                        {user.displayName || user.email}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
