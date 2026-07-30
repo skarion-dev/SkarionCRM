@@ -1,9 +1,19 @@
 export type CandidateConversationOutputMode = 'reply_only' | 'coach';
 
 export interface CandidateConversationRequest {
-  leadId: string;
+  leadId: string | null;
   message: string;
   outputMode: CandidateConversationOutputMode;
+}
+
+export interface CandidateConversationIdentity {
+  fullName: string | null;
+  leadNumber: string | null;
+  linkedinUrl: string | null;
+  email: string | null;
+  company: string | null;
+  headline: string | null;
+  confidence: 'high' | 'medium' | 'low';
 }
 
 export interface CandidateConversationMessage {
@@ -72,12 +82,55 @@ export function parseCandidateConversationRequest(
   const input = value as Record<string, unknown>;
   const leadId = typeof input.leadId === 'string' ? input.leadId.trim() : '';
   const message = typeof input.message === 'string' ? input.message.trim() : '';
-  if (!UUID_PATTERN.test(leadId) || !message || message.length > 8_000) return null;
+  if ((leadId && !UUID_PATTERN.test(leadId)) || !message || message.length > 20_000) return null;
   return {
-    leadId,
+    leadId: leadId || null,
     message,
     outputMode: input.outputMode === 'coach' ? 'coach' : 'reply_only',
   };
+}
+
+function optionalIdentityText(value: unknown, maxLength: number): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().replace(/\s+/g, ' ');
+  return normalized ? normalized.slice(0, maxLength) : null;
+}
+
+export function sanitizeCandidateConversationIdentity(
+  value: unknown
+): CandidateConversationIdentity | null {
+  if (!value || typeof value !== 'object') return null;
+  const input = value as Record<string, unknown>;
+  const identity: CandidateConversationIdentity = {
+    fullName: optionalIdentityText(input.fullName, 200),
+    leadNumber: optionalIdentityText(input.leadNumber, 40),
+    linkedinUrl: optionalIdentityText(input.linkedinUrl, 500),
+    email: optionalIdentityText(input.email, 320)?.toLowerCase() ?? null,
+    company: optionalIdentityText(input.company, 200),
+    headline: optionalIdentityText(input.headline, 300),
+    confidence:
+      input.confidence === 'high' || input.confidence === 'medium' ? input.confidence : 'low',
+  };
+  return identity.fullName || identity.leadNumber || identity.linkedinUrl || identity.email
+    ? identity
+    : null;
+}
+
+export function buildCandidateIdentitySystemInstruction(): string {
+  return `You identify the candidate (the person outside Skarion) in a pasted professional conversation.
+
+Return exactly one JSON object:
+{"fullName":string|null,"leadNumber":string|null,"linkedinUrl":string|null,"email":string|null,"company":string|null,"headline":string|null,"confidence":"high"|"medium"|"low"}
+
+Rules:
+- Extract only identifiers explicitly visible in the pasted conversation. Never invent or infer them.
+- The candidate is the other participant, not the Skarion representative.
+- Never identify Saki, Sakib, Skarion, the sender marked "You", or an obvious Skarion staff member as the candidate.
+- A conversation header, participant label, LinkedIn URL, email, or lead number is stronger evidence than a name mentioned inside a message.
+- If multiple outside people are present, choose the person whose message needs a reply.
+- Preserve the candidate's displayed full name accurately.
+- Use null for every unavailable field.
+- Confidence is high only when a participant header or unique identifier clearly names the candidate.`;
 }
 
 export function candidateContextReference(leadId: string) {
@@ -150,6 +203,7 @@ CONVERSATION GUIDANCE
 - Use one genuine compliment at most. Avoid generic praise, emojis, exclamation-heavy language, and corporate phrases.
 - Match the candidate's tone and avoid repeating questions already answered in the supplied history.
 - If the latest imported message is inbound, reply to it. If the operator pastes a newer candidate message, treat that as the latest message.
+- The operator may paste an entire conversation transcript. Distinguish Skarion's messages from the candidate's messages, identify the latest candidate turn that needs a response, and draft only the next Skarion message.
 - When the candidate asks whether Skarion is hiring, explain that Skarion supports candidates pursuing outside employers.
 - When asked about cost, answer directly: success-based, no upfront program payment, with full fee terms explained during consultation.
 - When a genuine need and fit are established, the booking link is https://skarion.com/book.

@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   buildCandidateConversationPrompt,
   buildCandidateConversationSystemInstruction,
+  buildCandidateIdentitySystemInstruction,
   candidateContextReference,
   parseCandidateConversationRequest,
+  sanitizeCandidateConversationIdentity,
   sanitizeCandidateDraft,
   type CandidateConversationContext,
 } from './candidate-conversation.js';
@@ -55,10 +57,43 @@ describe('Candidate conversation agent', () => {
       })
     ).toEqual({ leadId, message: 'Draft a reply', outputMode: 'coach' });
     expect(
+      parseCandidateConversationRequest({
+        message: 'Paste-only conversation',
+      })
+    ).toEqual({
+      leadId: null,
+      message: 'Paste-only conversation',
+      outputMode: 'reply_only',
+    });
+    expect(
       parseCandidateConversationRequest({ leadId: 'not-a-uuid', message: 'reply' })
     ).toBeNull();
     expect(parseCandidateConversationRequest({ leadId, message: ' ' })).toBeNull();
-    expect(parseCandidateConversationRequest({ leadId, message: 'x'.repeat(8_001) })).toBeNull();
+    expect(parseCandidateConversationRequest({ leadId, message: 'x'.repeat(20_001) })).toBeNull();
+  });
+
+  it('extracts only explicit candidate identifiers for automatic lead resolution', () => {
+    expect(
+      sanitizeCandidateConversationIdentity({
+        fullName: '  Jane   Doe ',
+        leadNumber: 'SK123',
+        linkedinUrl: null,
+        email: 'JANE@EXAMPLE.COM',
+        company: 'Example Co',
+        headline: 'Civil Engineer',
+        confidence: 'high',
+      })
+    ).toEqual({
+      fullName: 'Jane Doe',
+      leadNumber: 'SK123',
+      linkedinUrl: null,
+      email: 'jane@example.com',
+      company: 'Example Co',
+      headline: 'Civil Engineer',
+      confidence: 'high',
+    });
+    expect(sanitizeCandidateConversationIdentity({ fullName: null })).toBeNull();
+    expect(buildCandidateIdentitySystemInstruction()).toContain('not the Skarion representative');
   });
 
   it('enforces a single copy-ready draft in reply-only mode', () => {

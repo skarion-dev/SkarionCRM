@@ -192,6 +192,7 @@ export function estimateAiCostUsd(model: string, usage: AiTokenUsage): number {
 export type AiAgentId =
   | 'crm-copilot'
   | 'reporting-ceo'
+  | 'candidate-conversation-resolver'
   | 'candidate-conversation'
   | 'lead-intake'
   | 'prospect-profile'
@@ -226,6 +227,13 @@ export const AI_AGENTS: ReadonlyArray<{
     name: 'Reporting CEO',
     description:
       'Analyzes company-wide CRM metrics, highlights risks, and produces executive reports and charts.',
+    tier: 'cheap',
+  },
+  {
+    id: 'candidate-conversation-resolver',
+    name: 'Candidate Conversation Resolver',
+    description:
+      'Extracts explicit candidate identifiers from pasted conversations so the CRM can locate the correct lead.',
     tier: 'cheap',
   },
   {

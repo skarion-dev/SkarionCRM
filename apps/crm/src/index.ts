@@ -108,10 +108,13 @@ import {
 import {
   buildCandidateConversationPrompt,
   buildCandidateConversationSystemInstruction,
+  buildCandidateIdentitySystemInstruction,
   candidateContextReference,
   parseCandidateConversationRequest,
+  sanitizeCandidateConversationIdentity,
   sanitizeCandidateDraft,
   type CandidateConversationContext,
+  type CandidateConversationIdentity,
   type CandidateConversationMessage,
 } from './lib/candidate-conversation.js';
 import {
@@ -8941,6 +8944,140 @@ async function candidateChatHistoryRows(db: CrmDb, userId: string, leadId: strin
     .limit(100);
 }
 
+function candidateIdentitySearchConditions(identity: CandidateConversationIdentity) {
+  const conditions = [];
+  if (identity.leadNumber) {
+    conditions.push(ilike(schema.leads.leadNumber, identity.leadNumber));
+  }
+  if (identity.email) {
+    conditions.push(eq(sql`lower(${schema.leads.email})`, identity.email.toLowerCase()));
+  }
+  const profileKey = linkedinProfileKey(identity.linkedinUrl);
+  if (profileKey) {
+    conditions.push(eq(schema.leads.linkedinProfileKey, profileKey));
+  }
+  if (identity.fullName) {
+    const normalizedName = identity.fullName.toLowerCase().replace(/\s+/g, ' ').trim();
+    conditions.push(
+      eq(
+        sql<string>`lower(trim(concat_ws(' ', ${schema.leads.firstName}, ${schema.leads.lastName})))`,
+        normalizedName
+      )
+    );
+  }
+  return conditions;
+}
+
+function candidateIdentityMatchScore(
+  lead: typeof schema.leads.$inferSelect,
+  identity: CandidateConversationIdentity
+) {
+  let score = 0;
+  if (identity.leadNumber && lead.leadNumber?.toLowerCase() === identity.leadNumber.toLowerCase()) {
+    score += 20;
+  }
+  if (identity.email && lead.email?.toLowerCase() === identity.email.toLowerCase()) score += 20;
+  const profileKey = linkedinProfileKey(identity.linkedinUrl);
+  if (profileKey && lead.linkedinProfileKey === profileKey) score += 25;
+  const fullName = `${lead.firstName} ${lead.lastName}`.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (identity.fullName && fullName === identity.fullName.toLowerCase()) score += 10;
+  if (
+    identity.company &&
+    lead.companyName?.toLowerCase().includes(identity.company.toLowerCase())
+  ) {
+    score += 4;
+  }
+  if (identity.headline && lead.headline?.toLowerCase().includes(identity.headline.toLowerCase())) {
+    score += 3;
+  }
+  return score;
+}
+
+async function resolveCandidateConversationLead(
+  db: CrmDb,
+  aiEnv: AiGatewayEnv,
+  conversation: string
+): Promise<{
+  lead: typeof schema.leads.$inferSelect;
+  identity: CandidateConversationIdentity;
+  matchMethod: string;
+}> {
+  const extracted = await ai.extractStructured<Record<string, unknown>>(conversation, aiEnv, {
+    tier: 'cheap',
+    agent: 'candidate-conversation-resolver',
+    temperature: 0,
+    systemInstruction: buildCandidateIdentitySystemInstruction(),
+  });
+  const identity = sanitizeCandidateConversationIdentity(extracted);
+  if (!identity) {
+    throw new Error(
+      'I could not identify the candidate. Paste the conversation with its LinkedIn participant name or profile header.'
+    );
+  }
+
+  const conditions = candidateIdentitySearchConditions(identity);
+  if (conditions.length === 0) {
+    throw new Error(
+      'The conversation did not contain a candidate name, email, lead number, or LinkedIn URL.'
+    );
+  }
+  const candidates = await db
+    .select()
+    .from(schema.leads)
+    .where(and(isNull(schema.leads.deletedAt), or(...conditions)))
+    .limit(20);
+  if (candidates.length === 0) {
+    const label =
+      identity.fullName ??
+      identity.leadNumber ??
+      identity.email ??
+      identity.linkedinUrl ??
+      'candidate';
+    throw new Error(`I identified ${label}, but no matching CRM lead exists.`);
+  }
+  if (candidates.length === 1) {
+    return { lead: candidates[0]!, identity, matchMethod: 'unique_identifier' };
+  }
+
+  const ranked = candidates
+    .map((lead) => ({ lead, score: candidateIdentityMatchScore(lead, identity) }))
+    .sort((a, b) => b.score - a.score);
+  const first = ranked[0]!;
+  const second = ranked[1]!;
+  if (first.score > second.score) {
+    return { lead: first.lead, identity, matchMethod: 'ranked_identifiers' };
+  }
+
+  const shortlist = ranked.slice(0, 10).map(({ lead }) => ({
+    id: lead.id,
+    leadNumber: lead.leadNumber,
+    name: `${lead.firstName} ${lead.lastName}`.trim(),
+    headline: lead.headline,
+    company: lead.companyName,
+    location: lead.location,
+    linkedinUrl: lead.linkedinUrl,
+  }));
+  const selection = await ai.extractStructured<{ leadId?: unknown }>(
+    `PASTED CONVERSATION\n${conversation}\n\nMATCHING CRM LEADS\n${JSON.stringify(shortlist)}`,
+    aiEnv,
+    {
+      tier: 'cheap',
+      agent: 'candidate-conversation-resolver',
+      temperature: 0,
+      systemInstruction:
+        'Choose the single CRM lead that the pasted conversation is with. Return exactly {"leadId":"uuid"} using only an ID from MATCHING CRM LEADS. If the records are indistinguishable, return {"leadId":null}.',
+    }
+  );
+  const selectedId = typeof selection?.leadId === 'string' ? selection.leadId : '';
+  const selected = candidates.find((lead) => lead.id === selectedId);
+  if (!selected) {
+    throw new Error(
+      `I found multiple CRM leads named ${identity.fullName ?? 'that candidate'} and could not safely determine which one this conversation belongs to.`
+    );
+  }
+  return { lead: selected, identity, matchMethod: 'ai_disambiguated' };
+}
+
 app.get('/api/ceo-chat/history', async (c) => {
   if (!c.get('isSuperadmin')) return c.json({ error: 'Forbidden.' }, 403);
 
@@ -9081,22 +9218,41 @@ app.post('/api/candidate-chat', async (c) => {
 
   const request = parseCandidateConversationRequest(await c.req.json().catch(() => null));
   if (!request) {
-    return c.json(
-      { error: 'A valid lead and a message between 1 and 8,000 characters are required.' },
-      400
-    );
+    return c.json({ error: 'Paste a conversation between 1 and 20,000 characters.' }, 400);
   }
 
   const db = getDb(c.env, schema) as CrmDb;
-  const [lead] = await db
-    .select()
-    .from(schema.leads)
-    .where(and(eq(schema.leads.id, request.leadId), isNull(schema.leads.deletedAt)))
-    .limit(1);
-  if (!lead) return c.json({ error: 'Lead not found.' }, 404);
-
   const aiEnv = await getConfiguredAiEnv(db, c.env, userId);
   if (!ai.isAiConfigured(aiEnv)) return c.json({ error: ai.AI_NOT_CONFIGURED_MSG }, 503);
+
+  let lead: typeof schema.leads.$inferSelect | undefined;
+  let resolvedIdentity: CandidateConversationIdentity | null = null;
+  let matchMethod = 'provided_lead';
+  if (request.leadId) {
+    [lead] = await db
+      .select()
+      .from(schema.leads)
+      .where(and(eq(schema.leads.id, request.leadId), isNull(schema.leads.deletedAt)))
+      .limit(1);
+  } else {
+    try {
+      const resolved = await resolveCandidateConversationLead(db, aiEnv, request.message);
+      lead = resolved.lead;
+      resolvedIdentity = resolved.identity;
+      matchMethod = resolved.matchMethod;
+    } catch (error) {
+      return c.json(
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : 'I could not safely match this conversation to a CRM lead.',
+        },
+        422
+      );
+    }
+  }
+  if (!lead) return c.json({ error: 'Lead not found.' }, 404);
 
   const [context, historyRows] = await Promise.all([
     loadCandidateConversationContext(db, lead),
@@ -9141,6 +9297,11 @@ app.post('/api/candidate-chat', async (c) => {
           id: lead.id,
           name: context.lead.name,
           leadNumber: context.lead.leadNumber,
+        },
+        resolution: {
+          matchMethod,
+          confidence: resolvedIdentity?.confidence ?? 'high',
+          extractedName: resolvedIdentity?.fullName ?? context.lead.name,
         },
         context: {
           linkedinMessages: context.linkedinMessages.length,
@@ -9203,6 +9364,7 @@ app.post('/api/candidate-chat', async (c) => {
         resourceId: saved?.id ?? 'streamed',
         after: {
           leadId: lead.id,
+          matchMethod,
           outputMode: request.outputMode,
           linkedinMessagesUsed: context.linkedinMessages.length,
           activitiesUsed: context.activities.length,

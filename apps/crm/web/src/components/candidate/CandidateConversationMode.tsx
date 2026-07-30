@@ -9,39 +9,32 @@ import {
   GraduationCap,
   Loader2,
   MessageSquareText,
-  Search,
+  ScanSearch,
   Send,
   Sparkles,
   Square,
-  Trash2,
   User,
 } from 'lucide-react';
-import { crmStream, type Lead } from '../../api.js';
-import {
-  useCandidateChatContext,
-  useCandidateChatHistory,
-  useClearCandidateChatHistory,
-  useLeads,
-  type CeoChatMessage,
-} from '../../hooks/use-api.js';
+import { crmStream } from '../../api.js';
+import { useCandidateChatContext, type CeoChatMessage } from '../../hooks/use-api.js';
 import { showToast } from '../../stores/toast.js';
 import { journeyBadgeClass, journeyLabel } from '../../lib/leadJourney.js';
 import { cn } from '../../lib/utils.js';
 
-const SUGGESTIONS = [
-  'Draft a reply to the latest candidate message.',
-  'Ask what roles they are targeting and how the search is going.',
-  'Respond to their objection without sounding pushy.',
-  'Move this conversation forward by one natural step.',
-];
+interface ResolvedCandidate {
+  id: string;
+  name: string;
+  leadNumber: string | null;
+  matchMethod: string;
+  confidence: 'high' | 'medium' | 'low';
+}
 
 function messageId() {
   return `candidate-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
-  const [leadSearch, setLeadSearch] = useState('');
-  const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
+  const [resolvedCandidate, setResolvedCandidate] = useState<ResolvedCandidate | null>(null);
   const [replyOnly, setReplyOnly] = useState(true);
   const [messages, setMessages] = useState<CeoChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -50,33 +43,9 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const initializedLeadRef = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const leadResults = useLeads(
-    1,
-    8,
-    undefined,
-    leadSearch.trim() || undefined,
-    undefined,
-    'updatedAt',
-    'desc'
-  );
-  const context = useCandidateChatContext(selectedLead?.id ?? null);
-  const history = useCandidateChatHistory(selectedLead?.id ?? null);
-  const clearHistory = useClearCandidateChatHistory(selectedLead?.id ?? null);
-
-  useEffect(() => {
-    if (!selectedLead) {
-      initializedLeadRef.current = null;
-      setMessages([]);
-      return;
-    }
-    if (history.data?.messages && initializedLeadRef.current !== selectedLead.id) {
-      initializedLeadRef.current = selectedLead.id;
-      setMessages(history.data.messages);
-    }
-  }, [history.data, selectedLead]);
+  const context = useCandidateChatContext(resolvedCandidate?.id ?? null);
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -88,32 +57,19 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
     () => [...messages].reverse().find((message) => message.role === 'assistant'),
     [messages]
   );
-  const results = leadResults.data?.leads ?? [];
-  const showResults = !selectedLead && (leadSearch.trim().length > 0 || results.length > 0);
 
-  const chooseLead = (lead: Lead) => {
+  const startNewPaste = () => {
     abortRef.current?.abort();
-    initializedLeadRef.current = null;
-    setSelectedLead(lead);
-    setLeadSearch('');
+    setResolvedCandidate(null);
     setMessages([]);
     setInput('');
     setError(null);
-  };
-
-  const clearSelectedLead = () => {
-    abortRef.current?.abort();
-    initializedLeadRef.current = null;
-    setSelectedLead(null);
-    setMessages([]);
-    setInput('');
-    setError(null);
-    setLeadSearch('');
+    setStreamStatus('');
   };
 
   const sendMessage = async (request: string) => {
     const trimmed = request.trim();
-    if (!trimmed || !selectedLead || isStreaming) return;
+    if (!trimmed || isStreaming) return;
 
     const userMessage: CeoChatMessage = {
       id: messageId(),
@@ -132,7 +88,11 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
     setInput('');
     setError(null);
     setIsStreaming(true);
-    setStreamStatus('Loading verified lead and conversation context…');
+    setStreamStatus(
+      resolvedCandidate
+        ? 'Loading verified CRM context…'
+        : 'Identifying the candidate and matching the CRM lead…'
+    );
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -140,7 +100,7 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
       const response = await crmStream('/api/candidate-chat', {
         method: 'POST',
         body: JSON.stringify({
-          leadId: selectedLead.id,
+          leadId: resolvedCandidate?.id,
           message: trimmed,
           outputMode: replyOnly ? 'reply_only' : 'coach',
         }),
@@ -166,8 +126,24 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
             error?: string;
             id?: string;
             createdAt?: string;
+            lead?: {
+              id: string;
+              name: string;
+              leadNumber: string | null;
+            };
+            resolution?: {
+              matchMethod: string;
+              confidence: 'high' | 'medium' | 'low';
+            };
           };
           if (event.type === 'ready') {
+            if (event.lead) {
+              setResolvedCandidate({
+                ...event.lead,
+                matchMethod: event.resolution?.matchMethod ?? 'provided_lead',
+                confidence: event.resolution?.confidence ?? 'high',
+              });
+            }
             setStreamStatus(replyOnly ? 'Drafting one copy-ready reply…' : 'Preparing strategy…');
           } else if (event.type === 'delta' && event.delta) {
             setStreamStatus(replyOnly ? 'Finalizing reply…' : 'Streaming guidance…');
@@ -197,7 +173,6 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
         }
         if (done) finished = true;
       }
-      void context.refetch();
     } catch (caught) {
       const message = controller.signal.aborted
         ? 'Generation stopped.'
@@ -225,22 +200,6 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
     );
   };
 
-  const clear = () => {
-    if (!selectedLead || !window.confirm(`Clear drafting history for ${selectedLead.firstName}?`)) {
-      return;
-    }
-    clearHistory.mutate(undefined, {
-      onSuccess: () => {
-        initializedLeadRef.current = selectedLead.id;
-        setMessages([]);
-        setError(null);
-        showToast('Candidate drafting history cleared', 'success');
-      },
-      onError: (caught) =>
-        showToast(caught instanceof Error ? caught.message : 'Could not clear history', 'error'),
-    });
-  };
-
   return (
     <div className="mx-auto flex h-[calc(100vh-7rem)] max-w-6xl flex-col">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
@@ -259,7 +218,7 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
           <div>
             <h1 className="text-2xl font-semibold">Candidate replies</h1>
             <p className="text-sm text-slate-500">
-              Verified profile + imported conversation history · drafts are never marked as sent
+              Paste the conversation · AI finds the lead and loads their CRM history
             </p>
           </div>
         </div>
@@ -288,110 +247,56 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
           </div>
           <button
             type="button"
-            onClick={clear}
-            disabled={
-              !selectedLead || isStreaming || clearHistory.isPending || messages.length === 0
-            }
-            className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+            onClick={startNewPaste}
+            disabled={isStreaming || (!resolvedCandidate && messages.length === 0)}
+            className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40"
           >
-            {clearHistory.isPending ? (
-              <Loader2 size={15} className="animate-spin" />
-            ) : (
-              <Trash2 size={15} />
-            )}
-            New thread
+            New paste
           </button>
         </div>
       </div>
 
-      <div className="mb-4 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-        {selectedLead ? (
+      {resolvedCandidate && (
+        <div className="mb-4 rounded-xl border border-emerald-200 bg-white p-3 shadow-sm">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="font-semibold text-slate-950">
-                  {selectedLead.firstName} {selectedLead.lastName}
-                </span>
-                {selectedLead.leadNumber && (
+                <div className="flex items-center gap-1.5 rounded-full bg-emerald-50 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
+                  <Check size={12} />
+                  Matched automatically
+                </div>
+                <span className="font-semibold text-slate-950">{resolvedCandidate.name}</span>
+                {resolvedCandidate.leadNumber && (
                   <span className="rounded bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">
-                    {selectedLead.leadNumber}
+                    {resolvedCandidate.leadNumber}
                   </span>
                 )}
-                <span
-                  className={cn(
-                    'rounded-full px-2 py-0.5 text-[10px] font-semibold',
-                    journeyBadgeClass(selectedLead.journeyStage)
-                  )}
-                >
-                  {journeyLabel(selectedLead.journeyStage)}
-                </span>
-              </div>
-              <p className="mt-1 truncate text-xs text-slate-500">
-                {selectedLead.headline || selectedLead.currentRole || 'No profile headline'}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={clearSelectedLead}
-              className="text-xs font-medium text-blue-600 hover:text-blue-700"
-            >
-              Change lead
-            </button>
-          </div>
-        ) : (
-          <div className="relative">
-            <Search
-              size={16}
-              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-            />
-            <input
-              value={leadSearch}
-              onChange={(event) => setLeadSearch(event.target.value)}
-              placeholder="Find a lead by name, lead number, company, or LinkedIn…"
-              className="w-full rounded-lg border border-slate-200 py-2.5 pl-9 pr-3 text-sm outline-none focus:border-blue-400"
-            />
-            {showResults && (
-              <div className="absolute z-20 mt-2 max-h-72 w-full overflow-y-auto rounded-xl border border-slate-200 bg-white p-1 shadow-xl">
-                {leadResults.isFetching && results.length === 0 ? (
-                  <div className="flex items-center justify-center p-5 text-sm text-slate-400">
-                    <Loader2 size={15} className="mr-2 animate-spin" />
-                    Finding leads…
-                  </div>
-                ) : results.length ? (
-                  results.map((lead) => (
-                    <button
-                      key={lead.id}
-                      type="button"
-                      onClick={() => chooseLead(lead)}
-                      className="flex w-full items-start justify-between gap-3 rounded-lg p-3 text-left hover:bg-blue-50"
-                    >
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-semibold text-slate-900">
-                          {lead.firstName} {lead.lastName}
-                        </p>
-                        <p className="mt-0.5 truncate text-xs text-slate-500">
-                          {lead.headline || lead.currentRole || lead.companyName || 'No headline'}
-                        </p>
-                      </div>
-                      <span className="shrink-0 text-[10px] font-medium text-slate-400">
-                        {lead.leadNumber}
-                      </span>
-                    </button>
-                  ))
-                ) : (
-                  <div className="p-5 text-center text-sm text-slate-400">No matching leads</div>
+                {context.data && (
+                  <span
+                    className={cn(
+                      'rounded-full px-2 py-0.5 text-[10px] font-semibold',
+                      journeyBadgeClass(context.data.lead.journeyStage)
+                    )}
+                  >
+                    {journeyLabel(context.data.lead.journeyStage)}
+                  </span>
                 )}
               </div>
-            )}
+              <p className="mt-1 text-xs text-slate-500">
+                {context.data?.lead.headline || 'Loading verified profile…'}
+              </p>
+            </div>
+            <div className="text-xs text-emerald-700">
+              {resolvedCandidate.confidence} confidence ·{' '}
+              {resolvedCandidate.matchMethod.replaceAll('_', ' ')}
+            </div>
           </div>
-        )}
 
-        {selectedLead && (
           <div className="mt-3 grid gap-2 border-t border-slate-100 pt-3 sm:grid-cols-4">
             {context.isLoading ? (
               <div className="col-span-full flex items-center text-xs text-slate-400">
                 <Loader2 size={13} className="mr-2 animate-spin" />
-                Fetching verified profile and past conversation…
+                Fetching profile, assessment, and past conversations…
               </div>
             ) : context.data ? (
               <>
@@ -399,7 +304,7 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
                   <div className="text-lg font-semibold text-blue-800">
                     {context.data.context.linkedinMessages}
                   </div>
-                  <div className="text-[10px] text-blue-600">LinkedIn messages loaded</div>
+                  <div className="text-[10px] text-blue-600">Past messages loaded</div>
                 </div>
                 <div className="rounded-lg bg-emerald-50 px-3 py-2">
                   <div className="text-lg font-semibold text-emerald-800">
@@ -422,68 +327,33 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
                     {context.data.lead.mostRecentSchool || 'School unavailable'}
                   </div>
                 </div>
-                {context.data.context.latestMessage && (
-                  <div className="col-span-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
-                    <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-                      <Database size={11} />
-                      Latest imported {context.data.context.latestMessage.direction} message
-                    </div>
-                    <p className="mt-1 line-clamp-2 text-xs text-slate-600">
-                      {context.data.context.latestMessage.content}
-                    </p>
-                  </div>
-                )}
               </>
             ) : (
               <div className="col-span-full text-xs text-red-600">
-                Could not load the selected lead context.
+                The lead matched, but its detailed context could not be displayed.
               </div>
             )}
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
-        {!selectedLead ? (
-          <div className="flex h-full flex-col items-center justify-center p-6 text-center">
-            <div className="mb-4 rounded-2xl bg-violet-50 p-4 text-violet-600">
-              <Search size={32} />
-            </div>
-            <h2 className="text-lg font-semibold text-slate-800">Choose the candidate first</h2>
-            <p className="mt-2 max-w-lg text-sm leading-6 text-slate-500">
-              The agent will fetch that lead's profile, AI assessment, outreach state, and imported
-              message history before writing anything.
-            </p>
-          </div>
-        ) : history.isLoading && messages.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-sm text-slate-400">
-            <Loader2 size={18} className="mr-2 animate-spin" />
-            Loading this lead's drafting history…
-          </div>
-        ) : messages.length === 0 ? (
+        {messages.length === 0 ? (
           <div className="mx-auto flex h-full max-w-3xl flex-col items-center justify-center p-6 text-center">
             <div className="mb-4 rounded-2xl bg-violet-50 p-4 text-violet-600">
-              <Sparkles size={32} />
+              <ScanSearch size={34} />
             </div>
-            <h2 className="text-lg font-semibold text-slate-800">
-              Draft the next message for {selectedLead.firstName}
+            <h2 className="text-xl font-semibold text-slate-800">
+              Paste the LinkedIn conversation
             </h2>
             <p className="mt-2 max-w-xl text-sm leading-6 text-slate-500">
-              Reply-only mode returns one message and nothing else. Switch to strategy mode only
-              when you want the reasoning too.
+              Include the participant header or candidate name. The resolver identifies who you are
+              speaking with, finds the CRM lead, loads their captured profile and previous messages,
+              and drafts the next response.
             </p>
-            <div className="mt-5 grid w-full gap-2 sm:grid-cols-2">
-              {SUGGESTIONS.map((suggestion) => (
-                <button
-                  key={suggestion}
-                  type="button"
-                  onClick={() => void sendMessage(suggestion)}
-                  disabled={context.isLoading}
-                  className="rounded-xl border border-slate-200 p-3 text-left text-sm text-slate-700 hover:border-violet-300 hover:bg-violet-50 disabled:opacity-50"
-                >
-                  {suggestion}
-                </button>
-              ))}
+            <div className="mt-5 flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
+              <Database size={14} />
+              No lead search or manual selection required
             </div>
           </div>
         ) : (
@@ -535,7 +405,9 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
                       </div>
                     )
                   ) : (
-                    <p className="whitespace-pre-wrap">{message.content}</p>
+                    <p className="max-h-48 overflow-y-auto whitespace-pre-wrap">
+                      {message.content}
+                    </p>
                   )}
                 </div>
               </div>
@@ -561,26 +433,20 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
         <textarea
           value={input}
           onChange={(event) => setInput(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-              event.preventDefault();
-              void sendMessage(input);
-            }
-          }}
           placeholder={
-            selectedLead
-              ? 'Paste their newest message, or ask for the next reply…'
-              : 'Choose a lead before drafting…'
+            resolvedCandidate
+              ? 'Paste their next message or ask for a revised reply…'
+              : 'Paste the full LinkedIn conversation here, including the candidate name…'
           }
-          rows={2}
-          maxLength={8_000}
-          disabled={!selectedLead || isStreaming}
-          className="w-full resize-none bg-transparent px-2 py-1 text-sm outline-none placeholder:text-slate-400 disabled:opacity-60"
+          rows={5}
+          maxLength={20_000}
+          disabled={isStreaming}
+          className="w-full resize-y bg-transparent px-2 py-1 text-sm outline-none placeholder:text-slate-400 disabled:opacity-60"
         />
         <div className="mt-2 flex items-center justify-between gap-3">
           <div className="min-w-0 text-xs text-slate-400">
             {replyOnly ? 'One copy-ready reply only' : 'Recommended reply with concise strategy'}
-            {latestAssistant && ' · drafting history saved'}
+            {latestAssistant && ' · drafts are never marked as sent'}
           </div>
           {isStreaming ? (
             <button
@@ -594,11 +460,12 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
           ) : (
             <button
               type="submit"
-              disabled={!selectedLead || !input.trim() || context.isLoading}
+              disabled={!input.trim()}
               className="flex shrink-0 items-center gap-2 rounded-lg bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-40"
             >
-              <Send size={15} />
-              Draft reply
+              {resolvedCandidate ? <Sparkles size={15} /> : <ScanSearch size={15} />}
+              {resolvedCandidate ? 'Draft reply' : 'Find lead & draft'}
+              <Send size={14} />
             </button>
           )}
         </div>
