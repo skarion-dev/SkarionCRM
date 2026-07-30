@@ -8376,6 +8376,21 @@ function reportingSeries(
     .sort((a, b) => b.value - a.value);
 }
 
+async function runDashboardQuery<T>(label: string, query: PromiseLike<T>, fallback: T): Promise<T> {
+  try {
+    return await query;
+  } catch (error) {
+    console.error(`[Dashboard] ${label} query failed`, error);
+    return fallback;
+  }
+}
+
+function dashboardIsoString(value: Date | string | null | undefined): string | null {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
 async function buildCeoReportingSnapshot(
   db: CrmDb,
   ownerId: string | null = null
@@ -8413,171 +8428,241 @@ async function buildCeoReportingSnapshot(
     recentLinkedinRows,
     upcomingOpportunityRows,
   ] = await Promise.all([
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(schema.leads)
-      .where(acceptedLeadFilter),
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(schema.contacts)
-      .where(
-        and(
-          isNull(schema.contacts.deletedAt),
-          ...(ownerId ? [eq(schema.contacts.ownerId, ownerId)] : [])
+    runDashboardQuery(
+      'lead total',
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(schema.leads)
+        .where(acceptedLeadFilter),
+      []
+    ),
+    runDashboardQuery(
+      'contact total',
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(schema.contacts)
+        .where(
+          and(
+            isNull(schema.contacts.deletedAt),
+            ...(ownerId ? [eq(schema.contacts.ownerId, ownerId)] : [])
+          )
+        ),
+      []
+    ),
+    runDashboardQuery(
+      'company total',
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(schema.companies)
+        .where(
+          and(
+            isNull(schema.companies.deletedAt),
+            ...(ownerId ? [eq(schema.companies.ownerId, ownerId)] : [])
+          )
+        ),
+      []
+    ),
+    runDashboardQuery(
+      'opportunity total',
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(schema.opportunities)
+        .where(opportunityFilter),
+      []
+    ),
+    runDashboardQuery(
+      'task summary',
+      db
+        .select({
+          open: sql<number>`count(*) filter (where ${schema.tasks.completedAt} is null)::int`,
+          overdue: sql<number>`count(*) filter (
+            where ${schema.tasks.completedAt} is null
+            and ${schema.tasks.dueDate} is not null
+            and ${schema.tasks.dueDate} < now()
+          )::int`,
+        })
+        .from(schema.tasks)
+        .where(taskFilter),
+      []
+    ),
+    runDashboardQuery(
+      'activity summary',
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(schema.activities)
+        .leftJoin(schema.leads, eq(schema.activities.leadId, schema.leads.id))
+        .where(
+          and(
+            sql`${schema.activities.happenedAt} >= now() - (${reportingWindowDays} * interval '1 day')`,
+            ...(ownerId
+              ? [or(eq(schema.activities.actorId, ownerId), eq(schema.leads.ownerId, ownerId))!]
+              : [])
+          )
+        ),
+      []
+    ),
+    runDashboardQuery(
+      'lead window summary',
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(schema.leads)
+        .where(
+          and(
+            acceptedLeadFilter,
+            sql`${schema.leads.createdAt} >= now() - (${reportingWindowDays} * interval '1 day')`
+          )
+        ),
+      []
+    ),
+    runDashboardQuery(
+      'score summary',
+      db
+        .select({
+          average: sql<
+            string | null
+          >`round(avg(${schema.leadAiAssessments.overallScore}), 1)::text`,
+        })
+        .from(schema.leadAiAssessments)
+        .innerJoin(schema.leads, eq(schema.leadAiAssessments.leadId, schema.leads.id))
+        .where(acceptedLeadFilter),
+      []
+    ),
+    runDashboardQuery(
+      'LinkedIn summary',
+      db
+        .select({
+          conversations: sql<number>`count(*)::int`,
+          messages: sql<number>`coalesce(sum(${schema.linkedinConversations.messageCount}), 0)::int`,
+          leads: sql<number>`count(distinct ${schema.linkedinConversations.leadId})::int`,
+          lastMessageAt: sql<Date | null>`max(${schema.linkedinConversations.lastMessageAt})`,
+        })
+        .from(schema.linkedinConversations)
+        .leftJoin(schema.leads, eq(schema.linkedinConversations.leadId, schema.leads.id))
+        .where(ownerId ? eq(schema.leads.ownerId, ownerId) : undefined),
+      []
+    ),
+    runDashboardQuery(
+      'leads by journey',
+      db
+        .select({
+          label: schema.leads.journeyStage,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(schema.leads)
+        .where(acceptedLeadFilter)
+        .groupBy(schema.leads.journeyStage),
+      []
+    ),
+    runDashboardQuery(
+      'leads by source',
+      db
+        .select({
+          label: schema.leads.source,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(schema.leads)
+        .where(acceptedLeadFilter)
+        .groupBy(schema.leads.source),
+      []
+    ),
+    runDashboardQuery(
+      'lead classifications',
+      db
+        .select({
+          label: schema.leadAiAssessments.classification,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(schema.leadAiAssessments)
+        .innerJoin(schema.leads, eq(schema.leadAiAssessments.leadId, schema.leads.id))
+        .where(acceptedLeadFilter)
+        .groupBy(schema.leadAiAssessments.classification),
+      []
+    ),
+    runDashboardQuery(
+      'opportunities by stage',
+      db
+        .select({
+          stage: schema.opportunities.stage,
+          currency: schema.opportunities.currency,
+          count: sql<number>`count(*)::int`,
+          amount: sql<string>`coalesce(sum(${schema.opportunities.amount}), 0)::text`,
+        })
+        .from(schema.opportunities)
+        .where(opportunityFilter)
+        .groupBy(schema.opportunities.stage, schema.opportunities.currency),
+      []
+    ),
+    runDashboardQuery(
+      'tasks by priority',
+      db
+        .select({
+          label: schema.tasks.priority,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(schema.tasks)
+        .where(and(taskFilter, isNull(schema.tasks.completedAt)))
+        .groupBy(schema.tasks.priority),
+      []
+    ),
+    runDashboardQuery(
+      'recent leads',
+      db
+        .select({
+          firstName: schema.leads.firstName,
+          lastName: schema.leads.lastName,
+          company: schema.leads.companyName,
+          status: schema.leads.journeyStage,
+          source: schema.leads.source,
+          createdAt: schema.leads.createdAt,
+        })
+        .from(schema.leads)
+        .where(acceptedLeadFilter)
+        .orderBy(desc(schema.leads.createdAt))
+        .limit(10),
+      []
+    ),
+    runDashboardQuery(
+      'recent LinkedIn conversations',
+      db
+        .select({
+          leadFirstName: schema.leads.firstName,
+          leadLastName: schema.leads.lastName,
+          otherPartyName: schema.linkedinConversations.otherPartyName,
+          messageCount: schema.linkedinConversations.messageCount,
+          outboundCount: schema.linkedinConversations.outboundCount,
+          lastMessageAt: schema.linkedinConversations.lastMessageAt,
+          lastMessageFromUs: schema.linkedinConversations.lastMessageFromUs,
+          messages: schema.linkedinConversations.messages,
+        })
+        .from(schema.linkedinConversations)
+        .leftJoin(schema.leads, eq(schema.linkedinConversations.leadId, schema.leads.id))
+        .where(ownerId ? eq(schema.leads.ownerId, ownerId) : undefined)
+        .orderBy(desc(schema.linkedinConversations.lastMessageAt))
+        .limit(10),
+      []
+    ),
+    runDashboardQuery(
+      'upcoming opportunities',
+      db
+        .select({
+          name: schema.opportunities.name,
+          stage: schema.opportunities.stage,
+          amount: schema.opportunities.amount,
+          currency: schema.opportunities.currency,
+          probability: schema.opportunities.probability,
+          expectedCloseDate: schema.opportunities.expectedCloseDate,
+        })
+        .from(schema.opportunities)
+        .where(
+          and(
+            opportunityFilter,
+            sql`${schema.opportunities.stage} not in ('closed_won', 'closed_lost')`
+          )
         )
-      ),
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(schema.companies)
-      .where(
-        and(
-          isNull(schema.companies.deletedAt),
-          ...(ownerId ? [eq(schema.companies.ownerId, ownerId)] : [])
-        )
-      ),
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(schema.opportunities)
-      .where(opportunityFilter),
-    db
-      .select({
-        open: sql<number>`count(*) filter (where ${schema.tasks.completedAt} is null)::int`,
-        overdue: sql<number>`count(*) filter (
-          where ${schema.tasks.completedAt} is null
-          and ${schema.tasks.dueDate} is not null
-          and ${schema.tasks.dueDate} < now()
-        )::int`,
-      })
-      .from(schema.tasks)
-      .where(taskFilter),
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(schema.activities)
-      .leftJoin(schema.leads, eq(schema.activities.leadId, schema.leads.id))
-      .where(
-        and(
-          sql`${schema.activities.happenedAt} >= now() - (${reportingWindowDays} * interval '1 day')`,
-          ...(ownerId
-            ? [or(eq(schema.activities.actorId, ownerId), eq(schema.leads.ownerId, ownerId))!]
-            : [])
-        )
-      ),
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(schema.leads)
-      .where(
-        and(
-          acceptedLeadFilter,
-          sql`${schema.leads.createdAt} >= now() - (${reportingWindowDays} * interval '1 day')`
-        )
-      ),
-    db
-      .select({
-        average: sql<string | null>`round(avg(${schema.leadAiAssessments.overallScore}), 1)::text`,
-      })
-      .from(schema.leadAiAssessments)
-      .innerJoin(schema.leads, eq(schema.leadAiAssessments.leadId, schema.leads.id))
-      .where(acceptedLeadFilter),
-    db
-      .select({
-        conversations: sql<number>`count(*)::int`,
-        messages: sql<number>`coalesce(sum(${schema.linkedinConversations.messageCount}), 0)::int`,
-        leads: sql<number>`count(distinct ${schema.linkedinConversations.leadId})::int`,
-        lastMessageAt: sql<Date | null>`max(${schema.linkedinConversations.lastMessageAt})`,
-      })
-      .from(schema.linkedinConversations)
-      .leftJoin(schema.leads, eq(schema.linkedinConversations.leadId, schema.leads.id))
-      .where(ownerId ? eq(schema.leads.ownerId, ownerId) : undefined),
-    db
-      .select({
-        label: schema.leads.journeyStage,
-        count: sql<number>`count(*)::int`,
-      })
-      .from(schema.leads)
-      .where(acceptedLeadFilter)
-      .groupBy(schema.leads.journeyStage),
-    db
-      .select({
-        label: schema.leads.source,
-        count: sql<number>`count(*)::int`,
-      })
-      .from(schema.leads)
-      .where(acceptedLeadFilter)
-      .groupBy(schema.leads.source),
-    db
-      .select({
-        label: schema.leadAiAssessments.classification,
-        count: sql<number>`count(*)::int`,
-      })
-      .from(schema.leadAiAssessments)
-      .innerJoin(schema.leads, eq(schema.leadAiAssessments.leadId, schema.leads.id))
-      .where(acceptedLeadFilter)
-      .groupBy(schema.leadAiAssessments.classification),
-    db
-      .select({
-        stage: schema.opportunities.stage,
-        currency: schema.opportunities.currency,
-        count: sql<number>`count(*)::int`,
-        amount: sql<string>`coalesce(sum(${schema.opportunities.amount}), 0)::text`,
-      })
-      .from(schema.opportunities)
-      .where(opportunityFilter)
-      .groupBy(schema.opportunities.stage, schema.opportunities.currency),
-    db
-      .select({
-        label: schema.tasks.priority,
-        count: sql<number>`count(*)::int`,
-      })
-      .from(schema.tasks)
-      .where(and(taskFilter, isNull(schema.tasks.completedAt)))
-      .groupBy(schema.tasks.priority),
-    db
-      .select({
-        firstName: schema.leads.firstName,
-        lastName: schema.leads.lastName,
-        company: schema.leads.companyName,
-        status: schema.leads.journeyStage,
-        source: schema.leads.source,
-        createdAt: schema.leads.createdAt,
-      })
-      .from(schema.leads)
-      .where(acceptedLeadFilter)
-      .orderBy(desc(schema.leads.createdAt))
-      .limit(10),
-    db
-      .select({
-        leadFirstName: schema.leads.firstName,
-        leadLastName: schema.leads.lastName,
-        otherPartyName: schema.linkedinConversations.otherPartyName,
-        messageCount: schema.linkedinConversations.messageCount,
-        outboundCount: schema.linkedinConversations.outboundCount,
-        lastMessageAt: schema.linkedinConversations.lastMessageAt,
-        lastMessageFromUs: schema.linkedinConversations.lastMessageFromUs,
-        messages: schema.linkedinConversations.messages,
-      })
-      .from(schema.linkedinConversations)
-      .leftJoin(schema.leads, eq(schema.linkedinConversations.leadId, schema.leads.id))
-      .where(ownerId ? eq(schema.leads.ownerId, ownerId) : undefined)
-      .orderBy(desc(schema.linkedinConversations.lastMessageAt))
-      .limit(10),
-    db
-      .select({
-        name: schema.opportunities.name,
-        stage: schema.opportunities.stage,
-        amount: schema.opportunities.amount,
-        currency: schema.opportunities.currency,
-        probability: schema.opportunities.probability,
-        expectedCloseDate: schema.opportunities.expectedCloseDate,
-      })
-      .from(schema.opportunities)
-      .where(
-        and(
-          opportunityFilter,
-          sql`${schema.opportunities.stage} not in ('closed_won', 'closed_lost')`
-        )
-      )
-      .orderBy(sql`${schema.opportunities.expectedCloseDate} asc nulls last`)
-      .limit(10),
+        .orderBy(sql`${schema.opportunities.expectedCloseDate} asc nulls last`)
+        .limit(10),
+      []
+    ),
   ]);
 
   return {
@@ -8599,7 +8684,7 @@ async function buildCeoReportingSnapshot(
       linkedinConversations: Number(linkedinSummary?.conversations) || 0,
       linkedinMessages: Number(linkedinSummary?.messages) || 0,
       leadsWithLinkedinConversations: Number(linkedinSummary?.leads) || 0,
-      lastLinkedinMessageAt: linkedinSummary?.lastMessageAt?.toISOString() ?? null,
+      lastLinkedinMessageAt: dashboardIsoString(linkedinSummary?.lastMessageAt),
     },
     leadsByStatus: reportingSeries(leadStatusRows),
     leadsBySource: reportingSeries(leadSourceRows),
@@ -8618,13 +8703,13 @@ async function buildCeoReportingSnapshot(
       company: row.company,
       status: row.status,
       source: row.source,
-      createdAt: row.createdAt.toISOString(),
+      createdAt: dashboardIsoString(row.createdAt) ?? '',
     })),
     recentLinkedinConversations: recentLinkedinRows.map((row) => ({
       leadName: `${row.leadFirstName ?? ''} ${row.leadLastName ?? ''}`.trim() || row.otherPartyName,
       messageCount: row.messageCount,
       outboundCount: row.outboundCount,
-      lastMessageAt: row.lastMessageAt.toISOString(),
+      lastMessageAt: dashboardIsoString(row.lastMessageAt) ?? '',
       lastMessageFromUs: row.lastMessageFromUs,
       lastMessagePreview: (() => {
         const messages = Array.isArray(row.messages)
@@ -8668,101 +8753,129 @@ app.get('/api/dashboard/summary', async (c) => {
     outreachDueRows,
     recentAcceptedLeadRows,
   ] = await Promise.all([
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(schema.leads)
-      .where(and(eq(schema.leads.reviewState, 'pending'), isNull(schema.leads.deletedAt))),
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(schema.tasks)
-      .where(
-        and(
-          eq(schema.tasks.assigneeId, userId),
-          isNull(schema.tasks.completedAt),
-          isNull(schema.tasks.deletedAt)
+    runDashboardQuery(
+      'pending prospect count',
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(schema.leads)
+        .where(and(eq(schema.leads.reviewState, 'pending'), isNull(schema.leads.deletedAt))),
+      []
+    ),
+    runDashboardQuery(
+      'my open task count',
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.assigneeId, userId),
+            isNull(schema.tasks.completedAt),
+            isNull(schema.tasks.deletedAt)
+          )
+        ),
+      []
+    ),
+    runDashboardQuery(
+      'my overdue task count',
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.assigneeId, userId),
+            isNull(schema.tasks.completedAt),
+            isNull(schema.tasks.deletedAt),
+            sql`${schema.tasks.dueDate} is not null and ${schema.tasks.dueDate} < now()`
+          )
+        ),
+      []
+    ),
+    runDashboardQuery(
+      'my task count due today',
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.assigneeId, userId),
+            isNull(schema.tasks.completedAt),
+            isNull(schema.tasks.deletedAt),
+            sql`${schema.tasks.dueDate}::date = current_date`
+          )
+        ),
+      []
+    ),
+    runDashboardQuery(
+      'my tasks',
+      db
+        .select({
+          id: schema.tasks.id,
+          title: schema.tasks.title,
+          dueDate: schema.tasks.dueDate,
+          priority: schema.tasks.priority,
+          type: schema.tasks.type,
+        })
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.assigneeId, userId),
+            isNull(schema.tasks.completedAt),
+            isNull(schema.tasks.deletedAt)
+          )
         )
-      ),
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(schema.tasks)
-      .where(
-        and(
-          eq(schema.tasks.assigneeId, userId),
-          isNull(schema.tasks.completedAt),
-          isNull(schema.tasks.deletedAt),
-          sql`${schema.tasks.dueDate} is not null and ${schema.tasks.dueDate} < now()`
+        .orderBy(asc(schema.tasks.dueDate))
+        .limit(8),
+      []
+    ),
+    runDashboardQuery(
+      'my outreach due',
+      db
+        .select({
+          leadId: schema.leadChannels.leadId,
+          channel: schema.leadChannels.channel,
+          channelStage: schema.leadChannels.stage,
+          nextFollowupAt: schema.leadChannels.nextFollowupAt,
+          leadFirstName: schema.leads.firstName,
+          leadLastName: schema.leads.lastName,
+          leadJourneyStage: schema.leads.journeyStage,
+        })
+        .from(schema.leadChannels)
+        .innerJoin(schema.leads, eq(schema.leads.id, schema.leadChannels.leadId))
+        .where(
+          and(
+            isNull(schema.leads.deletedAt),
+            or(eq(schema.leadChannels.ownerId, userId), eq(schema.leads.ownerId, userId)),
+            sql`${schema.leadChannels.nextFollowupAt} is not null and ${schema.leadChannels.nextFollowupAt} <= now()`
+          )
         )
-      ),
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(schema.tasks)
-      .where(
-        and(
-          eq(schema.tasks.assigneeId, userId),
-          isNull(schema.tasks.completedAt),
-          isNull(schema.tasks.deletedAt),
-          sql`${schema.tasks.dueDate}::date = current_date`
+        .orderBy(asc(schema.leadChannels.nextFollowupAt))
+        .limit(8),
+      []
+    ),
+    runDashboardQuery(
+      'my recent accepted leads',
+      db
+        .select({
+          id: schema.leads.id,
+          firstName: schema.leads.firstName,
+          lastName: schema.leads.lastName,
+          email: schema.leads.email,
+          journeyStage: schema.leads.journeyStage,
+          status: schema.leads.status,
+          createdAt: schema.leads.createdAt,
+        })
+        .from(schema.leads)
+        .where(
+          and(
+            eq(schema.leads.ownerId, userId),
+            eq(schema.leads.reviewState, 'accepted'),
+            isNull(schema.leads.deletedAt)
+          )
         )
-      ),
-    db
-      .select({
-        id: schema.tasks.id,
-        title: schema.tasks.title,
-        dueDate: schema.tasks.dueDate,
-        priority: schema.tasks.priority,
-        type: schema.tasks.type,
-      })
-      .from(schema.tasks)
-      .where(
-        and(
-          eq(schema.tasks.assigneeId, userId),
-          isNull(schema.tasks.completedAt),
-          isNull(schema.tasks.deletedAt)
-        )
-      )
-      .orderBy(asc(schema.tasks.dueDate))
-      .limit(8),
-    db
-      .select({
-        leadId: schema.leadChannels.leadId,
-        channel: schema.leadChannels.channel,
-        channelStage: schema.leadChannels.stage,
-        nextFollowupAt: schema.leadChannels.nextFollowupAt,
-        leadFirstName: schema.leads.firstName,
-        leadLastName: schema.leads.lastName,
-        leadJourneyStage: schema.leads.journeyStage,
-      })
-      .from(schema.leadChannels)
-      .innerJoin(schema.leads, eq(schema.leads.id, schema.leadChannels.leadId))
-      .where(
-        and(
-          isNull(schema.leads.deletedAt),
-          or(eq(schema.leadChannels.ownerId, userId), eq(schema.leads.ownerId, userId)),
-          sql`${schema.leadChannels.nextFollowupAt} is not null and ${schema.leadChannels.nextFollowupAt} <= now()`
-        )
-      )
-      .orderBy(asc(schema.leadChannels.nextFollowupAt))
-      .limit(8),
-    db
-      .select({
-        id: schema.leads.id,
-        firstName: schema.leads.firstName,
-        lastName: schema.leads.lastName,
-        email: schema.leads.email,
-        journeyStage: schema.leads.journeyStage,
-        status: schema.leads.status,
-        createdAt: schema.leads.createdAt,
-      })
-      .from(schema.leads)
-      .where(
-        and(
-          eq(schema.leads.ownerId, userId),
-          eq(schema.leads.reviewState, 'accepted'),
-          isNull(schema.leads.deletedAt)
-        )
-      )
-      .orderBy(desc(schema.leads.createdAt))
-      .limit(8),
+        .orderBy(desc(schema.leads.createdAt))
+        .limit(8),
+      []
+    ),
   ]);
 
   return c.json({
@@ -8784,7 +8897,7 @@ app.get('/api/dashboard/summary', async (c) => {
         leadId: row.leadId,
         channel: row.channel,
         channelStage: row.channelStage,
-        nextFollowupAt: row.nextFollowupAt ? row.nextFollowupAt.toISOString() : null,
+        nextFollowupAt: dashboardIsoString(row.nextFollowupAt),
         leadName: `${row.leadFirstName ?? ''} ${row.leadLastName ?? ''}`.trim(),
         journeyStage: row.leadJourneyStage,
       })),
@@ -8794,7 +8907,7 @@ app.get('/api/dashboard/summary', async (c) => {
         email: row.email,
         journeyStage: row.journeyStage,
         status: row.status,
-        createdAt: row.createdAt.toISOString(),
+        createdAt: dashboardIsoString(row.createdAt) ?? '',
       })),
     },
   });

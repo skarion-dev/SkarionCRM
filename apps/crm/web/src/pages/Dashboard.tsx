@@ -10,7 +10,7 @@ import {
   Target,
   Users,
 } from 'lucide-react';
-import type { DashboardSummary } from '../api.js';
+import type { DashboardData, DashboardSummary } from '../api.js';
 import { useDashboard, useDashboardSummary } from '../hooks/use-api.js';
 import { useAuthStore } from '../stores/auth.js';
 import { DashboardSkeleton } from '../components/dashboard/DashboardSkeleton.js';
@@ -73,10 +73,22 @@ export default function Dashboard() {
   const liveQuery = useDashboard();
   const isManagerView = Boolean(user?.isSuperadmin) || user?.role === 'manager';
 
-  if (summaryQuery.isError) {
+  if (!summaryQuery.data && liveQuery.data) {
+    return (
+      <LiveDashboard
+        data={liveQuery.data}
+        refreshing={summaryQuery.isFetching || liveQuery.isFetching}
+        retry={() => {
+          void summaryQuery.refetch();
+          void liveQuery.refetch();
+        }}
+      />
+    );
+  }
+  if (summaryQuery.isError && liveQuery.isError) {
     return (
       <ErrorState
-        error={summaryQuery.error}
+        error={summaryQuery.error ?? liveQuery.error}
         retry={() => {
           void summaryQuery.refetch();
           void liveQuery.refetch();
@@ -148,6 +160,77 @@ export default function Dashboard() {
       ) : (
         <MemberDashboard summary={summary} />
       )}
+    </div>
+  );
+}
+
+function LiveDashboard({
+  data,
+  refreshing,
+  retry,
+}: {
+  data: DashboardData;
+  refreshing: boolean;
+  retry: () => void;
+}) {
+  const user = useAuthStore((state) => state.user);
+  return (
+    <div className="space-y-6 pb-8">
+      <header className="flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-2xl font-semibold tracking-tight text-slate-950">
+              Good{' '}
+              {new Date().getHours() < 12
+                ? 'morning'
+                : new Date().getHours() < 18
+                  ? 'afternoon'
+                  : 'evening'}
+              {user?.name ? `, ${user.name.split(' ')[0]}` : ''}
+            </h1>
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+              Neon live
+            </span>
+          </div>
+          <p className="mt-1 text-sm text-slate-500">
+            Live CRM and agent operations. Extended reporting is loading independently.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={retry}
+          disabled={refreshing}
+          className="inline-flex w-fit items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600 shadow-sm hover:border-slate-300 hover:text-slate-900 disabled:opacity-50"
+        >
+          <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
+          Updated{' '}
+          {new Date(data.observedAt).toLocaleTimeString([], {
+            hour: 'numeric',
+            minute: '2-digit',
+          })}
+        </button>
+      </header>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        <StatCard icon={Target} label="Active leads" value={String(data.kpis.activeLeads)} />
+        <StatCard
+          icon={Send}
+          label="Ready to reach out"
+          value={String(data.kpis.readyToReachOut)}
+        />
+        <StatCard icon={Users} label="Connection sent" value={String(data.kpis.connectionSent)} />
+        <StatCard icon={Contact} label="Engaged" value={String(data.kpis.engaged)} />
+        <StatCard icon={CheckSquare} label="Open tasks" value={String(data.kpis.openTasks)} />
+        <StatCard
+          icon={AlertTriangle}
+          label="Prospects pending"
+          value={String(data.kpis.pendingProspects)}
+        />
+      </div>
+
+      <OperationsHealth data={data} />
+      <PriorityLeads data={data} />
     </div>
   );
 }
