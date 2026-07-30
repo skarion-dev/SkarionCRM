@@ -109,6 +109,65 @@ let bootstrapPromise: Promise<{
   isSuperadmin: boolean;
 } | null> | null = null;
 
+interface RefreshedSession {
+  access_token: string;
+  refresh_token?: string;
+  user: {
+    id: string;
+    email: string;
+    displayName?: string;
+    isSuperadmin: boolean;
+    apps: Record<string, string>;
+  };
+}
+
+async function requestRefreshedSession(): Promise<RefreshedSession | null> {
+  const refresh = async (): Promise<RefreshedSession | null> => {
+    let refreshTokenUsed = safeStorageGet('refresh_token');
+
+    const request = (token: string | null) =>
+      fetch(`${IDENTITY_API_URL}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: token }),
+        credentials: 'include',
+      });
+
+    let response = await request(refreshTokenUsed);
+    if (!response.ok) {
+      // Another CRM tab may have rotated the shared refresh token while this
+      // request was in flight. Retry with the newer value instead of clearing
+      // the valid session and forcing every tab back through password login.
+      const newerToken = safeStorageGet('refresh_token');
+      if (newerToken && newerToken !== refreshTokenUsed) {
+        refreshTokenUsed = newerToken;
+        response = await request(refreshTokenUsed);
+      }
+    }
+
+    if (!response.ok) {
+      if (safeStorageGet('refresh_token') === refreshTokenUsed) {
+        safeStorageRemove('refresh_token');
+      }
+      accessToken = null;
+      return null;
+    }
+
+    const data = (await response.json()) as RefreshedSession;
+    accessToken = data.access_token;
+    if (data.refresh_token) safeStorageSet('refresh_token', data.refresh_token);
+    return data;
+  };
+
+  // Refresh tokens rotate after every use. Serialize refreshes across tabs so
+  // opening several CRM records cannot invalidate the token another tab just
+  // read. Chrome and other modern browsers provide this origin-scoped lock.
+  if (navigator.locks) {
+    return navigator.locks.request('skarion-crm-session-refresh', refresh);
+  }
+  return refresh();
+}
+
 export async function refreshAccessToken(): Promise<string | null> {
   if (refreshPromise) {
     console.log('[Auth] refreshAccessToken: reusing active refreshPromise');
@@ -118,35 +177,8 @@ export async function refreshAccessToken(): Promise<string | null> {
   console.log('[Auth] refreshAccessToken: starting token refresh...');
   refreshPromise = (async () => {
     try {
-      const localRefreshToken = safeStorageGet('refresh_token');
-      console.log('[Auth] refreshAccessToken: local refresh_token exists:', !!localRefreshToken);
-      const response = await fetch(`${IDENTITY_API_URL}/auth/refresh`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ refresh_token: localRefreshToken }),
-        credentials: 'include',
-      });
-      console.log(
-        '[Auth] refreshAccessToken: /auth/refresh response status:',
-        response.status,
-        'ok:',
-        response.ok
-      );
-      if (!response.ok) {
-        accessToken = null;
-        safeStorageRemove('refresh_token');
-        return null;
-      }
-      const data = (await response.json()) as { access_token: string; refresh_token?: string };
-      accessToken = data.access_token;
-      if (data.refresh_token) {
-        console.log('[Auth] refreshAccessToken: saving rotated refresh_token');
-        safeStorageSet('refresh_token', data.refresh_token);
-      }
-      console.log('[Auth] refreshAccessToken: refresh successful');
-      return accessToken;
+      const session = await requestRefreshedSession();
+      return session?.access_token ?? null;
     } catch (err) {
       console.error('[Auth] refreshAccessToken: refresh failed with error:', err);
       accessToken = null;
@@ -209,42 +241,10 @@ export async function bootstrapAuth(): Promise<{
       }
 
       console.log('[Auth] bootstrapAuth: no valid hash session, trying refresh token fallback...');
-      const localRefreshToken = safeStorageGet('refresh_token');
-      console.log('[Auth] bootstrapAuth: local refresh token exists:', !!localRefreshToken);
-      const response = await fetch(`${IDENTITY_API_URL}/auth/refresh`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ refresh_token: localRefreshToken }),
-        credentials: 'include',
-      });
-      console.log(
-        '[Auth] bootstrapAuth: fallback /auth/refresh response status:',
-        response.status,
-        'ok:',
-        response.ok
-      );
-      if (!response.ok) {
+      const data = await requestRefreshedSession();
+      if (!data) {
         console.warn('[Auth] bootstrapAuth: fallback refresh failed, clearing token');
-        safeStorageRemove('refresh_token');
         return null;
-      }
-      const data = (await response.json()) as {
-        access_token: string;
-        refresh_token?: string;
-        user: {
-          id: string;
-          email: string;
-          displayName?: string;
-          isSuperadmin: boolean;
-          apps: Record<string, string>;
-        };
-      };
-      accessToken = data.access_token;
-      if (data.refresh_token) {
-        console.log('[Auth] bootstrapAuth: saving fallback rotated refresh_token');
-        safeStorageSet('refresh_token', data.refresh_token);
       }
       console.log('[Auth] bootstrapAuth: fallback refresh successful, user:', data.user.email);
       return {

@@ -1476,7 +1476,9 @@ export function useDashboardSummary() {
     queryKey: ['dashboard', 'summary'],
     queryFn: async () => {
       try {
-        return await crmFetch<DashboardSummary>('/api/dashboard/summary');
+        return await crmFetch<DashboardSummary>('/api/dashboard/summary', {
+          signal: AbortSignal.timeout(30_000),
+        });
       } catch (err) {
         if (err instanceof Error && 'status' in err && err.status === 401) {
           redirectToLogin();
@@ -1484,6 +1486,7 @@ export function useDashboardSummary() {
         throw err;
       }
     },
+    retry: 1,
     refetchInterval: 60_000,
     refetchOnWindowFocus: true,
   });

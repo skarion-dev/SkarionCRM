@@ -137,8 +137,25 @@ async function captureAndReview(disposition) {
       }),
     });
     resolvedLead = result.lead;
-    const recordUrl = `${DEFAULT_CRM_WEB_URL}/leads/${result.lead.id}`;
-    statusBox.innerHTML = `Saved as <strong>${result.lead.leadNumber}</strong>. <a href="${recordUrl}" target="_blank">Open CRM record</a>`;
+    statusBox.replaceChildren();
+    statusBox.append('Saved as ');
+    const leadNumber = document.createElement('strong');
+    leadNumber.textContent = result.lead.leadNumber;
+    statusBox.append(leadNumber, '. ');
+    const recordLink = document.createElement('a');
+    recordLink.href = `${DEFAULT_CRM_WEB_URL}/leads/${result.lead.id}`;
+    recordLink.textContent = 'Open CRM record';
+    recordLink.addEventListener('click', async (event) => {
+      event.preventDefault();
+      const openResult = await chrome.runtime.sendMessage({
+        action: 'openCrmRecord',
+        leadId: result.lead.id,
+      });
+      if (!openResult?.ok) {
+        setStatus(openResult?.error || 'Could not open the CRM record.', 'error', 100);
+      }
+    });
+    statusBox.append(recordLink);
     statusBox.className = 'status success';
     progressBar.style.width = '100%';
     profileMeta.textContent = `${result.lead.leadNumber} · ${result.lead.reviewDisposition.replaceAll('_', ' ')}`;

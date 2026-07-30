@@ -45,7 +45,8 @@ function pipelineValue(summary: DashboardSummary): string {
     .join(' · ');
 }
 
-function ErrorState({ retry }: { retry: () => void }) {
+function ErrorState({ retry, error }: { retry: () => void; error: unknown }) {
+  const detail = error instanceof Error ? error.message : 'The dashboard request failed.';
   return (
     <div className="rounded-xl border border-red-200 bg-red-50 p-8 text-center">
       <AlertCircle className="mx-auto text-red-500" size={28} />
@@ -53,6 +54,7 @@ function ErrorState({ retry }: { retry: () => void }) {
       <p className="mt-1 text-sm text-red-700">
         Your CRM data is safe. Retry the live Neon queries.
       </p>
+      <p className="mx-auto mt-2 max-w-2xl text-xs text-red-600">{detail}</p>
       <button
         type="button"
         onClick={retry}
@@ -71,18 +73,19 @@ export default function Dashboard() {
   const liveQuery = useDashboard();
   const isManagerView = Boolean(user?.isSuperadmin) || user?.role === 'manager';
 
-  if (summaryQuery.isPending || !summaryQuery.data) {
-    return <DashboardSkeleton />;
-  }
   if (summaryQuery.isError) {
     return (
       <ErrorState
+        error={summaryQuery.error}
         retry={() => {
           void summaryQuery.refetch();
           void liveQuery.refetch();
         }}
       />
     );
+  }
+  if (summaryQuery.isPending || !summaryQuery.data) {
+    return <DashboardSkeleton />;
   }
 
   const summary = summaryQuery.data;
