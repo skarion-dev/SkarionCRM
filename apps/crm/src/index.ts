@@ -158,6 +158,7 @@ import {
   hasPhdProfileEvidence,
   phdZeroScoreAssessment,
   PHD_ZERO_SCORE_REASON,
+  URL_ONLY_PROVISIONAL_REASON,
   urlOnlyProvisionalAssessment,
 } from './lib/leadQualificationPolicy.js';
 import { graduationYear, mostRecentEducation } from './lib/profileEducation.js';
@@ -3579,7 +3580,69 @@ async function drainLeadScoreQueue(db: CrmDb, env: Env, limit: number) {
       result.failed += 1;
     }
   });
-  return result;
+  const telemetryResult = await db.execute(sql`
+    SELECT
+      (
+        SELECT count(*)::integer
+        FROM "crm"."leads" lead
+        WHERE lead."review_state" = 'pending'
+          AND lead."deleted_at" IS NULL
+          AND lead."linkedin_url" IS NOT NULL
+          AND lead."profile_normalization_status" = 'not_queued'
+          AND btrim(concat_ws(
+            ' ',
+            lead."headline",
+            lead."location",
+            lead."about",
+            lead."experience",
+            lead."education",
+            lead."skills",
+            lead."current_role",
+            lead."current_role_dates",
+            lead."notes"
+          )) = ''
+          AND NOT EXISTS (
+            SELECT 1
+            FROM "crm"."lead_ai_assessments" assessment
+            WHERE assessment."lead_id" = lead."id"
+          )
+      ) AS "unassessedUrlOnly",
+      (
+        SELECT count(*)::integer
+        FROM "crm"."lead_ai_assessments" assessment
+        WHERE assessment."reasoning_summary" = ${URL_ONLY_PROVISIONAL_REASON}
+      ) AS "provisionallyScored",
+      (
+        SELECT json_build_object(
+          'name', batch."name",
+          'totalRows', batch."total_rows",
+          'importedCount', batch."imported_count",
+          'duplicatesSkipped', batch."duplicates_skipped",
+          'createdAt', batch."created_at"
+        )
+        FROM "crm"."import_batches" batch
+        WHERE batch."default_tags" @> '["needs profile capture"]'::jsonb
+        ORDER BY batch."created_at" DESC
+        LIMIT 1
+      ) AS "latestNeedsCaptureBatch"
+  `);
+  const telemetry =
+    (
+      telemetryResult as unknown as {
+        rows?: Array<{
+          unassessedUrlOnly: number;
+          provisionallyScored: number;
+          latestNeedsCaptureBatch: {
+            name: string;
+            totalRows: number;
+            importedCount: number;
+            duplicatesSkipped: number;
+            createdAt: string;
+          } | null;
+        }>;
+      }
+    ).rows?.[0] ?? null;
+  return { ...result, urlOnly: telemetry };
 }
 
 async function generateAndSaveLeadAiAssessment(
