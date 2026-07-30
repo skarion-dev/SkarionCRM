@@ -9,6 +9,7 @@ import * as schema from '../db/schema.js';
 
 export interface LeadFilterParams {
   isSuperadmin: boolean;
+  role?: string;
   ownerId: string;
   status?: string;
   statuses?: string[];
@@ -50,7 +51,7 @@ export function buildLeadConditions(params: LeadFilterParams): SQL[] {
     eq(schema.leads.reviewState, 'accepted') as unknown as SQL,
   ];
 
-  if (!params.isSuperadmin) {
+  if (!params.isSuperadmin && params.role !== 'manager') {
     conditions.push(eq(schema.leads.ownerId, params.ownerId));
   }
 

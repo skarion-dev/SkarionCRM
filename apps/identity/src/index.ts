@@ -184,6 +184,13 @@ function isPlatformAdmin(c: AppContext): boolean {
   return c.get('isSuperadmin');
 }
 
+/** True if the caller is a superadmin, or a manager of the given app —
+ * managers may only create accounts within the app they manage. */
+function canManageInvitesFor(c: AppContext, app: AppName): boolean {
+  if (isPlatformAdmin(c)) return true;
+  return c.get('apps')?.[app] === 'manager';
+}
+
 /** Hono can't statically prove a `:param` is present; routes below always register it, so a missing value is a 400, not a type error to suppress. */
 function requireParam(c: AppContext, name: string): string {
   const value = c.req.param(name);
@@ -484,8 +491,8 @@ app.post('/invitations', requireAuth, async (c) => {
   if (!body.email || !APP_NAMES.includes(body.app) || !body.role) {
     return c.json({ error: 'email, app, and role are required.' }, 400);
   }
-  if (!isPlatformAdmin(c)) {
-    return c.json({ error: 'Forbidden: requires superadmin.' }, 403);
+  if (!canManageInvitesFor(c, body.app)) {
+    return c.json({ error: 'Forbidden: requires superadmin or manager of this app.' }, 403);
   }
 
   const db = getDb(c.env, schema);

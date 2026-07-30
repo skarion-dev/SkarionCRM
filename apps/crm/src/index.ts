@@ -4910,6 +4910,7 @@ app.get('/api/leads', async (c) => {
 
   const conditions = buildLeadConditions({
     isSuperadmin,
+    role,
     ownerId: caller.userId,
     status,
     statuses: parseCommaList(statuses),
@@ -4961,7 +4962,7 @@ app.get('/api/leads', async (c) => {
       and(
         isNull(schema.leads.deletedAt),
         eq(schema.leads.reviewState, 'accepted'),
-        ...(!isSuperadmin ? [eq(schema.leads.ownerId, caller.userId)] : [])
+        ...(!isSuperadmin && role !== 'manager' ? [eq(schema.leads.ownerId, caller.userId)] : [])
       )
     )
     .groupBy(schema.leads.journeyStage);
@@ -5173,6 +5174,7 @@ app.get('/api/leads/export.csv', async (c) => {
 
   const conditions = buildLeadConditions({
     isSuperadmin,
+    role,
     ownerId: caller.userId,
     status,
     statuses: parseCommaList(statuses),
