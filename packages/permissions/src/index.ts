@@ -2,8 +2,8 @@
 //
 // - isSuperadmin (global flag on identity.users): bypasses all checks. Set once
 //   by platform admins; grants full access to every app.
-// - manager (per-app membership): can view all records, create, edit/delete
-//   own + managed-team records. Reassign allowed for own/managed.
+// - manager (per-app membership): full access to every record in the app —
+//   view, create, edit, delete, reassign — regardless of who owns it.
 // - member (per-app membership): can view all records, create, edit own records.
 //   Cannot delete or reassign anything. Own-only list filtering.
 //
@@ -13,7 +13,7 @@
 //   outreach   -> member
 //   viewer     -> member
 
-export type CrmRole = "manager" | "member";
+export type CrmRole = 'manager' | 'member';
 
 export interface CallerInfo {
   userId: string;
@@ -25,7 +25,7 @@ export interface ResourceInfo {
   ownerId: string;
 }
 
-export type CrmAction = "view" | "create" | "edit" | "delete" | "reassign";
+export type CrmAction = 'view' | 'create' | 'edit' | 'delete' | 'reassign';
 
 export function can(
   isSuperadmin: boolean,
@@ -37,17 +37,17 @@ export function can(
   if (isSuperadmin || caller.isSuperadmin) return true;
 
   const normalizedRole = role.toLowerCase();
-  if (normalizedRole === "manager") {
-    if (action === "view") return true;
-    const isOwnResource = resource.ownerId === caller.userId;
-    const isManagedResource = caller.managedUserIds?.includes(resource.ownerId) ?? false;
-    if (isOwnResource || isManagedResource) return true;
-    return false;
+  if (normalizedRole === 'manager') {
+    // A manager has full access to every record, regardless of who owns it —
+    // not just their own or a "managed team" subset (that concept was never
+    // actually populated by any caller, so it silently blocked managers from
+    // editing/reassigning anything they didn't personally own).
+    return true;
   }
-  if (normalizedRole === "member") {
+  if (normalizedRole === 'member') {
     const isOwnResource = resource.ownerId === caller.userId;
     if (!isOwnResource) return false;
-    return action !== "delete" && action !== "reassign";
+    return action !== 'delete' && action !== 'reassign';
   }
   return false;
 }
@@ -60,8 +60,8 @@ export function canList(
 ): boolean {
   if (isSuperadmin || caller.isSuperadmin) return true;
   const normalizedRole = role.toLowerCase();
-  if (normalizedRole === "manager") return true;
-  if (normalizedRole === "member") {
+  if (normalizedRole === 'manager') return true;
+  if (normalizedRole === 'member') {
     return resourceOwnerId === undefined || resourceOwnerId === caller.userId;
   }
   return false;
