@@ -15,8 +15,8 @@ type DirectChange = {
   id: string;
   secondaryId?: string;
   before: string;
-  after: string;
-  profileKey?: string;
+  after: string | null;
+  profileKey?: string | null;
 };
 type JsonChange = {
   table: 'linkedin_conversations' | 'linkedin_sync_jobs';
@@ -103,6 +103,7 @@ async function loadPlans(): Promise<{
   changes: Change[];
   unresolved: Array<{ table: string; column: string; id: string; value: string }>;
   collisions: string[];
+  duplicateLeadKeys: string[];
 }> {
   const [leads, contacts, conversations, imports, jobs, messages, flags, invitations] =
     await Promise.all([
@@ -141,27 +142,73 @@ async function loadPlans(): Promise<{
     addDirectChange(changes, table, column, id, value, options);
   };
 
+  const activeLeadGroups = new Map<string, SqlRow[]>();
   for (const row of leads as SqlRow[]) {
-    const canonical = canonicalizeLinkedinUrl(row.linkedin_url);
-    if (typeof row.linkedin_url === 'string' && !canonical) {
-      unresolved.push({
-        table: 'leads',
-        column: 'linkedin_url',
-        id: String(row.id),
-        value: row.linkedin_url,
-      });
+    if (row.deleted_at) continue;
+    const profileKey = linkedinProfileKey(row.linkedin_url);
+    if (!profileKey) continue;
+    const groupKey = `${String(row.workspace_id)}\u0000${profileKey}`;
+    activeLeadGroups.set(groupKey, [...(activeLeadGroups.get(groupKey) ?? []), row]);
+  }
+  const leadKeyOwners = new Map<string, string>();
+  const duplicateLeadKeys: string[] = [];
+  for (const [groupKey, rows] of activeLeadGroups) {
+    const profileKey = groupKey.split('\u0000')[1] ?? '';
+    const owner =
+      rows.find((row) => row.linkedin_profile_key === profileKey) ??
+      rows.find((row) => typeof row.linkedin_profile_key === 'string') ??
+      rows[0];
+    if (!owner) continue;
+    leadKeyOwners.set(groupKey, String(owner.id));
+    if (rows.length > 1) {
+      duplicateLeadKeys.push(
+        `${profileKey}: canonical key kept by ${String(owner.id)}; cleared from ${rows
+          .filter((row) => row.id !== owner.id)
+          .map((row) => String(row.id))
+          .join(', ')}`
+      );
+    }
+  }
+
+  for (const row of leads as SqlRow[]) {
+    const rawUrl = typeof row.linkedin_url === 'string' ? row.linkedin_url : '';
+    const canonical = canonicalizeLinkedinUrl(rawUrl);
+    if (!canonical) {
+      if (!rawUrl.trim() || !/linkedin\.com/i.test(rawUrl)) {
+        changes.push({
+          table: 'leads',
+          column: 'linkedin_url',
+          id: String(row.id),
+          before: rawUrl,
+          after: null,
+          profileKey: null,
+        });
+      } else {
+        unresolved.push({
+          table: 'leads',
+          column: 'linkedin_url',
+          id: String(row.id),
+          value: rawUrl,
+        });
+      }
       continue;
     }
-    if (!canonical) continue;
     const profileKey = linkedinProfileKey(canonical);
-    if (row.linkedin_url !== canonical || row.linkedin_profile_key !== profileKey) {
+    const groupKey = `${String(row.workspace_id)}\u0000${profileKey ?? ''}`;
+    const targetProfileKey =
+      !row.deleted_at &&
+      leadKeyOwners.has(groupKey) &&
+      leadKeyOwners.get(groupKey) !== String(row.id)
+        ? null
+        : profileKey;
+    if (row.linkedin_url !== canonical || row.linkedin_profile_key !== targetProfileKey) {
       changes.push({
         table: 'leads',
         column: 'linkedin_url',
         id: String(row.id),
-        before: String(row.linkedin_url),
+        before: rawUrl,
         after: canonical,
-        profileKey: profileKey ?? undefined,
+        profileKey: targetProfileKey,
       });
     }
   }
@@ -241,20 +288,6 @@ async function loadPlans(): Promise<{
   }
 
   const collisions: string[] = [];
-  const activeLeadTargets = new Map<string, string>();
-  for (const row of leads as SqlRow[]) {
-    if (row.deleted_at) continue;
-    const profileKey = linkedinProfileKey(row.linkedin_url);
-    if (!profileKey) continue;
-    const key = `${String(row.workspace_id)}\u0000${profileKey}`;
-    const prior = activeLeadTargets.get(key);
-    if (prior && prior !== row.id) {
-      collisions.push(`crm.leads profile key ${profileKey}: ${prior}, ${String(row.id)}`);
-    } else {
-      activeLeadTargets.set(key, String(row.id));
-    }
-  }
-
   const activeContactTargets = new Map<string, string>();
   for (const row of contacts as SqlRow[]) {
     if (row.deleted_at) continue;
@@ -284,7 +317,12 @@ async function loadPlans(): Promise<{
     }
   }
 
-  return { changes, unresolved, collisions: [...new Set(collisions)] };
+  return {
+    changes,
+    unresolved,
+    collisions: [...new Set(collisions)],
+    duplicateLeadKeys,
+  };
 }
 
 function describeChanges(changes: Change[]): Record<string, number> {
@@ -370,12 +408,19 @@ console.log(
       unresolvedSample: plan.unresolved.slice(0, 20),
       collisionCount: plan.collisions.length,
       collisionSample: plan.collisions.slice(0, 20),
+      duplicateLeadKeyCount: plan.duplicateLeadKeys.length,
+      duplicateLeadKeyRepairs: plan.duplicateLeadKeys.slice(0, 20),
       sampleChanges: plan.changes.slice(0, 20).map((change) => ({
         field: `${change.table}.${change.column}`,
         id: change.id,
         before:
           typeof change.before === 'string' ? change.before.slice(0, 180) : `[structured value]`,
-        after: typeof change.after === 'string' ? change.after.slice(0, 180) : `[structured value]`,
+        after:
+          typeof change.after === 'string'
+            ? change.after.slice(0, 180)
+            : change.after === null
+              ? null
+              : `[structured value]`,
       })),
     },
     null,
