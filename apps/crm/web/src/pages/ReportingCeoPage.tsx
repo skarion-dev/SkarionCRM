@@ -782,14 +782,50 @@ export default function ReportingCeoPage() {
                 : 'Never'}
             </p>
             {linkedinSync.data?.lastMessageDump && (
-              <p className="mt-1 text-[11px] font-medium text-slate-600">
-                {new Intl.NumberFormat().format(
-                  linkedinSync.data.lastMessageDump.details?.conversations ?? 0
-                )}{' '}
-                conversations ·{' '}
-                {new Intl.NumberFormat().format(linkedinSync.data.lastMessageDump.matchedItems)}{' '}
-                messages logged · {linkedinSync.data.lastMessageDump.status}
-              </p>
+              <>
+                <p className="mt-1 text-[11px] font-medium text-slate-600">
+                  {new Intl.NumberFormat().format(
+                    linkedinSync.data.lastMessageDump.details?.conversations ?? 0
+                  )}{' '}
+                  conversations parsed ·{' '}
+                  {new Intl.NumberFormat().format(linkedinSync.data.lastMessageDump.matchedItems)}{' '}
+                  new messages logged · {linkedinSync.data.lastMessageDump.status}
+                </p>
+                <div className="mt-3 grid grid-cols-2 gap-1.5 text-[10px]">
+                  <div className="rounded bg-emerald-50 px-2 py-1.5 text-emerald-800">
+                    <strong>
+                      {new Intl.NumberFormat().format(
+                        linkedinSync.data.messageReconciliation.visibleActivities
+                      )}
+                    </strong>{' '}
+                    visible message logs
+                  </div>
+                  <div className="rounded bg-blue-50 px-2 py-1.5 text-blue-800">
+                    <strong>
+                      {new Intl.NumberFormat().format(
+                        linkedinSync.data.messageReconciliation.leadsWithVisibleActivities
+                      )}
+                    </strong>{' '}
+                    leads with chat history
+                  </div>
+                  <div className="rounded bg-slate-100 px-2 py-1.5 text-slate-700">
+                    <strong>
+                      {new Intl.NumberFormat().format(
+                        linkedinSync.data.messageReconciliation.storedMessages
+                      )}
+                    </strong>{' '}
+                    stored message records
+                  </div>
+                  <div className="rounded bg-amber-50 px-2 py-1.5 text-amber-800">
+                    <strong>
+                      {new Intl.NumberFormat().format(
+                        linkedinSync.data.messageReconciliation.unlinkedConversations
+                      )}
+                    </strong>{' '}
+                    conversations not linked
+                  </div>
+                </div>
+              </>
             )}
           </div>
 

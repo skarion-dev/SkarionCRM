@@ -1907,6 +1907,70 @@ async function finalizeLinkedinSyncImport(db: CrmDb, importId: string): Promise<
     .where(eq(schema.linkedinSyncImports.id, importId));
 }
 
+async function linkedinMessageReconciliation(db: CrmDb) {
+  const [[conversation], [records], [activities], [latestImport]] = await Promise.all([
+    db
+      .select({
+        conversations: sql<number>`count(*)::int`,
+        linkedConversations: sql<number>`count(*) filter (
+          where ${schema.linkedinConversations.leadId} is not null
+        )::int`,
+        unlinkedConversations: sql<number>`count(*) filter (
+          where ${schema.linkedinConversations.leadId} is null
+        )::int`,
+        conversationMessages: sql<number>`coalesce(sum(${schema.linkedinConversations.messageCount}), 0)::int`,
+      })
+      .from(schema.linkedinConversations),
+    db
+      .select({
+        storedMessages: sql<number>`count(*)::int`,
+        leadsWithStoredMessages: sql<number>`count(distinct ${schema.linkedinMessageRecords.leadId})::int`,
+      })
+      .from(schema.linkedinMessageRecords),
+    db
+      .select({
+        visibleActivities: sql<number>`count(*)::int`,
+        leadsWithVisibleActivities: sql<number>`count(distinct ${schema.activities.leadId})::int`,
+      })
+      .from(schema.activities)
+      .where(eq(schema.activities.externalSource, 'linkedin_message')),
+    db
+      .select({
+        id: schema.linkedinSyncImports.id,
+        status: schema.linkedinSyncImports.status,
+        conversations: sql<number>`coalesce((${schema.linkedinSyncImports.details}->>'conversations')::int, 0)`,
+        newMessages: schema.linkedinSyncImports.newItems,
+        loggedMessages: schema.linkedinSyncImports.matchedItems,
+        ignoredMessages: schema.linkedinSyncImports.ignoredItems,
+        flaggedConversations: schema.linkedinSyncImports.flaggedItems,
+        createdAt: schema.linkedinSyncImports.createdAt,
+        completedAt: schema.linkedinSyncImports.completedAt,
+      })
+      .from(schema.linkedinSyncImports)
+      .where(eq(schema.linkedinSyncImports.kind, 'messages'))
+      .orderBy(desc(schema.linkedinSyncImports.createdAt))
+      .limit(1),
+  ]);
+  return {
+    conversations: Number(conversation?.conversations) || 0,
+    linkedConversations: Number(conversation?.linkedConversations) || 0,
+    unlinkedConversations: Number(conversation?.unlinkedConversations) || 0,
+    conversationMessages: Number(conversation?.conversationMessages) || 0,
+    storedMessages: Number(records?.storedMessages) || 0,
+    leadsWithStoredMessages: Number(records?.leadsWithStoredMessages) || 0,
+    visibleActivities: Number(activities?.visibleActivities) || 0,
+    leadsWithVisibleActivities: Number(activities?.leadsWithVisibleActivities) || 0,
+    latestImport: latestImport
+      ? {
+          ...latestImport,
+          conversations: Number(latestImport.conversations) || 0,
+          createdAt: latestImport.createdAt.toISOString(),
+          completedAt: latestImport.completedAt?.toISOString() ?? null,
+        }
+      : null,
+  };
+}
+
 async function drainLinkedinMessageSyncQueue(db: CrmDb, env: Env, limit: number) {
   const now = new Date();
   await db
@@ -2336,7 +2400,8 @@ app.post('/internal/linkedin-sync-queue/drain', async (c) => {
   const invitationLimit = Math.min(50, Math.max(1, Number(c.req.query('invitationLimit') ?? 25)));
   const messageUpdater = await drainLinkedinMessageSyncQueue(db, c.env, messageLimit);
   const invitationReconciler = await drainLinkedinInvitationSyncQueue(db, invitationLimit);
-  return c.json({ messageUpdater, invitationReconciler });
+  const messageReconciliation = await linkedinMessageReconciliation(db);
+  return c.json({ messageUpdater, messageReconciliation, invitationReconciler });
 });
 
 app.use('/api/*', requireAuth);
@@ -2692,39 +2757,45 @@ app.get('/api/dashboard', async (c) => {
   `);
 
   const rows = (result as unknown as { rows?: Array<{ dashboard: unknown }> }).rows ?? [];
-  const [lastMessageDumpRows, lastInvitationDumpRows, linkedinQueueRows, [flagCount]] =
-    await Promise.all([
-      db
-        .select()
-        .from(schema.linkedinSyncImports)
-        .where(eq(schema.linkedinSyncImports.kind, 'messages'))
-        .orderBy(desc(schema.linkedinSyncImports.createdAt))
-        .limit(1),
-      db
-        .select()
-        .from(schema.linkedinSyncImports)
-        .where(eq(schema.linkedinSyncImports.kind, 'invitations'))
-        .orderBy(desc(schema.linkedinSyncImports.createdAt))
-        .limit(1),
-      db
-        .select({
-          kind: schema.linkedinSyncJobs.kind,
-          waiting: sql<number>`count(*) filter (where ${schema.linkedinSyncJobs.status} = 'pending')::int`,
-          processing: sql<number>`count(*) filter (where ${schema.linkedinSyncJobs.status} = 'processing')::int`,
-          retrying: sql<number>`count(*) filter (where ${schema.linkedinSyncJobs.status} = 'failed')::int`,
-          completed24h: sql<number>`count(*) filter (
+  const [
+    lastMessageDumpRows,
+    lastInvitationDumpRows,
+    linkedinQueueRows,
+    [flagCount],
+    messageReconciliation,
+  ] = await Promise.all([
+    db
+      .select()
+      .from(schema.linkedinSyncImports)
+      .where(eq(schema.linkedinSyncImports.kind, 'messages'))
+      .orderBy(desc(schema.linkedinSyncImports.createdAt))
+      .limit(1),
+    db
+      .select()
+      .from(schema.linkedinSyncImports)
+      .where(eq(schema.linkedinSyncImports.kind, 'invitations'))
+      .orderBy(desc(schema.linkedinSyncImports.createdAt))
+      .limit(1),
+    db
+      .select({
+        kind: schema.linkedinSyncJobs.kind,
+        waiting: sql<number>`count(*) filter (where ${schema.linkedinSyncJobs.status} = 'pending')::int`,
+        processing: sql<number>`count(*) filter (where ${schema.linkedinSyncJobs.status} = 'processing')::int`,
+        retrying: sql<number>`count(*) filter (where ${schema.linkedinSyncJobs.status} = 'failed')::int`,
+        completed24h: sql<number>`count(*) filter (
             where ${schema.linkedinSyncJobs.status} = 'completed'
             and ${schema.linkedinSyncJobs.completedAt} >= now() - interval '24 hours'
           )::int`,
-          latestCompletedAt: sql<Date | null>`max(${schema.linkedinSyncJobs.completedAt})`,
-        })
-        .from(schema.linkedinSyncJobs)
-        .groupBy(schema.linkedinSyncJobs.kind),
-      db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(schema.linkedinSyncFlags)
-        .where(eq(schema.linkedinSyncFlags.status, 'open')),
-    ]);
+        latestCompletedAt: sql<Date | null>`max(${schema.linkedinSyncJobs.completedAt})`,
+      })
+      .from(schema.linkedinSyncJobs)
+      .groupBy(schema.linkedinSyncJobs.kind),
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.linkedinSyncFlags)
+      .where(eq(schema.linkedinSyncFlags.status, 'open')),
+    linkedinMessageReconciliation(db),
+  ]);
   const linkedinQueue = (kind: string) => {
     const row = linkedinQueueRows.find((item) => item.kind === kind);
     const waiting = Number(row?.waiting) || 0;
@@ -2756,6 +2827,7 @@ app.get('/api/dashboard', async (c) => {
       lastMessageDump: lastMessageDumpRows[0] ?? null,
       lastInvitationDump: lastInvitationDumpRows[0] ?? null,
       openFlags: Number(flagCount?.count) || 0,
+      messageReconciliation,
       queues: {
         messages: linkedinQueue('message_conversation'),
         invitations: linkedinQueue('invitation_reconcile'),
@@ -8989,40 +9061,42 @@ app.post('/api/ceo-chat/import-linkedin-invitations', async (c) => {
 app.get('/api/linkedin-sync/status', async (c) => {
   if (!c.get('isSuperadmin')) return c.json({ error: 'Forbidden.' }, 403);
   const db = getDb(c.env, schema) as CrmDb;
-  const [messageImports, invitationImports, queueRows, openFlags] = await Promise.all([
-    db
-      .select()
-      .from(schema.linkedinSyncImports)
-      .where(eq(schema.linkedinSyncImports.kind, 'messages'))
-      .orderBy(desc(schema.linkedinSyncImports.createdAt))
-      .limit(5),
-    db
-      .select()
-      .from(schema.linkedinSyncImports)
-      .where(eq(schema.linkedinSyncImports.kind, 'invitations'))
-      .orderBy(desc(schema.linkedinSyncImports.createdAt))
-      .limit(5),
-    db
-      .select({
-        kind: schema.linkedinSyncJobs.kind,
-        waiting: sql<number>`count(*) filter (where ${schema.linkedinSyncJobs.status} = 'pending')::int`,
-        processing: sql<number>`count(*) filter (where ${schema.linkedinSyncJobs.status} = 'processing')::int`,
-        retrying: sql<number>`count(*) filter (where ${schema.linkedinSyncJobs.status} = 'failed')::int`,
-        completed24h: sql<number>`count(*) filter (
+  const [messageImports, invitationImports, queueRows, openFlags, messageReconciliation] =
+    await Promise.all([
+      db
+        .select()
+        .from(schema.linkedinSyncImports)
+        .where(eq(schema.linkedinSyncImports.kind, 'messages'))
+        .orderBy(desc(schema.linkedinSyncImports.createdAt))
+        .limit(5),
+      db
+        .select()
+        .from(schema.linkedinSyncImports)
+        .where(eq(schema.linkedinSyncImports.kind, 'invitations'))
+        .orderBy(desc(schema.linkedinSyncImports.createdAt))
+        .limit(5),
+      db
+        .select({
+          kind: schema.linkedinSyncJobs.kind,
+          waiting: sql<number>`count(*) filter (where ${schema.linkedinSyncJobs.status} = 'pending')::int`,
+          processing: sql<number>`count(*) filter (where ${schema.linkedinSyncJobs.status} = 'processing')::int`,
+          retrying: sql<number>`count(*) filter (where ${schema.linkedinSyncJobs.status} = 'failed')::int`,
+          completed24h: sql<number>`count(*) filter (
           where ${schema.linkedinSyncJobs.status} = 'completed'
           and ${schema.linkedinSyncJobs.completedAt} >= now() - interval '24 hours'
         )::int`,
-        latestCompletedAt: sql<Date | null>`max(${schema.linkedinSyncJobs.completedAt})`,
-      })
-      .from(schema.linkedinSyncJobs)
-      .groupBy(schema.linkedinSyncJobs.kind),
-    db
-      .select()
-      .from(schema.linkedinSyncFlags)
-      .where(eq(schema.linkedinSyncFlags.status, 'open'))
-      .orderBy(desc(schema.linkedinSyncFlags.createdAt))
-      .limit(25),
-  ]);
+          latestCompletedAt: sql<Date | null>`max(${schema.linkedinSyncJobs.completedAt})`,
+        })
+        .from(schema.linkedinSyncJobs)
+        .groupBy(schema.linkedinSyncJobs.kind),
+      db
+        .select()
+        .from(schema.linkedinSyncFlags)
+        .where(eq(schema.linkedinSyncFlags.status, 'open'))
+        .orderBy(desc(schema.linkedinSyncFlags.createdAt))
+        .limit(25),
+      linkedinMessageReconciliation(db),
+    ]);
   const queue = (kind: string) => {
     const row = queueRows.find((item) => item.kind === kind);
     const waiting = Number(row?.waiting) || 0;
@@ -9047,6 +9121,7 @@ app.get('/api/linkedin-sync/status', async (c) => {
       messages: queue('message_conversation'),
       invitations: queue('invitation_reconcile'),
     },
+    messageReconciliation,
     openFlags: openFlags.map((flag) => ({
       ...flag,
       createdAt: flag.createdAt.toISOString(),

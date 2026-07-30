@@ -458,12 +458,22 @@ export default function Dashboard() {
                         : 'never'}
                     </p>
                     {data.linkedinSync.lastMessageDump && (
-                      <p className="mt-1 text-[11px] font-medium text-slate-600">
-                        {number(data.linkedinSync.lastMessageDump.details?.conversations)}{' '}
-                        conversations · {number(data.linkedinSync.lastMessageDump.newItems)} new
-                        messages · {number(data.linkedinSync.lastMessageDump.matchedItems)} logged ·{' '}
-                        {data.linkedinSync.lastMessageDump.status}
-                      </p>
+                      <>
+                        <p className="mt-1 text-[11px] font-medium text-slate-600">
+                          {number(data.linkedinSync.lastMessageDump.details?.conversations)} parsed
+                          · {number(data.linkedinSync.messageReconciliation.visibleActivities)}{' '}
+                          visible message logs ·{' '}
+                          {number(
+                            data.linkedinSync.messageReconciliation.leadsWithVisibleActivities
+                          )}{' '}
+                          leads · {data.linkedinSync.lastMessageDump.status}
+                        </p>
+                        <p className="mt-1 text-[10px] text-slate-400">
+                          {number(data.linkedinSync.messageReconciliation.storedMessages)} stored ·{' '}
+                          {number(data.linkedinSync.messageReconciliation.unlinkedConversations)}{' '}
+                          unlinked conversations
+                        </p>
+                      </>
                     )}
                   </div>
                   <span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold text-amber-800">

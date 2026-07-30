@@ -1015,6 +1015,28 @@ export interface LinkedinSyncQueueSummary {
   latestCompletedAt: string | null;
 }
 
+export interface LinkedinMessageReconciliation {
+  conversations: number;
+  linkedConversations: number;
+  unlinkedConversations: number;
+  conversationMessages: number;
+  storedMessages: number;
+  leadsWithStoredMessages: number;
+  visibleActivities: number;
+  leadsWithVisibleActivities: number;
+  latestImport: {
+    id: string;
+    status: string;
+    conversations: number;
+    newMessages: number;
+    loggedMessages: number;
+    ignoredMessages: number;
+    flaggedConversations: number;
+    createdAt: string;
+    completedAt: string | null;
+  } | null;
+}
+
 export interface LinkedinSyncStatus {
   observedAt: string;
   lastMessageDump: LinkedinSyncImportRun | null;
@@ -1025,6 +1047,7 @@ export interface LinkedinSyncStatus {
     messages: LinkedinSyncQueueSummary;
     invitations: LinkedinSyncQueueSummary;
   };
+  messageReconciliation: LinkedinMessageReconciliation;
   openFlags: Array<{
     id: string;
     otherPartyName: string;

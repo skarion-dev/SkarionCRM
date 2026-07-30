@@ -717,6 +717,27 @@ export interface DashboardData {
       completedAt: string | null;
     } | null;
     openFlags: number;
+    messageReconciliation: {
+      conversations: number;
+      linkedConversations: number;
+      unlinkedConversations: number;
+      conversationMessages: number;
+      storedMessages: number;
+      leadsWithStoredMessages: number;
+      visibleActivities: number;
+      leadsWithVisibleActivities: number;
+      latestImport: {
+        id: string;
+        status: string;
+        conversations: number;
+        newMessages: number;
+        loggedMessages: number;
+        ignoredMessages: number;
+        flaggedConversations: number;
+        createdAt: string;
+        completedAt: string | null;
+      } | null;
+    };
     queues: {
       messages: DashboardQueueSummary;
       invitations: DashboardQueueSummary;
