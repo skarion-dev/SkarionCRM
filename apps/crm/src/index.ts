@@ -6381,6 +6381,157 @@ async function buildCeoReportingSnapshot(db: CrmDb): Promise<CeoReportingSnapsho
   };
 }
 
+// ─── DASHBOARD SUMMARY ───────────────────────────────────────────────────
+// Broadened to every authenticated role (no superadmin gate): reuses the
+// verified CEO snapshot machinery for the aggregate view, plus a per-caller
+// `mine` block and a prospects-pending-review count. /api/ceo-chat stays
+// superadmin-only and is not affected by this route.
+app.get('/api/dashboard/summary', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const userId = (c.get('userId') as string | undefined) ?? '';
+
+  const snapshot = await buildCeoReportingSnapshot(db);
+
+  const [
+    [prospectsPendingReviewRow],
+    [openTasksRow],
+    [overdueTasksRow],
+    [dueTodayRow],
+    mineTaskRows,
+    outreachDueRows,
+    recentAcceptedLeadRows,
+  ] = await Promise.all([
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.leads)
+      .where(and(eq(schema.leads.reviewState, 'pending'), isNull(schema.leads.deletedAt))),
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.tasks)
+      .where(
+        and(
+          eq(schema.tasks.assigneeId, userId),
+          isNull(schema.tasks.completedAt),
+          isNull(schema.tasks.deletedAt)
+        )
+      ),
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.tasks)
+      .where(
+        and(
+          eq(schema.tasks.assigneeId, userId),
+          isNull(schema.tasks.completedAt),
+          isNull(schema.tasks.deletedAt),
+          sql`${schema.tasks.dueDate} is not null and ${schema.tasks.dueDate} < now()`
+        )
+      ),
+    db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(schema.tasks)
+      .where(
+        and(
+          eq(schema.tasks.assigneeId, userId),
+          isNull(schema.tasks.completedAt),
+          isNull(schema.tasks.deletedAt),
+          sql`${schema.tasks.dueDate}::date = current_date`
+        )
+      ),
+    db
+      .select({
+        id: schema.tasks.id,
+        title: schema.tasks.title,
+        dueDate: schema.tasks.dueDate,
+        priority: schema.tasks.priority,
+        type: schema.tasks.type,
+      })
+      .from(schema.tasks)
+      .where(
+        and(
+          eq(schema.tasks.assigneeId, userId),
+          isNull(schema.tasks.completedAt),
+          isNull(schema.tasks.deletedAt)
+        )
+      )
+      .orderBy(asc(schema.tasks.dueDate))
+      .limit(8),
+    db
+      .select({
+        leadId: schema.leadChannels.leadId,
+        channel: schema.leadChannels.channel,
+        channelStage: schema.leadChannels.stage,
+        nextFollowupAt: schema.leadChannels.nextFollowupAt,
+        leadFirstName: schema.leads.firstName,
+        leadLastName: schema.leads.lastName,
+        leadJourneyStage: schema.leads.journeyStage,
+      })
+      .from(schema.leadChannels)
+      .innerJoin(schema.leads, eq(schema.leads.id, schema.leadChannels.leadId))
+      .where(
+        and(
+          isNull(schema.leads.deletedAt),
+          or(eq(schema.leadChannels.ownerId, userId), eq(schema.leads.ownerId, userId)),
+          sql`${schema.leadChannels.nextFollowupAt} is not null and ${schema.leadChannels.nextFollowupAt} <= now()`
+        )
+      )
+      .orderBy(asc(schema.leadChannels.nextFollowupAt))
+      .limit(8),
+    db
+      .select({
+        id: schema.leads.id,
+        firstName: schema.leads.firstName,
+        lastName: schema.leads.lastName,
+        email: schema.leads.email,
+        journeyStage: schema.leads.journeyStage,
+        status: schema.leads.status,
+        createdAt: schema.leads.createdAt,
+      })
+      .from(schema.leads)
+      .where(
+        and(
+          eq(schema.leads.ownerId, userId),
+          eq(schema.leads.reviewState, 'accepted'),
+          isNull(schema.leads.deletedAt)
+        )
+      )
+      .orderBy(desc(schema.leads.createdAt))
+      .limit(8),
+  ]);
+
+  return c.json({
+    ...snapshot,
+    prospectsPendingReview: Number(prospectsPendingReviewRow?.count) || 0,
+    mine: {
+      openTasks: Number(openTasksRow?.count) || 0,
+      overdueTasks: Number(overdueTasksRow?.count) || 0,
+      dueTodayTasks: Number(dueTodayRow?.count) || 0,
+      tasks: mineTaskRows.map((row) => ({
+        id: row.id,
+        title: row.title,
+        dueDate: row.dueDate,
+        priority: row.priority,
+        type: row.type,
+      })),
+      outreachDue: outreachDueRows.map((row) => ({
+        leadId: row.leadId,
+        channel: row.channel,
+        channelStage: row.channelStage,
+        nextFollowupAt: row.nextFollowupAt ? row.nextFollowupAt.toISOString() : null,
+        leadName: `${row.leadFirstName ?? ''} ${row.leadLastName ?? ''}`.trim(),
+        journeyStage: row.leadJourneyStage,
+      })),
+      recentAcceptedLeads: recentAcceptedLeadRows.map((row) => ({
+        id: row.id,
+        name: `${row.firstName ?? ''} ${row.lastName ?? ''}`.trim(),
+        email: row.email,
+        journeyStage: row.journeyStage,
+        status: row.status,
+        createdAt: row.createdAt.toISOString(),
+      })),
+    },
+  });
+});
+
 // ─── CHAT ────────────────────────────────────────────────────────────────
 
 app.get('/api/chat/history', async (c) => {

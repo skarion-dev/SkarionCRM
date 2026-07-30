@@ -41,12 +41,10 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/utils.js';
 import { useEffect, useState } from 'react';
-import ActivityTimeline from '../components/ActivityTimeline.js';
-import ActivityForm from '../components/ActivityForm.js';
 import LeadForm from '../components/forms/LeadForm.js';
 import ChannelPanel from '../components/ChannelPanel.js';
 import Attachments from '../components/Attachments.js';
-import type { ActivityType, LeadJourneyStage } from '../api.js';
+import type { LeadJourneyStage } from '../api.js';
 import {
   ACTIVE_LEAD_JOURNEY,
   LEAD_JOURNEY_LABELS,
@@ -130,7 +128,6 @@ export default function LeadDetail() {
   const deleteMutation = useDeleteEntity();
   const updateLead = useUpdateEntity('leads');
   const [editOpen, setEditOpen] = useState(false);
-  const [activityType, setActivityType] = useState<ActivityType | null>(null);
   const [statusDropdownOpen, setStatusDropdownOpen] = useState(false);
   const [connectionNoteDraft, setConnectionNoteDraft] = useState('');
   const [connectionNoteAction, setConnectionNoteAction] = useState<
@@ -863,28 +860,10 @@ export default function LeadDetail() {
       {/* Outreach Channels */}
       <ChannelPanel leadId={lead.id} />
 
-      {/* Activity Timeline */}
-      <div className="bg-white border border-slate-200 rounded-lg p-6">
-        <ActivityTimeline
-          filters={{ contactId: lead.id }}
-          entityName={`${lead.firstName} ${lead.lastName}`}
-          onAddActivity={(type) => setActivityType(type)}
-        />
-      </div>
-
       {/* Attachments */}
       <Attachments leadId={lead.id} />
 
       <LeadForm open={editOpen} onClose={() => setEditOpen(false)} lead={lead} />
-      {activityType && (
-        <ActivityForm
-          open={!!activityType}
-          onClose={() => setActivityType(null)}
-          type={activityType}
-          filters={{ contactId: lead.id }}
-          entityName={`${lead.firstName} ${lead.lastName}`}
-        />
-      )}
     </div>
   );
 }

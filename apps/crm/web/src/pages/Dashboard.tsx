@@ -1,177 +1,205 @@
 import { useAuthStore } from '../stores/auth.js';
-import { useCompanies, useLeads, useContacts, useOpportunities, useTasks } from '../hooks/use-api.js';
-import { Target, Building2, Contact, Users, CheckSquare, TrendingUp, TrendingDown } from 'lucide-react';
-import { cn } from '../lib/utils.js';
+import { useDashboardSummary } from '../hooks/use-api.js';
+import {
+  RefreshCw,
+  Building2,
+  Target,
+  Contact,
+  Users,
+  CheckSquare,
+  AlertTriangle,
+} from 'lucide-react';
+import { StatCard } from '../components/dashboard/StatCard.js';
+import { DashboardSkeleton } from '../components/dashboard/DashboardSkeleton.js';
+import { PipelineFunnel } from '../components/dashboard/PipelineFunnel.js';
+import { JourneyFunnel } from '../components/dashboard/JourneyFunnel.js';
+import { AiFunnelHealth } from '../components/dashboard/AiFunnelHealth.js';
+import { SourceMix } from '../components/dashboard/SourceMix.js';
+import { OutreachPulse } from '../components/dashboard/OutreachPulse.js';
+import { RecentLeadsList } from '../components/dashboard/RecentLeadsList.js';
+import { UpcomingCloses } from '../components/dashboard/UpcomingCloses.js';
+import { MyTasksCard } from '../components/dashboard/MyTasksCard.js';
+import { MyOutreachDueCard } from '../components/dashboard/MyOutreachDueCard.js';
+import { MyRecentLeadsCard } from '../components/dashboard/MyRecentLeadsCard.js';
+import { ProspectsPendingTile } from '../components/dashboard/ProspectsPendingTile.js';
+import { TeamWorkload } from '../components/dashboard/TeamWorkload.js';
 
-interface TrendData {
-  value: number;
-  label: string;
-}
+export default function Dashboard() {
+  const role = useAuthStore((s) => s.user?.role ?? '');
+  const isSuperadmin = useAuthStore((s) => s.user?.isSuperadmin ?? false);
+  const { data: summary, isPending, isFetching, refetch } = useDashboardSummary();
 
-function calculateTrend(items: Array<{ createdAt: string; deletedAt: string | null }>): TrendData | undefined {
-  const now = new Date();
-  const last7DaysStart = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-  const prev7DaysStart = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+  const isManagerView = isSuperadmin || role === 'manager';
 
-  const activeItems = items.filter((i) => !i.deletedAt);
-  const current = activeItems.filter((i) => new Date(i.createdAt) >= last7DaysStart).length;
-  const previous = activeItems.filter((i) => {
-    const d = new Date(i.createdAt);
-    return d >= prev7DaysStart && d < last7DaysStart;
-  }).length;
+  const roleLabel = isSuperadmin
+    ? 'Superadmin'
+    : role
+      ? role.charAt(0).toUpperCase() + role.slice(1)
+      : '';
 
-  if (previous === 0) {
-    if (current === 0) return undefined;
-    return { value: 100, label: '+100%' };
+  if (isPending || !summary) {
+    return <DashboardSkeleton />;
   }
 
-  const pct = Math.round(((current - previous) / previous) * 100);
-  return { value: pct, label: `${pct >= 0 ? '+' : ''}${pct}%` };
-}
+  const currencyTotalLabel = (() => {
+    const byCur = new Map<string, number>();
+    for (const row of summary.opportunitiesByStage) {
+      const cur = row.currency ?? 'USD';
+      byCur.set(cur, (byCur.get(cur) ?? 0) + (row.secondaryValue ?? 0));
+    }
+    return [...byCur.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([cur, val]) => {
+        const v = val || 0;
+        if (v >= 1_000_000) return `${cur} ${(v / 1_000_000).toFixed(1)}M`;
+        return `${cur} ${(v / 1_000).toFixed(0)}k`;
+      })
+      .join(' · ');
+  })();
 
-function StatCard({
-  icon: Icon,
-  label,
-  value,
-  trend,
-}: {
-  icon: React.ComponentType<{ size: number; className?: string }>;
-  label: string;
-  value: string;
-  trend?: TrendData;
-}) {
   return (
-    <div className="bg-white rounded-lg border border-slate-200 p-4">
-      <div className="flex items-center justify-between mb-2">
-        <div className="p-2 bg-slate-100 rounded-md">
-          <Icon size={18} className="text-slate-600" />
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold">Dashboard</h1>
+          <p className="text-slate-500 text-sm mt-1">
+            Welcome back{roleLabel && ` — ${roleLabel} view`}
+          </p>
         </div>
-        {trend && (
-          <span
-            className={cn(
-              'text-xs font-medium flex items-center gap-0.5',
-              trend.value >= 0 ? 'text-green-600' : 'text-red-600'
-            )}
-          >
-            {trend.value >= 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
-            {trend.label}
-          </span>
-        )}
+        <button
+          onClick={() => refetch()}
+          disabled={isFetching}
+          className="flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900 disabled:opacity-50"
+        >
+          <RefreshCw size={14} className={isFetching ? 'animate-spin' : ''} />
+          Refresh
+        </button>
       </div>
-      <div className="text-2xl font-semibold">{value}</div>
-      <div className="text-slate-500 text-sm">{label}</div>
+
+      {isManagerView ? (
+        <ManagerView summary={summary} currencyTotalLabel={currencyTotalLabel} />
+      ) : (
+        <MemberView summary={summary} currencyTotalLabel={currencyTotalLabel} />
+      )}
     </div>
   );
 }
 
-export default function Dashboard() {
-  const role = useAuthStore((s) => s.user?.role ?? '');
-  const { data: companies } = useCompanies();
-  const { data: leads } = useLeads();
-  const { data: contacts } = useContacts();
-  const { data: opportunities } = useOpportunities();
-  const { data: tasks } = useTasks();
-
-  const openTasks = tasks?.tasks.filter((t) => !t.completedAt && !t.deletedAt).length ?? 0;
-  const totalValue = opportunities?.opportunities
-    .filter((o) => !o.deletedAt && o.stage !== 'closed_lost')
-    .reduce((sum, o) => sum + (parseFloat(o.amount ?? '0') || 0), 0) ?? 0;
-
-  const activeLeads = leads?.leads.filter((l) => !l.deletedAt) ?? [];
-  const activeOpportunities = opportunities?.opportunities.filter((o) => !o.deletedAt) ?? [];
-
-  const leadTrend = calculateTrend(activeLeads);
-  const opportunityTrend = calculateTrend(activeOpportunities);
+function ManagerView({
+  summary,
+  currencyTotalLabel,
+}: {
+  summary: NonNullable<ReturnType<typeof useDashboardSummary>['data']>;
+  currencyTotalLabel: string;
+}) {
+  const t = summary.totals;
+  const isSuperadmin = useAuthStore((s) => s.user?.isSuperadmin ?? false);
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Dashboard</h1>
-        <p className="text-slate-500 text-sm mt-1">Welcome back{role && ` — ${role} view`}</p>
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
-        <StatCard icon={Building2} label="Companies" value={String(companies?.companies.length ?? 0)} />
-        <StatCard icon={Target} label="Leads" value={String(activeLeads.length)} trend={leadTrend} />
-        <StatCard icon={Contact} label="Contacts" value={String(contacts?.contacts.length ?? 0)} />
+    <>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+        <StatCard icon={Target} label="Accepted Leads" value={String(t.leads)} />
         <StatCard
           icon={Users}
-          label="Opportunities"
-          value={`$${(totalValue / 1000).toFixed(1)}k`}
-          trend={opportunityTrend}
+          label="Avg AI Score"
+          value={t.averageLeadScore === null ? '—' : String(Math.round(t.averageLeadScore))}
         />
-        <StatCard icon={CheckSquare} label="Open Tasks" value={String(openTasks)} />
+        <StatCard icon={Building2} label="Open Pipeline" value={currencyTotalLabel || '—'} />
+        <StatCard icon={CheckSquare} label="Open Tasks" value={String(t.openTasks)} />
+        <StatCard icon={AlertTriangle} label="Overdue Tasks" value={String(t.overdueTasks)} />
+        <StatCard
+          icon={Contact}
+          label="Prospects Pending"
+          value={String(summary.prospectsPendingReview)}
+        />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white rounded-lg border border-slate-200 p-4">
-          <h2 className="font-semibold mb-4">Recent Leads</h2>
-          <div className="space-y-2">
-            {activeLeads.slice(0, 5).map((lead) => (
-              <div key={lead.id} className="flex items-center justify-between p-2 hover:bg-slate-50 rounded">
-                <div>
-                  <div className="font-medium text-sm">{lead.firstName} {lead.lastName}</div>
-                  <div className="text-slate-500 text-xs">{lead.email}</div>
-                </div>
-                <span className={
-                  lead.status === 'new' ? 'px-2 py-0.5 rounded text-xs bg-blue-100 text-blue-700' :
-                  lead.status === 'contacted' ? 'px-2 py-0.5 rounded text-xs bg-amber-100 text-amber-700' :
-                  lead.status === 'qualified' ? 'px-2 py-0.5 rounded text-xs bg-green-100 text-green-700' :
-                  'px-2 py-0.5 rounded text-xs bg-slate-100 text-slate-600'
-                }>
-                  {lead.status}
-                </span>
-              </div>
-            ))}
-            {(!activeLeads.length) && <div className="text-slate-400 text-sm text-center py-8">No leads yet</div>}
-          </div>
-        </div>
-
-        <div className="bg-white rounded-lg border border-slate-200 p-4">
-          <h2 className="font-semibold mb-4">Pipeline Overview</h2>
-          <div className="space-y-3">
-            {(['prospecting', 'qualification', 'proposal', 'negotiation'] as const).map((stage) => {
-              const count = activeOpportunities.filter(o => o.stage === stage).length;
-              const stageValue = activeOpportunities
-                .filter(o => o.stage === stage)
-                .reduce((s, o) => s + (parseFloat(o.amount ?? '0') || 0), 0);
-              return (
-                <div key={stage} className="flex items-center gap-3">
-                  <div className="w-28 text-sm capitalize">{stage.replace('_', ' ')}</div>
-                  <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-blue-500 rounded-full"
-                      style={{ width: `${Math.max(2, (count / (activeOpportunities.length || 1)) * 100)}%` }}
-                    />
-                  </div>
-                  <div className="text-sm text-slate-600 w-24 text-right">
-                    {count} · ${(stageValue / 1000).toFixed(0)}k
-                  </div>
-                </div>
-              );
-            })}
-            {(!activeOpportunities.length) && <div className="text-slate-400 text-sm text-center py-8">No opportunities yet</div>}
-          </div>
-        </div>
+        <PipelineFunnel summary={summary} />
+        <JourneyFunnel summary={summary} />
       </div>
 
-      <div className="bg-white rounded-lg border border-slate-200 p-4">
-        <h2 className="font-semibold mb-4">My Tasks</h2>
-        <div className="space-y-2">
-          {tasks?.tasks.filter(t => !t.completedAt && !t.deletedAt).slice(0, 5).map((task) => (
-            <div key={task.id} className="flex items-center gap-3 p-2 hover:bg-slate-50 rounded">
-              <div className={`w-2 h-2 rounded-full ${task.priority === 'high' ? 'bg-red-500' : task.priority === 'medium' ? 'bg-amber-500' : 'bg-blue-500'}`} />
-              <div className="flex-1">
-                <div className="text-sm font-medium">{task.title}</div>
-                <div className="text-xs text-slate-500">
-                  {task.dueDate ? new Date(task.dueDate).toLocaleDateString() : 'No due date'}
-                </div>
-              </div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <AiFunnelHealth summary={summary} />
+        <SourceMix summary={summary} />
+        <TeamWorkload summary={summary} />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <RecentLeadsList summary={summary} />
+        <UpcomingCloses summary={summary} />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <OutreachPulse summary={summary} />
+        {isSuperadmin ? (
+          <div className="bg-white rounded-lg border border-slate-200 p-4 shadow-sm flex flex-col items-center justify-center gap-3">
+            <div className="text-slate-500 text-sm text-center">
+              Ask Skarion's Reporting CEO for a plain-language read on any of these numbers.
             </div>
-          ))}
-          {(!tasks?.tasks.filter(t => !t.completedAt && !t.deletedAt).length) && <div className="text-slate-400 text-sm text-center py-8">No open tasks</div>}
-        </div>
+            <a
+              href="/ceo-chat"
+              className="px-4 py-2 bg-slate-900 text-white rounded-lg text-sm hover:bg-slate-800"
+            >
+              Open Reporting CEO →
+            </a>
+          </div>
+        ) : null}
       </div>
-    </div>
+    </>
+  );
+}
+
+function MemberView({
+  summary,
+  currencyTotalLabel,
+}: {
+  summary: NonNullable<ReturnType<typeof useDashboardSummary>['data']>;
+  currencyTotalLabel: string;
+}) {
+  const m = summary.mine;
+  const t = summary.totals;
+
+  return (
+    <>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <MyTasksCard summary={summary} />
+        <MyOutreachDueCard summary={summary} />
+        <ProspectsPendingTile summary={summary} />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <StatCard icon={CheckSquare} label="My Open Tasks" value={String(m.openTasks)} />
+          <StatCard icon={AlertTriangle} label="My Overdue" value={String(m.overdueTasks)} />
+        </div>
+        <MyRecentLeadsCard summary={summary} />
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <StatCard icon={Target} label="Team Leads" value={String(t.leads)} />
+        <StatCard
+          icon={Users}
+          label="Avg AI Score"
+          value={t.averageLeadScore === null ? '—' : String(Math.round(t.averageLeadScore))}
+        />
+        <StatCard icon={Building2} label="Open Pipeline" value={currencyTotalLabel || '—'} />
+        <StatCard
+          icon={Contact}
+          label="Prospects Pending"
+          value={String(summary.prospectsPendingReview)}
+        />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <PipelineFunnel summary={summary} />
+        <JourneyFunnel summary={summary} />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <AiFunnelHealth summary={summary} />
+        <SourceMix summary={summary} />
+      </div>
+    </>
   );
 }
