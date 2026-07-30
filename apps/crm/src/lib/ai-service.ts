@@ -19,6 +19,13 @@ import {
   type AiTokenUsage,
 } from '@skarion/ai-toolkit';
 import { and, eq } from 'drizzle-orm';
+import {
+  SUPPLIED_DATA_ONLY_GUARD,
+  SUPPLIED_DATA_ONLY_GUARD_SHORT,
+  LEAD_INTAKE_JSON_SCHEMA_BLOCK,
+  leadIntakeDocumentFraming,
+  parseJsonFromAiText,
+} from './ai-prompts.js';
 
 interface Env extends AiGatewayEnv {
   AI_PROVIDER?: string;
@@ -481,15 +488,9 @@ export async function extractStructured<T>(
     agent: opts?.agent,
   });
   if (!text) return null;
-  try {
-    // Extract JSON from markdown code fences if present
-    const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
-    const clean = jsonMatch ? jsonMatch[1]!.trim() : text.trim();
-    return JSON.parse(clean) as T;
-  } catch {
-    console.error('Failed to parse JSON from AI response:', text);
-    return null;
-  }
+  const parsed = parseJsonFromAiText<T>(text);
+  if (!parsed) console.error('Failed to parse JSON from AI response:', text);
+  return parsed;
 }
 
 // ── Outreach drafting ───────────────────────────────────────────────────────
@@ -522,9 +523,10 @@ export async function draftOutreach(
   };
 
   const channelMap: Record<string, string> = {
-    email: 'a professional email with subject line suggestion',
-    linkedin: 'a LinkedIn direct message, concise and personal',
-    sms: 'a short SMS/WhatsApp style message, under 160 characters if possible',
+    email: 'a professional email — start with a "Subject:" line, then a blank line, then the body',
+    linkedin:
+      'a LinkedIn direct message, concise and personal, no subject line, under 300 characters',
+    sms: 'a short SMS/WhatsApp style message, under 160 characters, no subject line or signature block',
   };
 
   const positioning: Record<string, string> = {
@@ -555,7 +557,7 @@ Tone: ${tone}
 
 Skarion positioning: ${position}
 
-Do not include any markdown formatting. Output plain text only. Include a clear call to action.`;
+No markdown formatting, plain text only. Include one clear call to action. ${SUPPLIED_DATA_ONLY_GUARD_SHORT}`;
 
   return chatCompletionSingle(prompt, env, {
     temperature: 0.4,
@@ -594,48 +596,16 @@ export async function extractLeadFromPdfText(
 ): Promise<ExtractedLeadDraft | null> {
   if (!isAiConfigured(env)) return null;
 
-  const typePrompt =
-    suggestedType === 'candidate'
-      ? 'This is a resume/CV.'
-      : suggestedType === 'client'
-        ? 'This is a client/vendor document or company profile.'
-        : suggestedType === 'job_rfp'
-          ? 'This is a job posting or RFP document.'
-          : 'This is a business document.';
-
-  const prompt = `${typePrompt}
+  const prompt = `${leadIntakeDocumentFraming(suggestedType)}
 
 Extract the following information from the text below and return ONLY valid JSON matching this schema:
 
-{
-  "leadType": "candidate | client | vendor | job_rfp | other",
-  "firstName": "",
-  "lastName": "",
-  "fullName": "",
-  "email": "",
-  "phone": "",
-  "linkedinUrl": "",
-  "companyName": "",
-  "title": "",
-  "location": "",
-  "website": "",
-  "source": "pdf_upload",
-  "status": "new",
-  "tags": [],
-  "notes": "",
-  "summary": "",
-  "confidence": 0.0,
-  "missingFields": []
-}
-
-Use empty strings for missing fields. Use 0 for confidence if nothing useful was found. confidence should be 0.0-1.0 based on how much information was successfully extracted. missingFields should list which fields were empty or uncertain.
+${LEAD_INTAKE_JSON_SCHEMA_BLOCK}
 
 Text to extract from:
 ---
 ${rawText.substring(0, 12000)}
----
-
-Return ONLY the JSON object, no markdown, no explanation.`;
+---`;
 
   return extractStructured<ExtractedLeadDraft>(prompt, env, {
     agent: 'lead-intake',
@@ -663,43 +633,11 @@ export async function extractLeadFromPdfFile(
 
   const base64Data = uint8ArrayToBase64(fileBytes);
 
-  const typePrompt =
-    suggestedType === 'candidate'
-      ? 'This is a resume/CV.'
-      : suggestedType === 'client'
-        ? 'This is a client/vendor document or company profile.'
-        : suggestedType === 'job_rfp'
-          ? 'This is a job posting or RFP document.'
-          : 'This is a business document.';
-
-  const prompt = `${typePrompt}
+  const prompt = `${leadIntakeDocumentFraming(suggestedType)}
 
 Extract the following information from this document and return ONLY valid JSON matching this schema:
 
-{
-  "leadType": "candidate | client | vendor | job_rfp | other",
-  "firstName": "",
-  "lastName": "",
-  "fullName": "",
-  "email": "",
-  "phone": "",
-  "linkedinUrl": "",
-  "companyName": "",
-  "title": "",
-  "location": "",
-  "website": "",
-  "source": "pdf_upload",
-  "status": "new",
-  "tags": [],
-  "notes": "",
-  "summary": "",
-  "confidence": 0.0,
-  "missingFields": []
-}
-
-Use empty strings for missing fields. Use 0 for confidence if nothing useful was found. confidence should be 0.0-1.0 based on how much information was successfully extracted. missingFields should list which fields were empty or uncertain.
-
-Return ONLY the JSON object, no markdown, no explanation.`;
+${LEAD_INTAKE_JSON_SCHEMA_BLOCK}`;
 
   let text: string | null = null;
   if (hasAiGateway(env)) {
@@ -813,14 +751,9 @@ Return ONLY the JSON object, no markdown, no explanation.`;
 }
 
 function parseExtractedLead(text: string): ExtractedLeadDraft | null {
-  try {
-    const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
-    const clean = jsonMatch ? jsonMatch[1]!.trim() : text.trim();
-    return JSON.parse(clean) as ExtractedLeadDraft;
-  } catch {
-    console.error('Failed to parse JSON from file extraction:', text);
-    return null;
-  }
+  const parsed = parseJsonFromAiText<ExtractedLeadDraft>(text);
+  if (!parsed) console.error('Failed to parse JSON from file extraction:', text);
+  return parsed;
 }
 
 export async function extractDocumentText(
@@ -831,7 +764,10 @@ export async function extractDocumentText(
   if (!isAiConfigured(env)) return null;
 
   const prompt =
-    'Extract all text from this image or PDF. Return only the raw text, no formatting or commentary.';
+    'Extract all text from this image or PDF, page by page in order. ' +
+    'Preserve table structure using markdown pipe tables. ' +
+    'If handwriting or a section is illegible, write [illegible] in its place rather than guessing. ' +
+    'Return only the raw extracted text — no commentary, no summary, no added headings that are not in the source.';
   const base64Data = uint8ArrayToBase64(fileBytes);
 
   if (hasAiGateway(env)) {
@@ -947,7 +883,7 @@ Status: ${lead.status}
 Source: ${lead.source}
 ${lead.notes ? `Notes: ${lead.notes}` : ''}
 
-Focus on: what they likely want, how strong the lead is, and what next action to take.`;
+Focus on: what they likely want, how strong the lead is, and what next action to take. ${SUPPLIED_DATA_ONLY_GUARD_SHORT}`;
 
   return chatCompletionSingle(prompt, env, {
     temperature: 0.3,
@@ -971,7 +907,7 @@ ${company.domain ? `Domain: ${company.domain}` : ''}
 ${company.industry ? `Industry: ${company.industry}` : ''}
 ${company.size ? `Size: ${company.size}` : ''}
 
-Focus on: what they do, how they might fit Skarion's services (telecom, GIS, fiber, OSP, CAD, engineering), and any outreach suggestions.`;
+Focus on: what they do, how they might fit Skarion's services (telecom, GIS, fiber, OSP, CAD, engineering), and any outreach suggestions. ${SUPPLIED_DATA_ONLY_GUARD_SHORT}`;
 
   return chatCompletionSingle(prompt, env, {
     temperature: 0.3,
@@ -1001,7 +937,7 @@ Email: ${contact.email}
 ${contact.title ? `Title: ${contact.title}` : ''}
 ${contact.companyName ? `Company: ${contact.companyName}` : ''}
 
-Focus on: their role, how to approach them, and what Skarion services might be relevant.`;
+Focus on: their role, how to approach them, and what Skarion services might be relevant. ${SUPPLIED_DATA_ONLY_GUARD_SHORT}`;
 
   return chatCompletionSingle(prompt, env, {
     temperature: 0.3,
@@ -1018,13 +954,17 @@ export async function suggestNextAction(
 ): Promise<string | null> {
   if (!isAiConfigured(env)) return null;
 
-  const prompt = `Based on this lead, suggest the single best next action:
+  const prompt = `Based on this lead, suggest the single best next action.
 
 Name: ${lead.firstName} ${lead.lastName}
 Status: ${lead.status}
 ${lead.notes ? `Notes: ${lead.notes}` : ''}
 
-Return ONE clear, actionable next step (e.g., "Send a follow-up email about X", "Schedule a call to discuss Y", "Connect on LinkedIn with Z message"). Keep it to 1-2 sentences.`;
+Choose the action from one of these categories, then make it specific to this lead:
+schedule outreach, advance to the next pipeline stage, log a note, request missing information,
+flag for manager review, or disqualify. Return ONE clear, actionable next step in 1-2 sentences
+naming the concrete action (e.g., "Send a follow-up email about X", "Schedule a call to discuss Y",
+"Connect on LinkedIn with Z message"). ${SUPPLIED_DATA_ONLY_GUARD_SHORT}`;
 
   return chatCompletionSingle(prompt, env, {
     temperature: 0.3,
@@ -1157,7 +1097,7 @@ export async function normalizeLeadProfile(
 LinkedIn capture into clean, factual CRM data.
 
 RULES
-- Use only the supplied text. Never infer or invent employers, schools,
+- ${SUPPLIED_DATA_ONLY_GUARD} Never infer or invent employers, schools,
   credentials, dates, locations, skills, graduation status, nationality, visa
   status, or job-search intent.
 - Remove duplicated UI labels, follower/connection counts, navigation text,
@@ -1459,9 +1399,12 @@ Return ONLY valid JSON:
 Do not invent facts. Keep reasoningSummary to 2-4 sentences and ask at most two
 questions that resolve the highest-impact missing information.`;
 
+  // Lead scoring is a high-volume queued task. The explicit rubric and
+  // deterministic post-processing below keep it calibrated on the cheap Flash
+  // tier while avoiding unnecessary spend on every captured profile.
   const assessment = await extractStructured<LeadQualificationAssessment>(prompt, env, {
     agent: 'lead-scorer',
-    tier: 'fast',
+    tier: 'cheap',
   });
   if (!assessment) return null;
 

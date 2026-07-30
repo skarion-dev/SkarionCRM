@@ -550,6 +550,97 @@ export interface Prospect extends Lead {
   claimExpiresAt: string | null;
 }
 
+export interface ReportingSeriesItem {
+  label: string;
+  value: number;
+  secondaryValue?: number;
+  currency?: string;
+}
+
+export interface DashboardSummaryMineTask {
+  id: string;
+  title: string;
+  dueDate: string | null;
+  priority: string;
+  type: string | null;
+}
+
+export interface DashboardSummaryOutreachDue {
+  leadId: string;
+  channel: string;
+  channelStage: string;
+  nextFollowupAt: string | null;
+  leadName: string;
+  journeyStage: string | null;
+}
+
+export interface DashboardSummaryRecentLead {
+  id: string;
+  name: string;
+  email: string | null;
+  journeyStage: string | null;
+  status: string | null;
+  createdAt: string;
+}
+
+export interface DashboardSummary {
+  scope: 'team' | 'mine';
+  generatedAt: string;
+  reportingWindowDays: number;
+  totals: {
+    leads: number;
+    contacts: number;
+    companies: number;
+    opportunities: number;
+    openTasks: number;
+    overdueTasks: number;
+    activitiesInWindow: number;
+    leadsCreatedInWindow: number;
+    averageLeadScore: number | null;
+    linkedinConversations: number;
+    linkedinMessages: number;
+    leadsWithLinkedinConversations: number;
+    lastLinkedinMessageAt: string | null;
+  };
+  leadsByStatus: ReportingSeriesItem[];
+  leadsBySource: ReportingSeriesItem[];
+  leadClassifications: ReportingSeriesItem[];
+  opportunitiesByStage: ReportingSeriesItem[];
+  tasksByPriority: ReportingSeriesItem[];
+  recentLeads: Array<{
+    name: string;
+    company: string | null;
+    status: string;
+    source: string;
+    createdAt: string;
+  }>;
+  recentLinkedinConversations: Array<{
+    leadName: string;
+    messageCount: number;
+    outboundCount: number;
+    lastMessageAt: string;
+    lastMessageFromUs: boolean;
+    lastMessagePreview: string;
+  }>;
+  upcomingOpportunities: Array<{
+    name: string;
+    stage: string;
+    amount: number | null;
+    currency: string;
+    probability: number | null;
+    expectedCloseDate: string | null;
+  }>;
+  prospectsPendingReview: number;
+  mine: {
+    openTasks: number;
+    overdueTasks: number;
+    dueTodayTasks: number;
+    tasks: DashboardSummaryMineTask[];
+    outreachDue: DashboardSummaryOutreachDue[];
+    recentAcceptedLeads: DashboardSummaryRecentLead[];
+  };
+}
+
 export interface ProspectImportJob {
   id: string;
   batchId: string | null;

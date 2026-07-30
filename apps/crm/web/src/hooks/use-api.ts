@@ -16,6 +16,7 @@ import {
   type TagDefinition,
   type Prospect,
   type ProspectImportJob,
+  type DashboardSummary,
   type WorkflowRule,
   getLeadChannels,
   logOutreachAction,
@@ -1330,6 +1331,26 @@ export function useUploadAttachment(leadId: string) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['attachments', leadId] });
     },
+  });
+}
+
+// One request powers the whole dashboard — no per-collection client fetches.
+// Polls every 60s so claim/task state stays fresh without a manual refresh.
+export function useDashboardSummary() {
+  return useQuery({
+    queryKey: ['dashboard', 'summary'],
+    queryFn: async () => {
+      try {
+        return await crmFetch<DashboardSummary>('/api/dashboard/summary');
+      } catch (err) {
+        if (err instanceof Error && 'status' in err && err.status === 401) {
+          redirectToLogin();
+        }
+        throw err;
+      }
+    },
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
   });
 }
 
