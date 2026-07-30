@@ -1588,11 +1588,20 @@ export default function LeadsPage() {
                     {lead.source.replace(/_/g, ' ')}
                   </td>
                   <td className="px-4 py-3 text-slate-600">
-                    {canManage
-                      ? crmUsers.find((u) => u.id === lead.ownerId)?.displayName || '—'
-                      : lead.ownerId === currentUserId
-                        ? 'Me'
-                        : 'Team member'}
+                    {lead.capturedByApiKeyLabel ? (
+                      <span
+                        className="inline-flex rounded-full bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700"
+                        title="API key used to capture this lead"
+                      >
+                        {lead.capturedByApiKeyLabel}
+                      </span>
+                    ) : canManage ? (
+                      crmUsers.find((u) => u.id === lead.ownerId)?.displayName || '—'
+                    ) : lead.ownerId === currentUserId ? (
+                      'Me'
+                    ) : (
+                      'Team member'
+                    )}
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap text-slate-500">
                     <CandidateCreatedAt createdAt={lead.createdAt} location={lead.location} />

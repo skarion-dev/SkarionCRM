@@ -333,6 +333,12 @@ export const leads = crmSchema.table(
     journeyStage: leadJourneyStageEnum('journey_stage').default('new').notNull(),
     notes: text('notes'),
     ownerId: uuid('owner_id').notNull(),
+    // The identity user remains the permission-bearing owner. These fields
+    // preserve which named extension key actually captured the profile so
+    // the CRM can show operational ownership without putting a label into a
+    // UUID column.
+    capturedByApiKeyId: uuid('captured_by_api_key_id'),
+    capturedByApiKeyLabel: text('captured_by_api_key_label'),
     convertedToContactId: uuid('converted_to_contact_id'),
     convertedToCompanyId: uuid('converted_to_company_id'),
     convertedAt: timestamp('converted_at', { withTimezone: true }),
@@ -423,6 +429,8 @@ export const leadProfileCaptures = crmSchema.table(
       .notNull()
       .references(() => leads.id, { onDelete: 'cascade' }),
     capturedBy: uuid('captured_by').notNull(),
+    capturedByApiKeyId: uuid('captured_by_api_key_id'),
+    capturedByApiKeyLabel: text('captured_by_api_key_label'),
     source: text('source').default('linkedin-extension').notNull(),
     payload: jsonb('payload').notNull(),
     payloadHash: text('payload_hash'),

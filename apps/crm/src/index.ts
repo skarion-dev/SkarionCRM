@@ -520,7 +520,8 @@ async function reviewProspect(
   actorUserId: string,
   disposition: ProspectDisposition,
   profile: Record<string, unknown> | null,
-  expectedVersion?: number
+  expectedVersion?: number,
+  extensionKey?: ResolvedExtensionKey
 ): Promise<typeof schema.leads.$inferSelect> {
   if (expectedVersion && lead.rowVersion !== expectedVersion) {
     throw new Error('PROSPECT_VERSION_CONFLICT');
@@ -605,6 +606,8 @@ async function reviewProspect(
       workspaceId: lead.workspaceId,
       leadId: lead.id,
       capturedBy: actorUserId,
+      capturedByApiKeyId: extensionKey?.keyId ?? null,
+      capturedByApiKeyLabel: extensionKey?.label ?? null,
       payload: profile,
       payloadHash: await sha256Hex(payloadText),
     });
@@ -649,6 +652,13 @@ async function reviewProspect(
       status: legacy.status,
       outreachStatus: legacy.outreachStatus,
       tags,
+      ...(extensionKey
+        ? {
+            ownerId: extensionKey.userId,
+            capturedByApiKeyId: extensionKey.keyId,
+            capturedByApiKeyLabel: extensionKey.label,
+          }
+        : {}),
       updatedAt: now,
     })
     .where(
@@ -1343,14 +1353,21 @@ function readExtensionKey(c: { req: { header: (name: string) => string | undefin
  * Uses raw SQL because identity.api_keys lives in the identity schema, which
  * this Worker's Drizzle client isn't bound to.
  */
+interface ResolvedExtensionKey {
+  keyId: string;
+  userId: string;
+  email: string;
+  label: string;
+}
+
 async function resolveExtensionKeyOwner(
   db: CrmDb,
   key: string
-): Promise<{ userId: string; email: string } | null> {
+): Promise<ResolvedExtensionKey | null> {
   if (!key) return null;
   const keyHash = await sha256Hex(key);
   const res = await db.execute(sql`
-    SELECT id, user_id, email
+    SELECT id, user_id, email, label
     FROM identity.api_keys
     WHERE key_hash = ${keyHash} AND revoked_at IS NULL
     LIMIT 1
@@ -1361,7 +1378,12 @@ async function resolveExtensionKeyOwner(
   await db.execute(sql`
     UPDATE identity.api_keys SET last_used_at = now() WHERE id = ${row.id as string}
   `);
-  return { userId: row.user_id as string, email: row.email as string };
+  return {
+    keyId: row.id as string,
+    userId: row.user_id as string,
+    email: row.email as string,
+    label: row.label as string,
+  };
 }
 
 /**
@@ -1400,11 +1422,12 @@ async function enrichExtensionLead(
   existing: typeof schema.leads.$inferSelect,
   body: Record<string, unknown>,
   linkedinUrl: string | null,
-  actorUserId: string
+  extensionKey: ResolvedExtensionKey
 ): Promise<{
   lead: typeof schema.leads.$inferSelect;
   enrichedFields: string[];
 }> {
+  const actorUserId = extensionKey.userId;
   const { patch, enrichedFields } = buildLeadEnrichmentPatch(existing, {
     firstName: typeof body.firstName === 'string' ? body.firstName : undefined,
     lastName: typeof body.lastName === 'string' ? body.lastName : undefined,
@@ -1431,6 +1454,9 @@ async function enrichExtensionLead(
   const databasePatch = {
     ...patch,
     tags,
+    ownerId: extensionKey.userId,
+    capturedByApiKeyId: extensionKey.keyId,
+    capturedByApiKeyLabel: extensionKey.label,
     profileCaptureStatus: 'captured' as const,
     lastCapturedAt: now,
     ...(promotedFromProspect
@@ -1664,7 +1690,7 @@ app.post('/extension/leads', async (c) => {
       .where(eq(schema.leads.idempotencyKey, idempotencyKey))
       .limit(1);
     if (prior) {
-      const enriched = await enrichExtensionLead(db, prior, body, linkedinUrl, ownerId);
+      const enriched = await enrichExtensionLead(db, prior, body, linkedinUrl, resolved);
       const [aiAssessment] = await db
         .select()
         .from(schema.leadAiAssessments)
@@ -1700,7 +1726,7 @@ app.post('/extension/leads', async (c) => {
         200
       );
     }
-    const enriched = await enrichExtensionLead(db, exact.record, body, linkedinUrl, ownerId);
+    const enriched = await enrichExtensionLead(db, exact.record, body, linkedinUrl, resolved);
     const [aiAssessment] = await db
       .select()
       .from(schema.leadAiAssessments)
@@ -1723,7 +1749,7 @@ app.post('/extension/leads', async (c) => {
     linkedinUrl,
   });
   if (pendingProspect) {
-    const enriched = await enrichExtensionLead(db, pendingProspect, body, linkedinUrl, ownerId);
+    const enriched = await enrichExtensionLead(db, pendingProspect, body, linkedinUrl, resolved);
     const [aiAssessment] = await db
       .select()
       .from(schema.leadAiAssessments)
@@ -1749,7 +1775,13 @@ app.post('/extension/leads', async (c) => {
     linkedinUrl,
   });
   if (enrichmentCandidate) {
-    const enriched = await enrichExtensionLead(db, enrichmentCandidate, body, linkedinUrl, ownerId);
+    const enriched = await enrichExtensionLead(
+      db,
+      enrichmentCandidate,
+      body,
+      linkedinUrl,
+      resolved
+    );
     const [aiAssessment] = await db
       .select()
       .from(schema.leadAiAssessments)
@@ -1804,6 +1836,8 @@ app.post('/extension/leads', async (c) => {
     profileCaptureStatus: 'captured' as const,
     lastCapturedAt: new Date(),
     ownerId,
+    capturedByApiKeyId: resolved.keyId,
+    capturedByApiKeyLabel: resolved.label,
     idempotencyKey,
   };
 
@@ -1822,7 +1856,7 @@ app.post('/extension/leads', async (c) => {
     if (code === '23505') {
       const raced = await findExactMatch(db, { linkedinUrl, email, phone });
       if (raced && raced.entityType === 'lead') {
-        const enriched = await enrichExtensionLead(db, raced.record, body, linkedinUrl, ownerId);
+        const enriched = await enrichExtensionLead(db, raced.record, body, linkedinUrl, resolved);
         const [aiAssessment] = await db
           .select()
           .from(schema.leadAiAssessments)
@@ -1849,7 +1883,13 @@ app.post('/extension/leads', async (c) => {
     action: 'create',
     resourceType: 'lead',
     resourceId: result.id,
-    after: { ...data, capturedVia: 'linkedin-extension', keyAttributed: !!resolved },
+    after: {
+      ...data,
+      capturedVia: 'linkedin-extension',
+      keyAttributed: true,
+      apiKeyId: resolved.keyId,
+      apiKeyLabel: resolved.label,
+    },
     app: 'crm',
   });
   let finalResult = result;
@@ -1880,6 +1920,7 @@ app.post('/extension/leads', async (c) => {
       ownerId,
       keyAttributed: !!resolved,
       ownerEmail: resolved?.email ?? null,
+      ownerApiKeyLabel: resolved.label,
     },
     201
   );
@@ -1988,6 +2029,8 @@ app.post('/extension/prospects/review', async (c) => {
         linkedinProfileKey: profileKey,
         source: 'linkedin',
         ownerId: resolved.userId,
+        capturedByApiKeyId: resolved.keyId,
+        capturedByApiKeyLabel: resolved.label,
         reviewState: 'pending',
         profileCaptureStatus: 'processing',
         tags: initialTags,
@@ -2007,7 +2050,8 @@ app.post('/extension/prospects/review', async (c) => {
       resolved.userId,
       body.disposition,
       profile,
-      typeof body.rowVersion === 'number' ? body.rowVersion : undefined
+      typeof body.rowVersion === 'number' ? body.rowVersion : undefined,
+      resolved
     );
     if (reviewed.reviewState === 'accepted' && !isLeadHoldingStage(reviewed.journeyStage)) {
       c.executionCtx.waitUntil(
@@ -5401,6 +5445,7 @@ app.get('/api/leads/export.csv', async (c) => {
     'source',
     'tags',
     'notes',
+    'capturedByApiKeyLabel',
     'createdAt',
     'updatedAt',
   ];
@@ -5423,6 +5468,7 @@ app.get('/api/leads/export.csv', async (c) => {
         row.source,
         normalizeTagNames(row.tags).join(' | '),
         row.notes,
+        row.capturedByApiKeyLabel,
         row.createdAt ? new Date(row.createdAt).toISOString() : '',
         row.updatedAt ? new Date(row.updatedAt).toISOString() : '',
       ]

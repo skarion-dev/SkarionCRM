@@ -149,7 +149,7 @@ export const LEAD_SORT_COLUMNS: Record<string, any> = {
   linkedinUrl: schema.leads.linkedinUrl,
   tags: sql`${schema.leads.tags}::text`,
   source: schema.leads.source,
-  ownerId: schema.leads.ownerId,
+  ownerId: sql`lower(coalesce(${schema.leads.capturedByApiKeyLabel}, ${schema.leads.ownerId}::text))`,
   status: schema.leads.journeyStage,
   journeyStage: schema.leads.journeyStage,
   score: schema.leadAiAssessments.overallScore,

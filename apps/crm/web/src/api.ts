@@ -528,6 +528,8 @@ export interface Lead {
   journeyStage: LeadJourneyStage;
   notes: string | null;
   ownerId: string;
+  capturedByApiKeyId: string | null;
+  capturedByApiKeyLabel: string | null;
   convertedToContactId: string | null;
   convertedToCompanyId: string | null;
   convertedAt: string | null;

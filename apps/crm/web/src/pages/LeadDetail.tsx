@@ -38,6 +38,7 @@ import {
   GraduationCap,
   Briefcase,
   MapPin,
+  KeyRound,
 } from 'lucide-react';
 import { cn } from '../lib/utils.js';
 import { useEffect, useState } from 'react';
@@ -675,6 +676,25 @@ export default function LeadDetail() {
                 </div>
               </div>
             </div>
+
+            {lead.capturedByApiKeyLabel && (
+              <div className="flex items-start gap-2.5">
+                <div className="w-8 h-8 rounded-md bg-indigo-100 flex items-center justify-center shrink-0">
+                  <KeyRound size={14} className="text-indigo-600" />
+                </div>
+                <div>
+                  <div className="text-xs font-medium text-slate-400 uppercase tracking-wider">
+                    Owner
+                  </div>
+                  <div
+                    className="text-sm font-medium text-indigo-700"
+                    title="API key used to capture this lead"
+                  >
+                    {lead.capturedByApiKeyLabel}
+                  </div>
+                </div>
+              </div>
+            )}
 
             {lead.linkedinUrl && (
               <div className="flex items-start gap-2.5">
