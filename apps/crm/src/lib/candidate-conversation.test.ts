@@ -1,10 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildCandidateLeadActionPrompt,
+  buildCandidateLeadActionSystemInstruction,
   buildCandidateConversationPrompt,
   buildCandidateConversationSystemInstruction,
   buildCandidateIdentitySystemInstruction,
   candidateContextReference,
+  describeCandidateLeadAction,
+  detectCandidateLeadActionIntent,
+  parseCandidateLeadActionRequest,
+  parseDirectCandidateJourneyAction,
   parseCandidateConversationRequest,
+  sanitizeCandidateLeadAction,
   sanitizeCandidateConversationIdentity,
   sanitizeCandidateDraft,
   type CandidateConversationContext,
@@ -125,5 +132,70 @@ describe('Candidate conversation agent', () => {
     expect(candidateContextReference(leadId)).toEqual([
       { resourceType: 'candidate_lead', resourceId: leadId },
     ]);
+  });
+
+  it('detects explicit CRM commands without treating ordinary drafting text as a mutation', () => {
+    expect(detectCandidateLeadActionIntent('That was a bad reply, disqualify this lead')).toBe(
+      true
+    );
+    expect(parseDirectCandidateJourneyAction('Move this lead to engaged')).toEqual({
+      journeyStage: 'engaged',
+      updates: {},
+      noteToAppend: null,
+    });
+    expect(parseDirectCandidateJourneyAction('Update this lead company to New Company')).toBeNull();
+    expect(detectCandidateLeadActionIntent("Don't disqualify this lead; draft a reply")).toBe(
+      false
+    );
+    expect(detectCandidateLeadActionIntent('Draft a reply about updating their resume')).toBe(
+      false
+    );
+  });
+
+  it('strictly sanitizes supported lead changes and rejects unsupported fields', () => {
+    const action = sanitizeCandidateLeadAction({
+      journeyStage: 'disqualified',
+      updates: {
+        companyName: ' Example Co ',
+        email: 'candidate@example.com',
+        ownerId: 'should-not-pass',
+      },
+      noteToAppend: 'Candidate is not currently eligible.',
+    });
+    expect(action).toEqual({
+      journeyStage: 'disqualified',
+      updates: {
+        companyName: 'Example Co',
+        email: 'candidate@example.com',
+      },
+      noteToAppend: 'Candidate is not currently eligible.',
+    });
+    expect(describeCandidateLeadAction(action!)).toContain('Journey stage → disqualified');
+    expect(describeCandidateLeadAction(action!)).toContain('Company → Example Co');
+    expect(
+      parseCandidateLeadActionRequest({
+        leadId,
+        action,
+      })
+    ).toEqual({ leadId, action });
+    expect(
+      parseCandidateLeadActionRequest({
+        leadId: 'not-a-uuid',
+        action,
+      })
+    ).toBeNull();
+  });
+
+  it('constrains the AI action extractor to explicit, supported CRM edits', () => {
+    expect(buildCandidateLeadActionSystemInstruction()).toContain(
+      'Extract only changes the operator explicitly requested'
+    );
+    expect(buildCandidateLeadActionSystemInstruction()).toContain(
+      'Do not change the lead ID, ownership, source, LinkedIn URL'
+    );
+    const prompt = buildCandidateLeadActionPrompt(context, 'Update the company to Example Co');
+    expect(prompt).toContain('<lead>');
+    expect(prompt).toContain('<command>');
+    expect(prompt).toContain('Update the company to Example Co');
   });
 });

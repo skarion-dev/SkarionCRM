@@ -13,6 +13,7 @@ import {
   type Activity,
   type LeadAttachment,
   type ImportBatch,
+  type LeadJourneyStage,
   type TagDefinition,
   type Prospect,
   type ProspectImportJob,
@@ -802,6 +803,33 @@ export interface CandidateChatContext {
   };
 }
 
+export interface CandidateLeadAction {
+  journeyStage: LeadJourneyStage | null;
+  updates: Partial<
+    Record<
+      | 'firstName'
+      | 'lastName'
+      | 'email'
+      | 'phone'
+      | 'headline'
+      | 'location'
+      | 'about'
+      | 'experience'
+      | 'education'
+      | 'skills'
+      | 'currentRole'
+      | 'currentRoleDates'
+      | 'openToWork'
+      | 'yearsExperience'
+      | 'connectionDegree'
+      | 'companyName'
+      | 'companyDomain',
+      string | number | boolean | null
+    >
+  >;
+  noteToAppend: string | null;
+}
+
 export function useSummarizeLead(id: string) {
   return useMutation({
     mutationFn: async () => {
@@ -990,6 +1018,31 @@ export function useCandidateChatContext(leadId: string | null) {
     () => crmFetch<CandidateChatContext>(`/api/candidate-chat/context/${leadId}`),
     Boolean(leadId)
   );
+}
+
+export function useApplyCandidateLeadAction(leadId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (action: CandidateLeadAction) => {
+      if (!leadId) throw new Error('Match a lead before changing CRM data.');
+      return crmFetch<{
+        success: true;
+        lead: { id: string; name: string; journeyStage: LeadJourneyStage };
+        summary: string;
+      }>('/api/candidate-chat/lead-action', {
+        method: 'POST',
+        body: JSON.stringify({ leadId, action }),
+      });
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['candidate-chat', 'context', leadId ?? ''] }),
+        qc.invalidateQueries({ queryKey: ['leads'] }),
+        qc.invalidateQueries({ queryKey: ['leads-infinite'] }),
+        leadId ? qc.invalidateQueries({ queryKey: ['leads', leadId] }) : Promise.resolve(),
+      ]);
+    },
+  });
 }
 
 export function useCandidateChatHistory(leadId: string | null) {

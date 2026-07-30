@@ -106,13 +106,21 @@ import {
   type ReportingSeriesItem,
 } from './lib/ceo-reporting.js';
 import {
+  buildCandidateLeadActionPrompt,
+  buildCandidateLeadActionSystemInstruction,
   buildCandidateConversationPrompt,
   buildCandidateConversationSystemInstruction,
   buildCandidateIdentitySystemInstruction,
   candidateContextReference,
+  describeCandidateLeadAction,
+  detectCandidateLeadActionIntent,
+  parseCandidateLeadActionRequest,
+  parseDirectCandidateJourneyAction,
   parseCandidateConversationRequest,
+  sanitizeCandidateLeadAction,
   sanitizeCandidateConversationIdentity,
   sanitizeCandidateDraft,
+  type CandidateLeadAction,
   type CandidateConversationContext,
   type CandidateConversationIdentity,
   type CandidateConversationMessage,
@@ -9166,6 +9174,141 @@ app.get('/api/candidate-chat/context/:leadId', async (c) => {
   });
 });
 
+app.post('/api/candidate-chat/lead-action', async (c) => {
+  if (!c.get('isSuperadmin')) return c.json({ error: 'Forbidden.' }, 403);
+  const request = parseCandidateLeadActionRequest(await c.req.json().catch(() => null));
+  if (!request) return c.json({ error: 'A valid confirmed lead action is required.' }, 400);
+
+  const db = getDb(c.env, schema) as CrmDb;
+  const userId = c.get('userId');
+  const [existing] = await db
+    .select()
+    .from(schema.leads)
+    .where(and(eq(schema.leads.id, request.leadId), isNull(schema.leads.deletedAt)))
+    .limit(1);
+  if (!existing) return c.json({ error: 'Lead not found.' }, 404);
+
+  const update: Record<string, unknown> = { ...request.action.updates };
+  if (typeof update.yearsExperience === 'number') {
+    update.yearsExperience = String(update.yearsExperience);
+  }
+  if (request.action.noteToAppend) {
+    const note = `[Candidate Replies · ${new Date().toISOString()}] ${request.action.noteToAppend}`;
+    update.notes = existing.notes?.trim() ? `${existing.notes.trim()}\n\n${note}` : note;
+  }
+  if (request.action.journeyStage) {
+    const legacy = legacyFieldsForJourney(request.action.journeyStage);
+    update.journeyStage = request.action.journeyStage;
+    update.status = legacy.status;
+    update.outreachStatus = legacy.outreachStatus;
+    update.tags = syncHoldingTagsForJourney(existing.tags, request.action.journeyStage);
+    if (isLeadHoldingStage(request.action.journeyStage)) {
+      await ensureTagDefinitions(
+        db,
+        [request.action.journeyStage === 'future' ? 'Future' : 'Foreign National'],
+        userId,
+        true
+      );
+    }
+  }
+  update.updatedAt = new Date();
+
+  const [result] = await db
+    .update(schema.leads)
+    .set(update)
+    .where(eq(schema.leads.id, existing.id))
+    .returning();
+  if (!result) return c.json({ error: 'The lead could not be updated.' }, 500);
+
+  const profileFields = [
+    'headline',
+    'location',
+    'about',
+    'experience',
+    'education',
+    'skills',
+    'currentRole',
+    'currentRoleDates',
+    'openToWork',
+    'yearsExperience',
+  ];
+  if (
+    profileFields.some((field) => field in request.action.updates) &&
+    hasLeadProfileEvidence(result)
+  ) {
+    await enqueueLeadProfileCleanup(db, result.id);
+  }
+
+  await withAudit(db, schema.auditLog, {
+    actorUserId: userId,
+    action: 'edit',
+    resourceType: 'lead',
+    resourceId: result.id,
+    before: existing,
+    after: {
+      ...result,
+      candidateRepliesAction: request.action,
+    },
+    app: 'crm',
+  });
+
+  if (isLeadHoldingStage(result.journeyStage) && !isLeadHoldingStage(existing.journeyStage)) {
+    await db
+      .delete(schema.leadScoreJobs)
+      .where(
+        and(
+          eq(schema.leadScoreJobs.leadId, result.id),
+          inArray(schema.leadScoreJobs.status, ['pending', 'failed'])
+        )
+      );
+  } else if (
+    isLeadHoldingStage(existing.journeyStage) &&
+    isLeadActivationStage(result.journeyStage)
+  ) {
+    await enqueueLeadScoring(db, result.id);
+    c.executionCtx.waitUntil(
+      Promise.all([
+        autoCreateLeadChannels(db, result),
+        triggerWorkflowEvent(c.env, 'lead_created', {
+          id: result.id,
+          source: result.source,
+          ownerId: result.ownerId,
+        }),
+        result.source === 'linkedin'
+          ? generateAndSaveLeadAiAssessment(db, result, c.env).catch((error) => {
+              console.error('Candidate Replies lead activation assessment failed:', error);
+              return null;
+            })
+          : Promise.resolve(null),
+      ]).then(() => undefined)
+    );
+  }
+
+  c.executionCtx.waitUntil(
+    ai
+      .autoEmbed(
+        db,
+        schema,
+        'lead',
+        result.id,
+        `${result.firstName} ${result.lastName} ${result.email ?? ''} ${result.companyName ?? ''} ${result.notes ?? ''}`,
+        userId,
+        c.env
+      )
+      .catch(() => {})
+  );
+
+  return c.json({
+    success: true,
+    lead: {
+      id: result.id,
+      name: `${result.firstName} ${result.lastName}`.trim(),
+      journeyStage: result.journeyStage,
+    },
+    summary: describeCandidateLeadAction(request.action),
+  });
+});
+
 app.get('/api/candidate-chat/history', async (c) => {
   if (!c.get('isSuperadmin')) return c.json({ error: 'Forbidden.' }, 403);
   const leadId = c.req.query('leadId') ?? '';
@@ -9262,6 +9405,25 @@ app.post('/api/candidate-chat', async (c) => {
     role: row.role === 'candidate_assistant' ? ('assistant' as const) : ('user' as const),
     content: row.content,
   }));
+  const leadActionIntent =
+    Boolean(request.leadId) && detectCandidateLeadActionIntent(request.message);
+  let proposedLeadAction: CandidateLeadAction | null = null;
+  if (leadActionIntent) {
+    proposedLeadAction = parseDirectCandidateJourneyAction(request.message);
+    if (!proposedLeadAction) {
+      const extractedAction = await ai.extractStructured<Record<string, unknown>>(
+        buildCandidateLeadActionPrompt(context, request.message),
+        aiEnv,
+        {
+          tier: 'cheap',
+          agent: 'candidate-conversation',
+          temperature: 0,
+          systemInstruction: buildCandidateLeadActionSystemInstruction(),
+        }
+      );
+      proposedLeadAction = sanitizeCandidateLeadAction(extractedAction);
+    }
+  }
   const prompt = buildCandidateConversationPrompt(context, request.message, historyForPrompt);
   const contextIds = candidateContextReference(lead.id);
 
@@ -9309,6 +9471,53 @@ app.post('/api/candidate-chat', async (c) => {
           channels: context.channels.length,
         },
       });
+
+      if (leadActionIntent) {
+        if (!proposedLeadAction) {
+          throw new Error(
+            'I could not identify a supported CRM change. State the exact field or journey stage to update.'
+          );
+        }
+        const summary = describeCandidateLeadAction(proposedLeadAction);
+        answer = 'Review this CRM change, then apply it if everything looks right.';
+        await writeEvent({
+          type: 'action',
+          action: proposedLeadAction,
+          summary,
+        });
+        if (!(await writeEvent({ type: 'delta', delta: answer }))) return;
+
+        const [saved] = await db
+          .insert(schema.chatMessages)
+          .values({
+            userId,
+            role: 'candidate_assistant',
+            content: `${answer}\n${summary}`,
+            contextIds,
+          })
+          .returning({
+            id: schema.chatMessages.id,
+            createdAt: schema.chatMessages.createdAt,
+          });
+        await withAudit(db, schema.auditLog, {
+          actorUserId: userId,
+          action: 'generate',
+          resourceType: 'candidate_lead_action_proposal',
+          resourceId: saved?.id ?? 'streamed',
+          after: {
+            leadId: lead.id,
+            action: proposedLeadAction,
+            applied: false,
+          },
+          app: 'crm',
+        });
+        await writeEvent({
+          type: 'done',
+          id: saved?.id ?? crypto.randomUUID(),
+          createdAt: saved?.createdAt?.toISOString() ?? new Date().toISOString(),
+        });
+        return;
+      }
 
       if (request.outputMode === 'reply_only') {
         const result = await ai.extractStructured<{ draft?: unknown }>(prompt, aiEnv, {
@@ -9384,7 +9593,11 @@ app.post('/api/candidate-chat', async (c) => {
       console.error('Candidate conversation generation failed:', error);
       await writeEvent({
         type: 'error',
-        error: 'The Candidate Conversation Agent could not draft this reply. Please try again.',
+        error: leadActionIntent
+          ? error instanceof Error && error.message.startsWith('I could not identify')
+            ? error.message
+            : 'The Candidate Conversation Agent could not safely prepare this CRM change. Please try again.'
+          : 'The Candidate Conversation Agent could not draft this reply. Please try again.',
       });
     } finally {
       try {

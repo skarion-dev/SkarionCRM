@@ -4,21 +4,32 @@ import {
   ArrowLeft,
   Bot,
   Check,
+  CheckCircle2,
   Copy,
   Database,
+  ExternalLink,
   GraduationCap,
   Loader2,
   MessageSquareText,
+  Pencil,
   ScanSearch,
   Send,
+  ShieldCheck,
   Sparkles,
   Square,
+  X,
   User,
 } from 'lucide-react';
 import { crmStream } from '../../api.js';
-import { useCandidateChatContext, type CeoChatMessage } from '../../hooks/use-api.js';
+import {
+  useApplyCandidateLeadAction,
+  useCandidateChatContext,
+  type CandidateLeadAction,
+  type CeoChatMessage,
+} from '../../hooks/use-api.js';
 import { showToast } from '../../stores/toast.js';
-import { journeyBadgeClass, journeyLabel } from '../../lib/leadJourney.js';
+import { LEAD_JOURNEY_STAGES, journeyBadgeClass, journeyLabel } from '../../lib/leadJourney.js';
+import type { LeadJourneyStage } from '../../api.js';
 import { cn } from '../../lib/utils.js';
 
 interface ResolvedCandidate {
@@ -29,8 +40,81 @@ interface ResolvedCandidate {
   confidence: 'high' | 'medium' | 'low';
 }
 
+interface LeadActionState {
+  action: CandidateLeadAction;
+  summary: string;
+  status: 'pending' | 'applying' | 'applied' | 'dismissed' | 'error';
+  error?: string;
+}
+
 function messageId() {
   return `candidate-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function LeadActionCard({
+  state,
+  onApply,
+  onDismiss,
+}: {
+  state: LeadActionState;
+  onApply: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div
+      className={cn(
+        'mt-3 rounded-xl border p-3',
+        state.status === 'applied'
+          ? 'border-emerald-200 bg-emerald-50'
+          : state.status === 'dismissed'
+            ? 'border-slate-200 bg-white'
+            : state.status === 'error'
+              ? 'border-red-200 bg-red-50'
+              : 'border-violet-200 bg-white'
+      )}
+    >
+      <div className="flex items-center gap-2 font-medium text-slate-900">
+        {state.status === 'applied' ? (
+          <CheckCircle2 size={16} className="text-emerald-600" />
+        ) : (
+          <ShieldCheck size={16} className="text-violet-600" />
+        )}
+        {state.status === 'applied'
+          ? 'CRM updated'
+          : state.status === 'dismissed'
+            ? 'CRM change cancelled'
+            : 'Confirm CRM change'}
+      </div>
+      <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-slate-600">{state.summary}</p>
+      {state.error && <p className="mt-2 text-xs text-red-700">{state.error}</p>}
+      {(state.status === 'pending' || state.status === 'error') && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={onApply}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-violet-700"
+          >
+            <Check size={13} />
+            Apply to lead
+          </button>
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+          >
+            <X size={13} />
+            Keep unchanged
+          </button>
+        </div>
+      )}
+      {state.status === 'applying' && (
+        <div className="mt-3 flex items-center gap-2 text-xs text-violet-700">
+          <Loader2 size={13} className="animate-spin" />
+          Applying and refreshing CRM data…
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
@@ -42,10 +126,12 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
   const [streamStatus, setStreamStatus] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [leadActions, setLeadActions] = useState<Record<string, LeadActionState>>({});
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const context = useCandidateChatContext(resolvedCandidate?.id ?? null);
+  const applyLeadAction = useApplyCandidateLeadAction(resolvedCandidate?.id ?? null);
 
   useEffect(() => {
     scrollRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -65,6 +151,7 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
     setInput('');
     setError(null);
     setStreamStatus('');
+    setLeadActions({});
   };
 
   const sendMessage = async (request: string) => {
@@ -121,11 +208,13 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
           const dataLine = block.split(/\r?\n/).find((line) => line.startsWith('data:'));
           if (!dataLine) continue;
           const event = JSON.parse(dataLine.slice(5).trim()) as {
-            type: 'ready' | 'delta' | 'done' | 'error';
+            type: 'ready' | 'action' | 'delta' | 'done' | 'error';
             delta?: string;
             error?: string;
             id?: string;
             createdAt?: string;
+            action?: CandidateLeadAction;
+            summary?: string;
             lead?: {
               id: string;
               name: string;
@@ -145,6 +234,16 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
               });
             }
             setStreamStatus(replyOnly ? 'Drafting one copy-ready reply…' : 'Preparing strategy…');
+          } else if (event.type === 'action' && event.action && event.summary) {
+            setStreamStatus('Waiting for you to confirm the CRM change…');
+            setLeadActions((current) => ({
+              ...current,
+              [assistantId]: {
+                action: event.action as CandidateLeadAction,
+                summary: event.summary as string,
+                status: 'pending',
+              },
+            }));
           } else if (event.type === 'delta' && event.delta) {
             setStreamStatus(replyOnly ? 'Finalizing reply…' : 'Streaming guidance…');
             setMessages((current) =>
@@ -156,17 +255,28 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
             );
           } else if (event.type === 'done') {
             finished = true;
+            const savedId = event.id ?? assistantId;
             setMessages((current) =>
               current.map((message) =>
                 message.id === assistantId
                   ? {
                       ...message,
-                      id: event.id ?? message.id,
+                      id: savedId,
                       createdAt: event.createdAt ?? message.createdAt,
                     }
                   : message
               )
             );
+            if (savedId !== assistantId) {
+              setLeadActions((current) => {
+                const action = current[assistantId];
+                if (!action) return current;
+                const next = { ...current };
+                delete next[assistantId];
+                next[savedId] = action;
+                return next;
+              });
+            }
           } else if (event.type === 'error') {
             throw new Error(event.error || 'Could not draft the candidate reply.');
           }
@@ -198,6 +308,55 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
       () => setCopiedId((current) => (current === message.id ? null : current)),
       1500
     );
+  };
+
+  const confirmLeadAction = async (messageId: string) => {
+    const pending = leadActions[messageId];
+    if (!pending || (pending.status !== 'pending' && pending.status !== 'error')) return;
+    setLeadActions((current) => ({
+      ...current,
+      [messageId]: { ...pending, status: 'applying', error: undefined },
+    }));
+    try {
+      const result = await applyLeadAction.mutateAsync(pending.action);
+      setLeadActions((current) => ({
+        ...current,
+        [messageId]: { ...pending, status: 'applied', error: undefined },
+      }));
+      showToast(`Updated ${result.lead.name}`, 'success');
+    } catch (caught) {
+      const actionError =
+        caught instanceof Error ? caught.message : 'The CRM change could not be applied.';
+      setLeadActions((current) => ({
+        ...current,
+        [messageId]: { ...pending, status: 'error', error: actionError },
+      }));
+      showToast(actionError, 'error');
+    }
+  };
+
+  const dismissLeadAction = (messageId: string) => {
+    setLeadActions((current) => {
+      const pending = current[messageId];
+      return pending ? { ...current, [messageId]: { ...pending, status: 'dismissed' } } : current;
+    });
+  };
+
+  const updateStageDirectly = async (journeyStage: LeadJourneyStage) => {
+    if (!resolvedCandidate || journeyStage === context.data?.lead.journeyStage) return;
+    try {
+      const result = await applyLeadAction.mutateAsync({
+        journeyStage,
+        updates: {},
+        noteToAppend: null,
+      });
+      showToast(`${result.lead.name} moved to ${journeyLabel(journeyStage)}`, 'success');
+    } catch (caught) {
+      showToast(
+        caught instanceof Error ? caught.message : 'Could not update the lead stage.',
+        'error'
+      );
+    }
   };
 
   return (
@@ -290,6 +449,38 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
               {resolvedCandidate.confidence} confidence ·{' '}
               {resolvedCandidate.matchMethod.replaceAll('_', ' ')}
             </div>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
+            <label className="flex items-center gap-2 text-xs font-medium text-slate-600">
+              Lead stage
+              <select
+                value={context.data?.lead.journeyStage ?? ''}
+                onChange={(event) =>
+                  void updateStageDirectly(event.target.value as LeadJourneyStage)
+                }
+                disabled={!context.data || applyLeadAction.isPending}
+                className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-800 outline-none focus:border-violet-400 disabled:opacity-50"
+              >
+                {!context.data && <option value="">Loading…</option>}
+                {LEAD_JOURNEY_STAGES.map((stage) => (
+                  <option key={stage} value={stage}>
+                    {journeyLabel(stage)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <a
+              href={`/leads/${resolvedCandidate.id}`}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+            >
+              <Pencil size={12} />
+              Edit full lead
+              <ExternalLink size={11} />
+            </a>
+            <span className="text-[11px] text-slate-400">
+              Or type “set stage to engaged” / “update company to …”
+            </span>
           </div>
 
           <div className="mt-3 grid gap-2 border-t border-slate-100 pt-3 sm:grid-cols-4">
@@ -385,18 +576,26 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
                     message.content ? (
                       <>
                         <p className="whitespace-pre-wrap leading-6">{message.content}</p>
-                        <button
-                          type="button"
-                          onClick={() => void copyDraft(message)}
-                          title="Copy reply"
-                          className="absolute right-2 top-2 rounded-md p-2 text-slate-400 hover:bg-white hover:text-slate-700"
-                        >
-                          {copiedId === message.id ? (
-                            <Check size={15} className="text-emerald-600" />
-                          ) : (
-                            <Copy size={15} />
-                          )}
-                        </button>
+                        {leadActions[message.id] ? (
+                          <LeadActionCard
+                            state={leadActions[message.id]!}
+                            onApply={() => void confirmLeadAction(message.id)}
+                            onDismiss={() => dismissLeadAction(message.id)}
+                          />
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => void copyDraft(message)}
+                            title="Copy reply"
+                            className="absolute right-2 top-2 rounded-md p-2 text-slate-400 hover:bg-white hover:text-slate-700"
+                          >
+                            {copiedId === message.id ? (
+                              <Check size={15} className="text-emerald-600" />
+                            ) : (
+                              <Copy size={15} />
+                            )}
+                          </button>
+                        )}
                       </>
                     ) : (
                       <div className="flex items-center gap-2 py-1 text-slate-500">
@@ -435,7 +634,7 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
           onChange={(event) => setInput(event.target.value)}
           placeholder={
             resolvedCandidate
-              ? 'Paste their next message or ask for a revised reply…'
+              ? 'Paste their next message, request a reply, or update this lead…'
               : 'Paste the full LinkedIn conversation here, including the candidate name…'
           }
           rows={5}
@@ -464,7 +663,7 @@ export function CandidateConversationMode({ onBack }: { onBack: () => void }) {
               className="flex shrink-0 items-center gap-2 rounded-lg bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-40"
             >
               {resolvedCandidate ? <Sparkles size={15} /> : <ScanSearch size={15} />}
-              {resolvedCandidate ? 'Draft reply' : 'Find lead & draft'}
+              {resolvedCandidate ? 'Send' : 'Find lead & draft'}
               <Send size={14} />
             </button>
           )}
