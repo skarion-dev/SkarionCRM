@@ -225,6 +225,13 @@
       "when": 1785369500000,
       "tag": "0031_ai_usage_reasoning_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1785371000000,
+      "tag": "0032_gate_scoring_on_profile_capture",
+      "breakpoints": true
     }
   ]
 }

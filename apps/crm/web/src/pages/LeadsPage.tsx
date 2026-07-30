@@ -9,6 +9,8 @@ import {
   useCreateSavedSearch,
   useDeleteSavedSearch,
   useUpdateEntity,
+  useLeadScoringStatus,
+  useProspectEvents,
 } from '../hooks/use-api.js';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../stores/auth.js';
@@ -33,6 +35,10 @@ import {
   SlidersHorizontal,
   Bookmark,
   Loader2,
+  Bot,
+  CheckCircle2,
+  Clock3,
+  Gauge,
 } from 'lucide-react';
 import { cn } from '../lib/utils.js';
 import LeadForm from '../components/forms/LeadForm.js';
@@ -192,6 +198,8 @@ export default function LeadsPage() {
   const { data: batches } = useImportBatches();
   const { data: identityUsers } = useIdentityUsers(canManage);
   const { data: savedSearchesData } = useSavedSearches();
+  const { data: scoringStatus, isLoading: scoringStatusLoading } = useLeadScoringStatus();
+  useProspectEvents(true);
   const createSavedSearch = useCreateSavedSearch();
   const deleteSavedSearch = useDeleteSavedSearch();
   const updateLead = useUpdateEntity('leads');
@@ -206,6 +214,19 @@ export default function LeadsPage() {
   const total = firstPage?.total ?? 0;
   const loadedCount = leads.length;
   const statusCounts = firstPage?.statusCounts ?? {};
+  const scoring = scoringStatus?.summary;
+  const connectionsToday = scoringStatus?.connectionsToday;
+  const connectionProgress = connectionsToday
+    ? Math.min(100, Math.round((connectionsToday.mine / Math.max(1, connectionsToday.limit)) * 100))
+    : 0;
+  const scoringState =
+    (scoring?.processing ?? 0) > 0
+      ? 'Scoring now'
+      : (scoring?.retrying ?? 0) > 0
+        ? 'Retrying'
+        : (scoring?.waiting ?? 0) > 0
+          ? 'Waiting for next run'
+          : 'Queue clear';
 
   // Reset selection whenever the filtered/sorted set changes — the old
   // accumulated selection wouldn't make sense against a different result set.
@@ -482,6 +503,188 @@ export default function LeadsPage() {
           </button>
         </div>
       </div>
+
+      <section className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className="rounded-md bg-blue-50 p-2 text-blue-600">
+              <Bot size={18} />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-sm font-semibold text-slate-800">Lead Scoring Agent</h2>
+                <span
+                  className={cn(
+                    'rounded-full px-2 py-0.5 text-xs font-medium',
+                    scoringState === 'Scoring now'
+                      ? 'bg-blue-100 text-blue-700'
+                      : scoringState === 'Retrying'
+                        ? 'bg-amber-100 text-amber-700'
+                        : scoringState === 'Queue clear'
+                          ? 'bg-emerald-100 text-emerald-700'
+                          : 'bg-violet-100 text-violet-700'
+                  )}
+                >
+                  {scoringState}
+                </span>
+                <span className="text-xs text-slate-400">updates every 5 seconds</span>
+              </div>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Scores New and Ready to reach out leads only after profile capture and cleanup.
+                Uncaptured leads use zero AI tokens.
+              </p>
+            </div>
+          </div>
+          <div className="text-right text-xs text-slate-500">
+            {(scoring?.active ?? 0) > 0 ? (
+              <>
+                Estimated queue time{' '}
+                <span className="font-semibold text-slate-700">
+                  ~{scoring?.estimatedMinutes ?? 0} min
+                </span>
+              </>
+            ) : (
+              'Ready for captured profiles'
+            )}
+          </div>
+        </div>
+
+        <div className="grid gap-4 p-4 xl:grid-cols-[1.45fr_0.7fr_1fr]">
+          <div className="min-w-0">
+            <div className="mb-2 flex items-center justify-between gap-3 text-xs">
+              <span className="font-medium text-slate-700">
+                {scoringStatusLoading
+                  ? 'Loading scoring queue…'
+                  : `${scoring?.unscoredCaptured ?? 0} captured leads awaiting a score`}
+              </span>
+              <span className="text-slate-400">
+                {scoring?.progressPercent ?? 0}% of captured candidates scored
+              </span>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+              <div
+                className="h-full rounded-full bg-blue-600 transition-all duration-500"
+                style={{ width: `${scoring?.progressPercent ?? 0}%` }}
+              />
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {[
+                ['Captured & eligible', scoring?.capturedReady ?? 0],
+                ['Waiting for capture', scoring?.waitingForCapture ?? 0],
+                ['Queued / scoring', scoring?.active ?? 0],
+                ['Scored', scoring?.scored ?? 0],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-md bg-slate-50 px-3 py-2">
+                  <div className="text-lg font-semibold text-slate-800">{value}</div>
+                  <div className="text-xs text-slate-500">{label}</div>
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-slate-400">
+                Up to {scoringStatus?.cadence.batchSize ?? 30} leads every minute with{' '}
+                {scoringStatus?.cadence.concurrency ?? 10} parallel cheap-model workers.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setSortBy('score');
+                  setSortOrder('desc');
+                }}
+                className="inline-flex items-center gap-1.5 rounded-md border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100"
+              >
+                <Gauge size={14} /> Sort highest scores
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-md border border-slate-200 p-3">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <p className="text-xs font-medium text-slate-500">My LinkedIn connections today</p>
+                <p className="mt-1 text-2xl font-semibold text-slate-900">
+                  {connectionsToday?.mine ?? 0}
+                  <span className="text-sm font-normal text-slate-400">
+                    {' '}
+                    / {connectionsToday?.limit ?? 20}
+                  </span>
+                </p>
+              </div>
+              <Clock3
+                size={20}
+                className={cn(
+                  connectionProgress >= 100
+                    ? 'text-red-500'
+                    : connectionProgress >= 80
+                      ? 'text-amber-500'
+                      : 'text-blue-500'
+                )}
+              />
+            </div>
+            <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100">
+              <div
+                className={cn(
+                  'h-full rounded-full transition-all duration-500',
+                  connectionProgress >= 100
+                    ? 'bg-red-500'
+                    : connectionProgress >= 80
+                      ? 'bg-amber-500'
+                      : 'bg-blue-500'
+                )}
+                style={{ width: `${connectionProgress}%` }}
+              />
+            </div>
+            <p className="mt-2 text-xs text-slate-400">
+              Team today: {connectionsToday?.team ?? 0}. The 20/day number is a pacing guide, not an
+              enforced block.
+            </p>
+          </div>
+
+          <div className="min-w-0 rounded-md border border-slate-200">
+            <div className="flex items-center justify-between border-b border-slate-200 px-3 py-2">
+              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Live scoring queue
+              </span>
+              <span className="text-xs font-medium text-slate-500">
+                {scoring?.active ?? 0} total
+              </span>
+            </div>
+            <div className="max-h-36 overflow-y-auto">
+              {(scoringStatus?.queue.length ?? 0) === 0 ? (
+                <div className="flex items-center justify-center gap-2 px-3 py-8 text-xs text-slate-400">
+                  <CheckCircle2 size={15} className="text-emerald-500" />
+                  No captured leads waiting for scoring.
+                </div>
+              ) : (
+                scoringStatus?.queue.map((job, index) => (
+                  <div
+                    key={job.id}
+                    className="flex items-center justify-between gap-3 border-b border-slate-100 px-3 py-2 last:border-b-0"
+                  >
+                    <div className="min-w-0 truncate text-xs text-slate-700">
+                      <span className="mr-2 text-slate-400">{index + 1}</span>
+                      {job.leadNumber ? `${job.leadNumber} · ` : ''}
+                      {job.firstName} {job.lastName}
+                    </div>
+                    <span
+                      className={cn(
+                        'shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium capitalize',
+                        job.status === 'processing'
+                          ? 'bg-blue-100 text-blue-700'
+                          : job.status === 'failed'
+                            ? 'bg-amber-100 text-amber-700'
+                            : 'bg-slate-100 text-slate-600'
+                      )}
+                    >
+                      {job.status === 'failed' ? 'retrying' : job.status}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
 
       {/* Status filters */}
       <div className="flex flex-wrap gap-2">
@@ -1029,8 +1232,15 @@ export default function LeadsPage() {
                       </span>
                     ) : lead.scoreJobStatus === 'failed' ? (
                       <span className="text-xs font-medium text-amber-600">Retry queued</span>
+                    ) : lead.profileNormalizationStatus === 'processing' ||
+                      lead.profileNormalizationStatus === 'pending' ? (
+                      <span className="inline-flex items-center gap-1 text-xs text-slate-500">
+                        <Loader2 size={13} className="animate-spin" /> Profile cleanup
+                      </span>
+                    ) : lead.profileNormalizationStatus !== 'completed' ? (
+                      <span className="text-xs text-slate-400">Capture needed</span>
                     ) : (
-                      <span className="text-xs text-slate-400">Queued</span>
+                      <span className="text-xs text-slate-400">Awaiting score</span>
                     )}
                   </td>
                   <td className="px-4 py-3">

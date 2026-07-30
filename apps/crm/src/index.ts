@@ -205,6 +205,7 @@ function profileBoolean(profile: Record<string, unknown>, key: string): boolean 
 const PROFILE_NORMALIZATION_VERSION = 2;
 const AI_QUEUE_BATCH_SIZE = 30;
 const AI_QUEUE_CONCURRENCY = 10;
+const LINKEDIN_DAILY_CONNECTION_LIMIT = 20;
 
 async function runWithConcurrency<T>(
   items: T[],
@@ -273,6 +274,34 @@ function prospectHasPhdSql() {
 }
 
 async function enqueueLeadScoring(db: CrmDb, leadId: string): Promise<void> {
+  const [lead] = await db
+    .select({
+      profileNormalizationStatus: schema.leads.profileNormalizationStatus,
+      deletedAt: schema.leads.deletedAt,
+      reviewState: schema.leads.reviewState,
+    })
+    .from(schema.leads)
+    .where(eq(schema.leads.id, leadId))
+    .limit(1);
+  // Scoring is downstream of profile capture + cleanup. Do not create a
+  // long-lived deferred job for an uncaptured lead; cleanup will enqueue it
+  // when structured evidence is ready.
+  if (
+    !lead ||
+    lead.deletedAt ||
+    lead.reviewState === 'rejected' ||
+    lead.profileNormalizationStatus !== 'completed'
+  ) {
+    await db
+      .delete(schema.leadScoreJobs)
+      .where(
+        and(
+          eq(schema.leadScoreJobs.leadId, leadId),
+          inArray(schema.leadScoreJobs.status, ['pending', 'failed'])
+        )
+      );
+    return;
+  }
   const now = new Date();
   await db
     .insert(schema.leadScoreJobs)
@@ -612,10 +641,7 @@ async function reviewProspect(
     .delete(schema.prospectReviewClaims)
     .where(eq(schema.prospectReviewClaims.leadId, lead.id));
   if (accepted && !isLeadHoldingStage(journeyStage)) {
-    await db
-      .insert(schema.leadScoreJobs)
-      .values({ leadId: lead.id })
-      .onConflictDoNothing({ target: schema.leadScoreJobs.leadId });
+    await enqueueLeadScoring(db, updated.id);
     await autoCreateLeadChannels(db, updated);
   } else if (isLeadHoldingStage(journeyStage)) {
     await db
@@ -2911,6 +2937,9 @@ async function generateAndSaveLeadScore(
       .limit(1);
     return saved ?? null;
   }
+  if (!hasLeadProfileEvidence(lead) || lead.profileNormalizationStatus !== 'completed') {
+    return null;
+  }
   const aiEnv = await getConfiguredAiEnv(db, env, lead.ownerId);
   if (!ai.isAiConfigured(aiEnv)) return null;
   const assessment = await ai.qualifyLead(structuredLeadQualificationInput(lead), aiEnv);
@@ -3078,6 +3107,21 @@ async function drainLeadScoreQueue(db: CrmDb, env: Env, limit: number) {
           and (stale_lead."deleted_at" is not null or stale_lead."review_state" = 'rejected')
       )
     `);
+  await db.update(schema.leadScoreJobs).set({
+    status: 'completed',
+    completedAt: now,
+    lockedAt: null,
+    lastError: 'Scoring waits until profile capture and cleanup are complete.',
+    updatedAt: now,
+  }).where(sql`
+      ${schema.leadScoreJobs.status} in ('pending', 'processing', 'failed')
+      and exists (
+        select 1
+        from "crm"."leads" unready_lead
+        where unready_lead."id" = ${schema.leadScoreJobs.leadId}
+          and unready_lead."profile_normalization_status" <> 'completed'
+      )
+    `);
   await db
     .update(schema.leadScoreJobs)
     .set({
@@ -3114,7 +3158,8 @@ async function drainLeadScoreQueue(db: CrmDb, env: Env, limit: number) {
         inArray(schema.leadScoreJobs.status, ['pending', 'failed']),
         lte(schema.leadScoreJobs.nextAttemptAt, now),
         isNull(schema.leads.deletedAt),
-        ne(schema.leads.reviewState, 'rejected')
+        ne(schema.leads.reviewState, 'rejected'),
+        eq(schema.leads.profileNormalizationStatus, 'completed')
       )
     )
     .orderBy(
@@ -3175,12 +3220,12 @@ async function drainLeadScoreQueue(db: CrmDb, env: Env, limit: number) {
         await db
           .update(schema.leadScoreJobs)
           .set({
-            status: 'pending',
-            nextAttemptAt: new Date(Date.now() + (hasProfile ? 5 * 60_000 : 24 * 60 * 60_000)),
+            status: 'completed',
+            completedAt: new Date(),
             lockedAt: null,
             lastError: hasProfile
-              ? 'Waiting for the separate Profile Cleanup Agent.'
-              : 'Waiting for a LinkedIn profile capture.',
+              ? 'Scoring waits for the separate Profile Cleanup Agent.'
+              : 'Scoring waits for a LinkedIn profile capture.',
             updatedAt: new Date(),
           })
           .where(eq(schema.leadScoreJobs.id, job.id));
@@ -3231,6 +3276,7 @@ async function generateAndSaveLeadAiAssessment(
   lead: typeof schema.leads.$inferSelect,
   env: Env
 ) {
+  if (!hasLeadProfileEvidence(lead)) return null;
   const normalizedLead = await normalizeAndSaveLeadProfile(db, lead, env);
   if (hasPhdProfileEvidence(normalizedLead)) {
     return generateAndSaveLeadScore(db, normalizedLead, env);
@@ -3258,6 +3304,36 @@ async function generateAndSaveLeadAiAssessment(
       set: values,
     })
     .returning();
+  if (saved) {
+    const now = new Date();
+    await db
+      .update(schema.leadScoreJobs)
+      .set({
+        status: 'completed',
+        completedAt: now,
+        lockedAt: null,
+        lastError: null,
+        updatedAt: now,
+      })
+      .where(eq(schema.leadScoreJobs.leadId, lead.id));
+    await db.insert(schema.leadEventOutbox).values({
+      workspaceId: lead.workspaceId,
+      leadId: lead.id,
+      eventType: 'lead.scored',
+      actorUserId: null,
+      payload: {
+        lead: {
+          ...normalizedLead,
+          aiScore: saved.overallScore,
+          aiClassification: saved.classification,
+          aiReasoningSummary: saved.reasoningSummary,
+          aiRecommendedAction: saved.recommendedAction,
+          scoreJobStatus: 'completed',
+        },
+        occurredAt: now.toISOString(),
+      },
+    });
+  }
   if (saved && lead.journeyStage === 'new') {
     const legacy = legacyFieldsForJourney('ready_to_reach_out');
     await db
@@ -4410,6 +4486,167 @@ app.get('/api/prospect-events', async (c) => {
 
 // --- LEADS ---
 
+app.get('/api/leads/scoring-status', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const role = getRole(c);
+  const isSuperadmin = c.get('isSuperadmin');
+  const userId = c.get('userId');
+  if (!role) return c.json({ error: 'Forbidden.' }, 403);
+
+  const requestedDayStart = new Date(c.req.query('dayStart') || '');
+  const dayStart = Number.isNaN(requestedDayStart.getTime())
+    ? new Date(new Date().setUTCHours(0, 0, 0, 0))
+    : requestedDayStart;
+  const visibleLead = and(
+    eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
+    eq(schema.leads.reviewState, 'accepted'),
+    isNull(schema.leads.deletedAt),
+    ...(!isSuperadmin ? [eq(schema.leads.ownerId, userId)] : [])
+  );
+  const beforeApproach = inArray(schema.leads.journeyStage, ['new', 'ready_to_reach_out']);
+  const eligibleForScoring = and(
+    visibleLead,
+    beforeApproach,
+    eq(schema.leads.profileNormalizationStatus, 'completed')
+  );
+
+  const [summaryRows, queue, connectionRows] = await Promise.all([
+    db
+      .select({
+        candidates: sql<number>`count(*)`,
+        capturedReady: sql<number>`count(*) filter (
+          where ${schema.leads.profileNormalizationStatus} = 'completed'
+        )`,
+        waitingForCapture: sql<number>`count(*) filter (
+          where ${schema.leads.profileNormalizationStatus} <> 'completed'
+        )`,
+        scored: sql<number>`count(*) filter (
+          where ${schema.leadAiAssessments.leadId} is not null
+        )`,
+        unscoredCaptured: sql<number>`count(*) filter (
+          where ${schema.leads.profileNormalizationStatus} = 'completed'
+            and ${schema.leadAiAssessments.leadId} is null
+        )`,
+        waiting: sql<number>`count(*) filter (
+          where ${schema.leads.profileNormalizationStatus} = 'completed'
+            and ${schema.leadScoreJobs.status} = 'pending'
+        )`,
+        processing: sql<number>`count(*) filter (
+          where ${schema.leads.profileNormalizationStatus} = 'completed'
+            and ${schema.leadScoreJobs.status} = 'processing'
+        )`,
+        retrying: sql<number>`count(*) filter (
+          where ${schema.leads.profileNormalizationStatus} = 'completed'
+            and ${schema.leadScoreJobs.status} = 'failed'
+        )`,
+        completed24h: sql<number>`count(*) filter (
+          where ${schema.leadScoreJobs.status} = 'completed'
+            and ${schema.leadScoreJobs.completedAt} >= now() - interval '24 hours'
+        )`,
+        latestCompletedAt: sql<Date | null>`max(${schema.leadScoreJobs.completedAt})`,
+      })
+      .from(schema.leads)
+      .leftJoin(schema.leadAiAssessments, eq(schema.leadAiAssessments.leadId, schema.leads.id))
+      .leftJoin(schema.leadScoreJobs, eq(schema.leadScoreJobs.leadId, schema.leads.id))
+      .where(and(visibleLead, beforeApproach)),
+    db
+      .select({
+        id: schema.leadScoreJobs.id,
+        leadId: schema.leadScoreJobs.leadId,
+        leadNumber: schema.leads.leadNumber,
+        firstName: schema.leads.firstName,
+        lastName: schema.leads.lastName,
+        status: schema.leadScoreJobs.status,
+        attempts: schema.leadScoreJobs.attempts,
+        nextAttemptAt: schema.leadScoreJobs.nextAttemptAt,
+        lastError: schema.leadScoreJobs.lastError,
+      })
+      .from(schema.leadScoreJobs)
+      .innerJoin(schema.leads, eq(schema.leadScoreJobs.leadId, schema.leads.id))
+      .where(
+        and(
+          eligibleForScoring,
+          inArray(schema.leadScoreJobs.status, ['processing', 'pending', 'failed'])
+        )
+      )
+      .orderBy(
+        sql`case ${schema.leadScoreJobs.status}
+          when 'processing' then 0
+          when 'pending' then 1
+          else 2
+        end`,
+        asc(schema.leadScoreJobs.nextAttemptAt)
+      )
+      .limit(8),
+    db
+      .select({
+        mine: sql<number>`count(distinct ${schema.activities.leadId}) filter (
+          where ${schema.activities.actorId} = ${userId}
+        )`,
+        team: sql<number>`count(distinct ${schema.activities.leadId})`,
+      })
+      .from(schema.activities)
+      .innerJoin(schema.leads, eq(schema.activities.leadId, schema.leads.id))
+      .where(
+        and(
+          eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
+          eq(schema.activities.type, 'linkedin_outreach'),
+          inArray(schema.activities.subject, [
+            'LinkedIn connection request sent',
+            'Stage set to connection_request_sent',
+            'LinkedIn connection request pending',
+          ]),
+          gte(schema.activities.happenedAt, dayStart)
+        )
+      ),
+  ]);
+
+  const row = summaryRows[0];
+  const waiting = Number(row?.waiting ?? 0);
+  const processing = Number(row?.processing ?? 0);
+  const retrying = Number(row?.retrying ?? 0);
+  const active = waiting + processing + retrying;
+  const capturedReady = Number(row?.capturedReady ?? 0);
+  const scored = Number(row?.scored ?? 0);
+  const cadenceMinutes = 1;
+  const nextScheduledRunAt = new Date(
+    Math.ceil(Date.now() / (cadenceMinutes * 60_000)) * cadenceMinutes * 60_000
+  );
+
+  return c.json({
+    summary: {
+      candidates: Number(row?.candidates ?? 0),
+      capturedReady,
+      waitingForCapture: Number(row?.waitingForCapture ?? 0),
+      scored,
+      unscoredCaptured: Number(row?.unscoredCaptured ?? 0),
+      active,
+      waiting,
+      processing,
+      retrying,
+      completed24h: Number(row?.completed24h ?? 0),
+      latestCompletedAt: row?.latestCompletedAt ?? null,
+      progressPercent: capturedReady ? Math.round((scored / capturedReady) * 100) : 100,
+      estimatedMinutes: active ? Math.ceil(active / AI_QUEUE_BATCH_SIZE) * cadenceMinutes : 0,
+    },
+    queue,
+    connectionsToday: {
+      mine: Number(connectionRows[0]?.mine ?? 0),
+      team: Number(connectionRows[0]?.team ?? 0),
+      limit: LINKEDIN_DAILY_CONNECTION_LIMIT,
+      dayStart,
+    },
+    cadence: {
+      batchSize: AI_QUEUE_BATCH_SIZE,
+      concurrency: AI_QUEUE_CONCURRENCY,
+      cadenceMinutes,
+      model: DEFAULT_AI_MODELS.cheap,
+      nextScheduledRunAt,
+    },
+    observedAt: new Date(),
+  });
+});
+
 app.get('/api/leads', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const role = getRole(c);
@@ -5059,10 +5296,7 @@ app.put('/api/leads/:id', async (c) => {
     isLeadHoldingStage(existing.journeyStage) &&
     isLeadActivationStage(result.journeyStage)
   ) {
-    await db
-      .insert(schema.leadScoreJobs)
-      .values({ leadId: result.id })
-      .onConflictDoNothing({ target: schema.leadScoreJobs.leadId });
+    await enqueueLeadScoring(db, result.id);
     c.executionCtx.waitUntil(
       Promise.all([
         autoCreateLeadChannels(db, result),
@@ -5325,13 +5559,22 @@ app.post('/api/leads/:id/outreach-actions', async (c) => {
     ) {
       return c.json({ error: 'Invalid stage.' }, 400);
     }
+    const now = new Date();
+    const connectionRequestSent =
+      channel === 'linkedin' && finalStage === 'connection_request_sent';
     if (existingChannel) {
       const [row] = await db
         .update(schema.leadChannels)
         .set({
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           stage: finalStage as any,
-          updatedAt: new Date(),
+          ...(connectionRequestSent
+            ? {
+                attemptCount: (existingChannel.attemptCount ?? 0) + 1,
+                lastAttemptAt: now,
+              }
+            : {}),
+          updatedAt: now,
         })
         .where(eq(schema.leadChannels.id, existingChannel.id))
         .returning();
@@ -5350,13 +5593,17 @@ app.post('/api/leads/:id/outreach-actions', async (c) => {
           channel: channel as any,
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           stage: finalStage as any,
+          attemptCount: connectionRequestSent ? 1 : 0,
+          lastAttemptAt: connectionRequestSent ? now : null,
           sequence: maxSeq + 1,
           ownerId: lead.ownerId,
         })
         .returning();
       updatedRow = row ?? null;
     }
-    subject = `Stage set to ${finalStage}`;
+    subject = connectionRequestSent
+      ? 'LinkedIn connection request sent'
+      : `Stage set to ${finalStage}`;
   }
 
   if (!updatedRow) return c.json({ error: 'Internal error' }, 500);
@@ -5740,10 +5987,7 @@ app.post('/api/leads/bulk', async (c) => {
         app: 'crm',
       });
       if (isLeadHoldingStage(lead.journeyStage) && isLeadActivationStage(requestedStage)) {
-        await db
-          .insert(schema.leadScoreJobs)
-          .values({ leadId: lead.id })
-          .onConflictDoNothing({ target: schema.leadScoreJobs.leadId });
+        await enqueueLeadScoring(db, lead.id);
         await autoCreateLeadChannels(db, lead);
         await triggerWorkflowEvent(c.env, 'lead_created', {
           id: lead.id,
@@ -5841,10 +6085,7 @@ app.post('/api/leads/bulk', async (c) => {
         app: 'crm',
       });
       if (isLeadHoldingStage(lead.journeyStage) && isLeadActivationStage(nextJourneyStage)) {
-        await db
-          .insert(schema.leadScoreJobs)
-          .values({ leadId: lead.id })
-          .onConflictDoNothing({ target: schema.leadScoreJobs.leadId });
+        await enqueueLeadScoring(db, lead.id);
         await autoCreateLeadChannels(db, lead);
         await triggerWorkflowEvent(c.env, 'lead_created', {
           id: lead.id,
@@ -9311,6 +9552,15 @@ app.post('/api/leads/:id/score', async (c) => {
   if (!can(isSuperadmin, role, 'view', { ownerId: row.ownerId }, caller)) {
     return c.json({ error: 'Forbidden.' }, 403);
   }
+  if (
+    !hasPhdProfileEvidence(row) &&
+    (!hasLeadProfileEvidence(row) || row.profileNormalizationStatus !== 'completed')
+  ) {
+    return c.json(
+      { error: 'Capture and clean this LinkedIn profile before running the scoring agent.' },
+      409
+    );
+  }
 
   const assessment = await generateAndSaveLeadScore(db, row, c.env);
   if (!assessment) return c.json({ error: ai.AI_NOT_CONFIGURED_MSG }, 503);
@@ -9361,6 +9611,12 @@ app.post('/api/leads/:id/ai-assessment', async (c) => {
   if (!lead) return c.json({ error: 'Not found.' }, 404);
   if (!can(isSuperadmin, role, 'view', { ownerId: lead.ownerId }, caller)) {
     return c.json({ error: 'Forbidden.' }, 403);
+  }
+  if (!hasLeadProfileEvidence(lead)) {
+    return c.json(
+      { error: 'Capture this LinkedIn profile before generating an AI assessment.' },
+      409
+    );
   }
   const assessment = await generateAndSaveLeadAiAssessment(db, lead, c.env);
   if (!assessment) return c.json({ error: ai.AI_NOT_CONFIGURED_MSG }, 503);

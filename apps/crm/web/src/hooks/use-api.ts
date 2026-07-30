@@ -278,6 +278,49 @@ export interface ProfileCleanupStatus {
   observedAt: string;
 }
 
+export interface LeadScoringStatus {
+  summary: {
+    candidates: number;
+    capturedReady: number;
+    waitingForCapture: number;
+    scored: number;
+    unscoredCaptured: number;
+    active: number;
+    waiting: number;
+    processing: number;
+    retrying: number;
+    completed24h: number;
+    latestCompletedAt: string | null;
+    progressPercent: number;
+    estimatedMinutes: number;
+  };
+  queue: Array<{
+    id: string;
+    leadId: string;
+    leadNumber: string | null;
+    firstName: string;
+    lastName: string;
+    status: 'processing' | 'pending' | 'failed';
+    attempts: number;
+    nextAttemptAt: string;
+    lastError: string | null;
+  }>;
+  connectionsToday: {
+    mine: number;
+    team: number;
+    limit: number;
+    dayStart: string;
+  };
+  cadence: {
+    batchSize: number;
+    concurrency: number;
+    cadenceMinutes: number;
+    model: string;
+    nextScheduledRunAt: string;
+  };
+  observedAt: string;
+}
+
 function prospectQueryString(filters: ProspectFilters): string {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(filters)) {
@@ -299,6 +342,25 @@ export function useProfileCleanupStatus() {
     queryFn: async () => {
       try {
         return await crmFetch<ProfileCleanupStatus>('/api/prospects/profile-cleanup-status');
+      } catch (err) {
+        if (err instanceof Error && 'status' in err && err.status === 401) redirectToLogin();
+        throw err;
+      }
+    },
+    refetchInterval: 5_000,
+  });
+}
+
+export function useLeadScoringStatus() {
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  return useQuery({
+    queryKey: ['lead-scoring-status', dayStart.toISOString()],
+    queryFn: async () => {
+      try {
+        return await crmFetch<LeadScoringStatus>(
+          `/api/leads/scoring-status?dayStart=${encodeURIComponent(dayStart.toISOString())}`
+        );
       } catch (err) {
         if (err instanceof Error && 'status' in err && err.status === 401) redirectToLogin();
         throw err;
@@ -428,6 +490,12 @@ export function useProspectEvents(enabled = true) {
           }
           if (event.eventType === 'lead.profile_normalized') {
             await qc.invalidateQueries({ queryKey: ['profile-cleanup-status'] });
+            await qc.invalidateQueries({ queryKey: ['lead-scoring-status'] });
+            await qc.invalidateQueries({ queryKey: ['leads-infinite'] });
+          }
+          if (event.eventType === 'lead.scored') {
+            await qc.invalidateQueries({ queryKey: ['lead-scoring-status'] });
+            await qc.invalidateQueries({ queryKey: ['leads-infinite'] });
           }
           const lead = event.payload?.lead;
           if (!lead) continue;
