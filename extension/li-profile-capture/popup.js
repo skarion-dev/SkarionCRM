@@ -1,5 +1,5 @@
 const DEFAULT_CRM_URL = 'https://skarion-crm-platform.skarion-talentos.workers.dev';
-const DEFAULT_CRM_WEB_URL = 'https://skarion-crm-cv9.pages.dev';
+const DEFAULT_CRM_WEB_URL = 'https://crm.skarion.com';
 
 const profileName = document.getElementById('profileName');
 const profileMeta = document.getElementById('profileMeta');

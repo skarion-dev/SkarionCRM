@@ -148,9 +148,11 @@ import {
   deriveProspectName,
   dispositionTag,
   findActiveLeadIdentityDuplicate,
+  isPlausibleProspectName,
   isProspectDisposition,
   journeyStageForProspectDisposition,
   normalizeProspectCsvRecord,
+  sanitizeCapturedCompanyName,
   type ProspectDisposition,
   type ProspectCsvRow,
 } from './lib/prospects.js';
@@ -520,14 +522,12 @@ async function reviewProspect(
   }
 
   const now = new Date();
-  const profileName = profileString(profile ?? {}, 'name');
+  const rawProfileName = profileString(profile ?? {}, 'name');
+  const profileName = isPlausibleProspectName(rawProfileName) ? rawProfileName : null;
   const name = profileName ? deriveProspectName(profileName, lead.linkedinUrl ?? '') : null;
   const companyName =
-    profileString(profile ?? {}, 'companyName') ??
-    profileString(profile ?? {}, 'currentCompanies')
-      ?.split(',')[0]
-      ?.trim() ??
-    null;
+    sanitizeCapturedCompanyName(profileString(profile ?? {}, 'companyName')) ??
+    sanitizeCapturedCompanyName(profileString(profile ?? {}, 'currentCompanies'));
   const headline = profileString(profile ?? {}, 'headline');
   const location = profileString(profile ?? {}, 'location');
   const about = profileString(profile ?? {}, 'about');
@@ -1928,6 +1928,16 @@ app.post('/extension/prospects/review', async (c) => {
     body.profile && typeof body.profile === 'object'
       ? (body.profile as Record<string, unknown>)
       : null;
+  const capturedProfileName = profileString(profile ?? {}, 'name');
+  if (profile && !isPlausibleProspectName(capturedProfileName)) {
+    return c.json(
+      {
+        error:
+          'LinkedIn returned a navigation or activity label instead of the profile name. Return to the main profile page, reload it, and capture again.',
+      },
+      400
+    );
+  }
   const linkedinUrl = canonicalizeLinkedinUrl(
     profileString(profile ?? {}, 'profileUrl') ?? body.linkedinUrl
   );

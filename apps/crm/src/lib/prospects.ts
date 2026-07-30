@@ -134,14 +134,46 @@ function titleCase(value: string): string {
     .join(' ');
 }
 
+const LINKEDIN_UI_NAME_PATTERN =
+  /^(?:\(\d+\)\s*)?(?:activity|recent activity|all activity|posts?|comments?|reactions?|followers?|connections?|notifications?|messaging|jobs?|home|feed|my network|linkedin)$/i;
+
+export function isPlausibleProspectName(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const cleaned = value.trim().replace(/\s+/g, ' ');
+  if (cleaned.length < 2 || cleaned.length > 120 || LINKEDIN_UI_NAME_PATTERN.test(cleaned)) {
+    return false;
+  }
+  if (/^\(\d+\)(?:\s|$)/u.test(cleaned) || !/\p{L}/u.test(cleaned)) return false;
+  return true;
+}
+
+export function sanitizeCapturedCompanyName(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const candidate =
+    value
+      .split(/\r?\n|,/u)
+      .map((part) => part.trim().replace(/\s+/g, ' '))
+      .find(Boolean) ?? '';
+  if (!candidate || candidate.length > 120) return null;
+  if (
+    /\b(?:full-time|part-time|self-employed|internship|contract|temporary|apprenticeship|seasonal)\b/iu.test(
+      candidate
+    ) ||
+    /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{4}\b/iu.test(candidate) ||
+    /\b\d+\s+(?:yr|yrs|year|years|mo|mos|month|months)\b/iu.test(candidate)
+  ) {
+    return null;
+  }
+  return candidate;
+}
+
 export function deriveProspectName(
   suppliedName: unknown,
   linkedinUrl: string
 ): { firstName: string; lastName: string; generated: boolean } {
-  const cleaned =
-    typeof suppliedName === 'string'
-      ? (suppliedName.trim().replace(/\s+/g, ' ').split(',')[0]?.trim() ?? '')
-      : '';
+  const cleaned = isPlausibleProspectName(suppliedName)
+    ? (suppliedName.trim().replace(/\s+/g, ' ').split(',')[0]?.trim() ?? '')
+    : '';
   if (cleaned && !/^(linkedin\s*)?(member|candidate)?$/i.test(cleaned)) {
     const parts = cleaned.split(' ').filter(Boolean);
     if (parts.length > 1) {

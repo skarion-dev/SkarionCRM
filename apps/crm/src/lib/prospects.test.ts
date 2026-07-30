@@ -4,9 +4,11 @@ import {
   deriveProspectName,
   dispositionTag,
   findActiveLeadIdentityDuplicate,
+  isPlausibleProspectName,
   journeyStageForProspectDisposition,
   normalizeProspectCsvRecord,
   prospectIdentityNameKey,
+  sanitizeCapturedCompanyName,
 } from './prospects.js';
 
 describe('prospect ingestion', () => {
@@ -32,6 +34,30 @@ describe('prospect ingestion', () => {
   it('derives a usable name from a public profile slug without fetching it', () => {
     expect(deriveProspectName('', 'https://www.linkedin.com/in/grace-hopper-123').firstName).toBe(
       'Grace'
+    );
+  });
+
+  it('rejects LinkedIn navigation labels as captured profile names', () => {
+    expect(isPlausibleProspectName('(24) Activity')).toBe(false);
+    expect(isPlausibleProspectName('Recent activity')).toBe(false);
+    expect(isPlausibleProspectName('Ada Lovelace')).toBe(true);
+    expect(
+      deriveProspectName('(24) Activity', 'https://www.linkedin.com/in/ada-lovelace-123')
+    ).toMatchObject({
+      firstName: 'Ada',
+      lastName: 'Lovelace',
+      generated: true,
+    });
+  });
+
+  it('rejects flattened experience cards as company names', () => {
+    expect(
+      sanitizeCapturedCompanyName(
+        'Youth LeaderMake the Road New York · Part-timeSep 2020 - Jun 2021 · 10 mos'
+      )
+    ).toBeNull();
+    expect(sanitizeCapturedCompanyName('Analytical Engines\nAnalytical Engines')).toBe(
+      'Analytical Engines'
     );
   });
 

@@ -155,27 +155,81 @@ function initLiProfileCapture() {
     return '';
   }
 
+  function compactText(value) {
+    return String(value || '')
+      .trim()
+      .replace(/\s+/g, ' ');
+  }
+
+  function isPlausibleProfileName(value) {
+    const cleaned = compactText(value);
+    if (cleaned.length < 2 || cleaned.length > 120 || !/\p{L}/u.test(cleaned)) return false;
+    if (/^\(\d+\)(?:\s|$)/u.test(cleaned)) return false;
+    return !/^(?:\(\d+\)\s*)?(?:activity|recent activity|all activity|posts?|comments?|reactions?|followers?|connections?|notifications?|messaging|jobs?|home|feed|my network|linkedin)$/i.test(
+      cleaned
+    );
+  }
+
+  function cleanDocumentTitle(value) {
+    return compactText(value)
+      .replace(/\s*\|\s*LinkedIn.*$/i, '')
+      .split(' - ')[0]
+      .trim();
+  }
+
+  function cleanCompanyName(value) {
+    const candidate =
+      String(value || '')
+        .split(/\r?\n|,/)
+        .map(compactText)
+        .find(Boolean) || '';
+    if (!candidate || candidate.length > 120) return '';
+    if (
+      /\b(?:full-time|part-time|self-employed|internship|contract|temporary|apprenticeship|seasonal)\b/i.test(
+        candidate
+      ) ||
+      /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{4}\b/i.test(
+        candidate
+      ) ||
+      /\b\d+\s+(?:yr|yrs|year|years|mo|mos|month|months)\b/i.test(candidate)
+    ) {
+      return '';
+    }
+    return candidate;
+  }
+
   function extractProfile() {
     const url = window.location.href.split('?')[0];
     const profileId = url.split('/in/')[1]?.replace(/\/$/, '') || '';
 
     // --- Header ---
-    const headerSec = (() => {
-      for (const sec of document.querySelectorAll('section')) {
-        const h2 = sec.querySelector('h2');
-        if (h2 && h2.innerText.trim() === document.title.split('|')[0].trim()) return sec;
-      }
-      return null;
-    })();
-
-    const name = document.title.split('|')[0].trim();
+    const nameCandidates = [
+      ...document.querySelectorAll(
+        'main h1, .pv-text-details__left-panel h1, [data-view-name="profile-top-card"] h1'
+      ),
+    ];
+    const nameElement = nameCandidates.find((element) =>
+      isPlausibleProfileName(element.innerText || element.textContent)
+    );
+    const metadataName = cleanDocumentTitle(
+      document.querySelector('meta[property="og:title"]')?.getAttribute('content')
+    );
+    const titleName = cleanDocumentTitle(document.title);
+    const name =
+      compactText(nameElement?.innerText || nameElement?.textContent) ||
+      (isPlausibleProfileName(metadataName) ? metadataName : '') ||
+      (isPlausibleProfileName(titleName) ? titleName : '');
+    const headerSec =
+      nameElement?.closest('section') ||
+      nameElement?.closest('[data-view-name="profile-top-card"]') ||
+      null;
     const headline =
-      document
-        .querySelector('div[data-generated-suggestion-target] + div, .text-body-medium')
+      headerSec
+        ?.querySelector('div[data-generated-suggestion-target] + div, .text-body-medium')
         ?.innerText?.trim() ||
       (() => {
-        // fallback: find line after name in page text
-        const lines = document.body.innerText
+        if (!headerSec) return '';
+        const lines = headerSec.innerText
           .split('\n')
           .map((l) => l.trim())
           .filter(Boolean);
@@ -184,7 +238,7 @@ function initLiProfileCapture() {
       })();
 
     const location = (() => {
-      const spans = Array.from(document.querySelectorAll('span.text-body-small'));
+      const spans = Array.from(headerSec?.querySelectorAll('span.text-body-small') || []);
       for (const s of spans) {
         const t = s.innerText.trim();
         if (t.includes(',') && !t.includes('@') && t.length < 80) return t;
@@ -221,8 +275,8 @@ function initLiProfileCapture() {
     const connections = connectionsMatch ? connectionsMatch[1] : '';
 
     // --- Current company from header ---
-    const companies = Array.from(document.querySelectorAll('a[href*="/company/"]'))
-      .map((a) => a.innerText.trim())
+    const companies = Array.from(headerSec?.querySelectorAll('a[href*="/company/"]') || [])
+      .map((a) => cleanCompanyName(a.innerText || a.textContent))
       .filter(Boolean)
       .slice(0, 3);
 
@@ -266,8 +320,10 @@ function initLiProfileCapture() {
 
       reportProgress('running', 92, 'Reading profile data', 'Extracting visible profile fields.');
       const profile = extractProfile();
-      if (!profile.name || profile.name === 'LinkedIn') {
-        throw new Error('LinkedIn profile name was not available.');
+      if (!isPlausibleProfileName(profile.name)) {
+        throw new Error(
+          'LinkedIn is showing an activity or navigation view instead of the profile header. Return to the main profile page, reload it, and capture again.'
+        );
       }
 
       profile.idempotencyKey = crypto.randomUUID();

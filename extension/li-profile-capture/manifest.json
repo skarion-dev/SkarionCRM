@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LinkedIn Profile Capture",
-  "version": "6.0.1",
+  "version": "6.0.2",
   "description": "Reviews LinkedIn prospects from a persistent side panel and sends each decision directly into Skarion CRM.",
   "permissions": ["activeTab", "scripting", "storage", "tabs", "sidePanel"],
   "host_permissions": [
