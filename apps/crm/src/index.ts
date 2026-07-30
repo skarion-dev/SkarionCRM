@@ -1338,6 +1338,37 @@ async function resolveExtensionKeyOwner(
   return { userId: row.user_id as string, email: row.email as string };
 }
 
+/**
+ * Recruiter exports identify some profiles with an opaque member ID while the
+ * live LinkedIn page exposes a public name slug. When those URLs differ, use
+ * the captured full name only if it resolves to exactly one pending prospect.
+ * Ambiguous names deliberately return null so the extension never merges two
+ * different people on a guess.
+ */
+async function findPendingProspectForCapture(
+  db: CrmDb,
+  input: { profileName: unknown; linkedinUrl: string | null }
+): Promise<typeof schema.leads.$inferSelect | null> {
+  if (typeof input.profileName !== 'string' || !input.profileName.trim()) return null;
+  const name = deriveProspectName(input.profileName, input.linkedinUrl ?? '');
+  if (name.generated) return null;
+
+  const matches = await db
+    .select()
+    .from(schema.leads)
+    .where(
+      and(
+        eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
+        eq(schema.leads.reviewState, 'pending'),
+        eq(sql`lower(trim(${schema.leads.firstName}))`, name.firstName.trim().toLowerCase()),
+        eq(sql`lower(trim(${schema.leads.lastName}))`, name.lastName.trim().toLowerCase()),
+        isNull(schema.leads.deletedAt)
+      )
+    )
+    .limit(2);
+  return matches.length === 1 ? (matches[0] ?? null) : null;
+}
+
 async function enrichExtensionLead(
   db: CrmDb,
   existing: typeof schema.leads.$inferSelect,
@@ -1384,9 +1415,11 @@ async function enrichExtensionLead(
           rowVersion: sql`${schema.leads.rowVersion} + 1`,
         }
       : {}),
-    ...(typeof patch.linkedinUrl === 'string'
-      ? { linkedinProfileKey: linkedinProfileKey(patch.linkedinUrl) }
-      : {}),
+    ...(promotedFromProspect && linkedinUrl
+      ? { linkedinUrl, linkedinProfileKey: linkedinProfileKey(linkedinUrl) }
+      : typeof patch.linkedinUrl === 'string'
+        ? { linkedinProfileKey: linkedinProfileKey(patch.linkedinUrl) }
+        : {}),
   };
 
   const [lead] = await db
@@ -1499,6 +1532,30 @@ app.post('/extension/leads/check', async (c) => {
     companyName: typeof body.companyName === 'string' ? body.companyName : null,
     linkedinUrl,
   });
+  const pendingProspect = await findPendingProspectForCapture(db, {
+    profileName: `${body.firstName ?? ''} ${body.lastName ?? ''}`.trim(),
+    linkedinUrl,
+  });
+  if (pendingProspect) {
+    const { enrichedFields } = buildLeadEnrichmentPatch(pendingProspect, {
+      firstName: body.firstName,
+      lastName: body.lastName,
+      email: body.email,
+      phone: body.phone,
+      companyName: body.companyName,
+      companyDomain: body.companyDomain,
+      linkedinUrl,
+      notes: body.notes,
+      tags: body.tags,
+    });
+    return c.json({
+      status: 'enrichment_available',
+      matchType: 'pending_prospect_name',
+      entityType: 'lead',
+      record: pendingProspect,
+      enrichedFields,
+    });
+  }
   if (enrichmentCandidate) {
     const { enrichedFields } = buildLeadEnrichmentPatch(enrichmentCandidate, {
       firstName: body.firstName,
@@ -1628,6 +1685,30 @@ app.post('/extension/leads', async (c) => {
         aiAssessment: aiAssessment ?? null,
         ownerId: enriched.lead.ownerId,
         duplicate: true,
+        enriched: enriched.enrichedFields.length > 0,
+        enrichedFields: enriched.enrichedFields,
+      },
+      200
+    );
+  }
+
+  const pendingProspect = await findPendingProspectForCapture(db, {
+    profileName: displayName,
+    linkedinUrl,
+  });
+  if (pendingProspect) {
+    const enriched = await enrichExtensionLead(db, pendingProspect, body, linkedinUrl, ownerId);
+    const [aiAssessment] = await db
+      .select()
+      .from(schema.leadAiAssessments)
+      .where(eq(schema.leadAiAssessments.leadId, pendingProspect.id));
+    return c.json(
+      {
+        lead: enriched.lead,
+        aiAssessment: aiAssessment ?? null,
+        ownerId: enriched.lead.ownerId,
+        duplicate: true,
+        matchedBy: 'pending_prospect_name',
         enriched: enriched.enrichedFields.length > 0,
         enrichedFields: enriched.enrichedFields,
       },
@@ -1791,7 +1872,7 @@ app.post('/extension/prospects/resolve', async (c) => {
   const profileKey = linkedinProfileKey(body.linkedinUrl);
   if (!profileKey) return c.json({ error: 'A valid LinkedIn profile URL is required.' }, 400);
 
-  const [lead] = await db
+  let [lead] = await db
     .select()
     .from(schema.leads)
     .where(
@@ -1802,6 +1883,13 @@ app.post('/extension/prospects/resolve', async (c) => {
       )
     )
     .limit(1);
+  if (!lead) {
+    lead =
+      (await findPendingProspectForCapture(db, {
+        profileName: body.profileName,
+        linkedinUrl: canonicalizeLinkedinUrl(body.linkedinUrl),
+      })) ?? undefined;
+  }
   return c.json({ lead: lead ?? null, found: Boolean(lead) });
 });
 
@@ -1841,6 +1929,13 @@ app.post('/extension/prospects/review', async (c) => {
       )
     )
     .limit(1);
+  if (!lead) {
+    lead =
+      (await findPendingProspectForCapture(db, {
+        profileName: profileString(profile ?? {}, 'name'),
+        linkedinUrl,
+      })) ?? undefined;
+  }
   let createdFromExtension = false;
   if (!lead) {
     const identity = await nextLeadIdentity(db);

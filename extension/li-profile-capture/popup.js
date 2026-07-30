@@ -79,7 +79,10 @@ async function resolveCurrentProfile() {
   try {
     const result = await api('/extension/prospects/resolve', {
       method: 'POST',
-      body: JSON.stringify({ linkedinUrl: activeTab.url }),
+      body: JSON.stringify({
+        linkedinUrl: activeTab.url,
+        profileName: profileName.textContent,
+      }),
     });
     resolvedLead = result.lead;
     profileMeta.textContent = resolvedLead
