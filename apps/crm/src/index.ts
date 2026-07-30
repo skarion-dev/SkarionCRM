@@ -3350,6 +3350,44 @@ async function drainLeadProfileQueue(db: CrmDb, env: Env, limit: number) {
 
 async function drainLeadScoreQueue(db: CrmDb, env: Env, limit: number) {
   const now = new Date();
+  // Migrations run before the new Worker is published. If an older Worker
+  // sees freshly queued URL-only prospects during that rolling-deploy window,
+  // it can mark them deferred. Recover every unassessed URL-only row here so
+  // scoring remains self-healing across deployments.
+  await db.execute(sql`
+    UPDATE "crm"."lead_score_jobs" score_job
+    SET
+      "status" = 'pending',
+      "attempts" = 0,
+      "next_attempt_at" = now(),
+      "locked_at" = NULL,
+      "completed_at" = NULL,
+      "last_error" = NULL,
+      "updated_at" = now()
+    FROM "crm"."leads" lead
+    WHERE lead."id" = score_job."lead_id"
+      AND lead."review_state" = 'pending'
+      AND lead."deleted_at" IS NULL
+      AND lead."linkedin_url" IS NOT NULL
+      AND lead."profile_normalization_status" = 'not_queued'
+      AND btrim(concat_ws(
+        ' ',
+        lead."headline",
+        lead."location",
+        lead."about",
+        lead."experience",
+        lead."education",
+        lead."skills",
+        lead."current_role",
+        lead."current_role_dates",
+        lead."notes"
+      )) = ''
+      AND NOT EXISTS (
+        SELECT 1
+        FROM "crm"."lead_ai_assessments" assessment
+        WHERE assessment."lead_id" = lead."id"
+      )
+  `);
   await db.update(schema.leadScoreJobs).set({
     status: 'completed',
     completedAt: now,
