@@ -2019,7 +2019,23 @@ app.post('/internal/lead-profile-queue/drain', async (c) => {
     Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : AI_QUEUE_BATCH_SIZE)
   );
   const db = getDb(c.env, schema) as CrmDb;
-  return c.json(await drainLeadProfileQueue(db, c.env, limit));
+  const result = await drainLeadProfileQueue(db, c.env, limit);
+  const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
+  const [captureStats] = await db
+    .select({
+      profiles: sql<number>`count(distinct ${schema.leadProfileCaptures.leadId})`,
+      events: sql<number>`count(*)`,
+    })
+    .from(schema.leadProfileCaptures)
+    .where(gte(schema.leadProfileCaptures.createdAt, twelveHoursAgo));
+  return c.json({
+    ...result,
+    captureStats12h: {
+      profiles: Number(captureStats?.profiles ?? 0),
+      events: Number(captureStats?.events ?? 0),
+      since: twelveHoursAgo,
+    },
+  });
 });
 
 async function finalizeLinkedinSyncImport(db: CrmDb, importId: string): Promise<void> {
@@ -2540,31 +2556,6 @@ function getRole(c: unknown): string {
   const apps = (c as { get: (key: string) => unknown }).get('apps');
   return (apps as { crm?: string } | undefined)?.crm ?? '';
 }
-
-// Leads are member-read-only: any mutation (non-GET) under these prefixes
-// requires isSuperadmin or the 'manager' role. Centralized here rather than
-// per-route so every lead-linked write path (attachments, channels, bulk
-// actions, AI actions that write back to a lead, imports, etc.) is covered
-// by one choke point instead of relying on each handler remembering to
-// check. GET routes (viewing) are untouched — members can view all leads.
-const LEAD_WRITE_PREFIXES = [
-  '/api/leads',
-  '/api/prospects',
-  '/api/import/leads',
-  '/api/candidate-chat/lead-action',
-  '/api/ceo-chat/import-linkedin',
-];
-
-app.use('/api/*', async (c, next) => {
-  const path = c.req.path;
-  if (c.req.method !== 'GET' && LEAD_WRITE_PREFIXES.some((prefix) => path.startsWith(prefix))) {
-    const isSuperadmin = Boolean(c.get('isSuperadmin'));
-    if (!isSuperadmin && getRole(c) !== 'manager') {
-      return c.json({ error: 'Forbidden: leads are read-only for your role.' }, 403);
-    }
-  }
-  return next();
-});
 
 type AiRuntimeSettings = {
   defaultProvider: 'vertex_proxy' | 'google_ai';
@@ -3601,16 +3592,11 @@ async function generateAndSaveLeadAiAssessment(
 app.get('/api/companies', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const role = getRole(c);
-  const isSuperadmin = c.get('isSuperadmin');
-  const caller = { userId: c.get('userId'), managedUserIds: undefined, isSuperadmin };
   if (!role) return c.json({ error: 'Forbidden.' }, 403);
 
   const { search, industry, owner } = c.req.query();
   const conditions = [isNull(schema.companies.deletedAt)];
 
-  if (!isSuperadmin) {
-    conditions.push(eq(schema.companies.ownerId, caller.userId));
-  }
   if (search) {
     conditions.push(like(sql`lower(${schema.companies.name})`, `%${search.toLowerCase()}%`));
   }
@@ -3795,16 +3781,11 @@ app.delete('/api/companies/:id', async (c) => {
 app.get('/api/contacts', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const role = getRole(c);
-  const isSuperadmin = c.get('isSuperadmin');
-  const caller = { userId: c.get('userId'), managedUserIds: undefined, isSuperadmin };
   if (!role) return c.json({ error: 'Forbidden.' }, 403);
 
   const { search, companyId, owner } = c.req.query();
   const conditions = [isNull(schema.contacts.deletedAt)];
 
-  if (!isSuperadmin) {
-    conditions.push(eq(schema.contacts.ownerId, caller.userId));
-  }
   if (search) {
     conditions.push(like(sql`lower(${schema.contacts.email})`, `%${search.toLowerCase()}%`));
   }
@@ -4074,7 +4055,8 @@ app.get('/api/prospects/profile-cleanup-status', async (c) => {
     isNull(schema.leads.deletedAt)
   );
   const pendingProspect = and(activeLead, eq(schema.leads.reviewState, 'pending'));
-  const [summaryRows, allCrmActiveRows, queue] = await Promise.all([
+  const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000);
+  const [summaryRows, allCrmActiveRows, captureRows, queue] = await Promise.all([
     db
       .select({
         total: sql<number>`count(*)`,
@@ -4111,6 +4093,13 @@ app.get('/api/prospects/profile-cleanup-status', async (c) => {
       .from(schema.leadProfileJobs)
       .innerJoin(schema.leads, eq(schema.leadProfileJobs.leadId, schema.leads.id))
       .where(and(activeLead, ne(schema.leads.reviewState, 'rejected'))),
+    db
+      .select({
+        profiles: sql<number>`count(distinct ${schema.leadProfileCaptures.leadId})`,
+        events: sql<number>`count(*)`,
+      })
+      .from(schema.leadProfileCaptures)
+      .where(gte(schema.leadProfileCaptures.createdAt, twelveHoursAgo)),
     db
       .select({
         id: schema.leadProfileJobs.id,
@@ -4169,6 +4158,8 @@ app.get('/api/prospects/profile-cleanup-status', async (c) => {
       retrying,
       completed,
       completedToday: Number(row?.completedToday ?? 0),
+      capturedProfiles12h: Number(captureRows[0]?.profiles ?? 0),
+      captureEvents12h: Number(captureRows[0]?.events ?? 0),
       progressPercent: total ? Math.round((completed / total) * 100) : 100,
       oldestQueuedAt: row?.oldestQueuedAt ?? null,
       latestCompletedAt: row?.latestCompletedAt ?? null,
@@ -4746,7 +4737,6 @@ app.get('/api/prospect-events', async (c) => {
 app.get('/api/leads/scoring-status', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const role = getRole(c);
-  const isSuperadmin = c.get('isSuperadmin');
   const userId = c.get('userId');
   if (!role) return c.json({ error: 'Forbidden.' }, 403);
 
@@ -4757,8 +4747,7 @@ app.get('/api/leads/scoring-status', async (c) => {
   const visibleLead = and(
     eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
     eq(schema.leads.reviewState, 'accepted'),
-    isNull(schema.leads.deletedAt),
-    ...(!isSuperadmin ? [eq(schema.leads.ownerId, userId)] : [])
+    isNull(schema.leads.deletedAt)
   );
   const beforeApproach = inArray(schema.leads.journeyStage, ['new', 'ready_to_reach_out']);
   const eligibleForScoring = and(
@@ -4983,13 +4972,7 @@ app.get('/api/leads', async (c) => {
   const statusCountsRaw = await db
     .select({ status: schema.leads.journeyStage, count: sql<number>`count(*)` })
     .from(schema.leads)
-    .where(
-      and(
-        isNull(schema.leads.deletedAt),
-        eq(schema.leads.reviewState, 'accepted'),
-        ...(!isSuperadmin && role !== 'manager' ? [eq(schema.leads.ownerId, caller.userId)] : [])
-      )
-    )
+    .where(and(isNull(schema.leads.deletedAt), eq(schema.leads.reviewState, 'accepted')))
     .groupBy(schema.leads.journeyStage);
 
   const statusCounts = Object.fromEntries(LEAD_JOURNEY_STAGES.map((stage) => [stage, 0])) as Record<
@@ -6148,9 +6131,6 @@ app.post('/api/leads/bulk', async (c) => {
 
   // Verify only the requested leads exist and are accessible.
   const accessConditions = [isNull(schema.leads.deletedAt), inArray(schema.leads.id, ids)];
-  if (!isSuperadmin && role !== 'manager') {
-    accessConditions.push(eq(schema.leads.ownerId, caller.userId));
-  }
   const allAccessibleLeads = await db
     .select()
     .from(schema.leads)
@@ -6518,16 +6498,11 @@ app.post('/api/leads/:id/convert', async (c) => {
 app.get('/api/opportunities', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const role = getRole(c);
-  const isSuperadmin = c.get('isSuperadmin');
-  const caller = { userId: c.get('userId'), managedUserIds: undefined, isSuperadmin };
   if (!role) return c.json({ error: 'Forbidden.' }, 403);
 
   const { stage, search, owner } = c.req.query();
   const conditions = [isNull(schema.opportunities.deletedAt)];
 
-  if (!isSuperadmin) {
-    conditions.push(eq(schema.opportunities.ownerId, caller.userId));
-  }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   if (stage) conditions.push(eq(schema.opportunities.stage, stage as any));
   if (search) {
@@ -6953,22 +6928,14 @@ app.delete('/api/activities/:id', async (c) => {
 app.get('/api/tasks', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const role = getRole(c);
-  const isSuperadmin = c.get('isSuperadmin');
-  const caller = { userId: c.get('userId'), managedUserIds: undefined, isSuperadmin };
   if (!role) return c.json({ error: 'Forbidden.' }, 403);
 
   const { assigneeId, contactId, companyId, opportunityId, completed, priority, type, unassigned } =
     c.req.query();
   const conditions = [isNull(schema.tasks.deletedAt)];
 
-  // Unclaimed tasks (assigneeId null) are visible to everyone with role
-  // access — that's the open-claim pool the task board is built on. A
-  // non-superadmin otherwise only sees their own assigned tasks.
-  if (!isSuperadmin) {
-    conditions.push(
-      or(eq(schema.tasks.assigneeId, caller.userId), isNull(schema.tasks.assigneeId))!
-    );
-  }
+  // Assignment identifies responsibility; tasks stay visible to the shared
+  // CRM workspace so teammates can coordinate without permission dead-ends.
   if (unassigned === 'true') conditions.push(isNull(schema.tasks.assigneeId));
   if (assigneeId) conditions.push(eq(schema.tasks.assigneeId, assigneeId));
   if (contactId) conditions.push(eq(schema.tasks.contactId, contactId));
@@ -7274,19 +7241,11 @@ app.delete('/api/tasks/:id', async (c) => {
 app.get('/api/import-batches', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const role = getRole(c);
-  const isSuperadmin = c.get('isSuperadmin');
-  const caller = { userId: c.get('userId'), isSuperadmin };
   if (!role) return c.json({ error: 'Forbidden.' }, 403);
-
-  const conditions = [];
-  if (!isSuperadmin) {
-    conditions.push(eq(schema.importBatches.importedByUserId, caller.userId));
-  }
 
   const batches = await db
     .select()
     .from(schema.importBatches)
-    .where(conditions.length > 0 ? and(...conditions) : undefined)
     .orderBy(desc(schema.importBatches.createdAt))
     .limit(50);
 
@@ -8728,9 +8687,6 @@ app.post('/api/chat', async (c) => {
     ),
   ].slice(0, 8);
   const embeddingConditions = [];
-  if (!isSuperadmin && role === 'member') {
-    embeddingConditions.push(eq(schema.embeddings.ownerId, userId));
-  }
   if (searchTerms.length > 0) {
     embeddingConditions.push(
       or(...searchTerms.map((term) => ilike(schema.embeddings.content, `%${term}%`)))
@@ -11483,15 +11439,11 @@ function mergeExtractionResults(
 app.get('/api/search', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const role = getRole(c);
-  const isSuperadmin = c.get('isSuperadmin');
-  const userId = c.get('userId');
   if (!role) return c.json({ error: 'Forbidden.' }, 403);
 
   const q = c.req.query('q');
   if (!q || q.length < 2) return c.json({ results: [] });
   const query = `%${q.toLowerCase()}%`;
-  const ownOnly = !isSuperadmin && role === 'member';
-
   const [leads, companies, contacts, opportunities] = await Promise.all([
     db
       .select()
@@ -11500,7 +11452,6 @@ app.get('/api/search', async (c) => {
         and(
           isNull(schema.leads.deletedAt),
           eq(schema.leads.reviewState, 'accepted'),
-          ownOnly ? eq(schema.leads.ownerId, userId) : undefined,
           or(
             like(sql`LOWER(${schema.leads.firstName})`, query),
             like(sql`LOWER(${schema.leads.lastName})`, query),
@@ -11516,7 +11467,6 @@ app.get('/api/search', async (c) => {
       .where(
         and(
           isNull(schema.companies.deletedAt),
-          ownOnly ? eq(schema.companies.ownerId, userId) : undefined,
           or(
             like(sql`LOWER(${schema.companies.name})`, query),
             like(sql`LOWER(${schema.companies.domain})`, query)
@@ -11530,7 +11480,6 @@ app.get('/api/search', async (c) => {
       .where(
         and(
           isNull(schema.contacts.deletedAt),
-          ownOnly ? eq(schema.contacts.ownerId, userId) : undefined,
           or(
             like(sql`LOWER(${schema.contacts.firstName})`, query),
             like(sql`LOWER(${schema.contacts.lastName})`, query),
@@ -11545,7 +11494,6 @@ app.get('/api/search', async (c) => {
       .where(
         and(
           isNull(schema.opportunities.deletedAt),
-          ownOnly ? eq(schema.opportunities.ownerId, userId) : undefined,
           or(
             like(sql`LOWER(${schema.opportunities.name})`, query),
             like(sql`LOWER(${schema.opportunities.notes})`, query)

@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 import {
   crmFetch,
@@ -188,22 +188,17 @@ export interface LeadsResponse {
   statusCounts: Record<string, number>;
 }
 
-const LEADS_BATCH_SIZE = 100;
-
-/** Incremental/"load more" loading for the leads table — replaces the old
- * Prev/Next page-at-a-time model. Each additional page is appended to the
- * previous ones rather than replacing them; changing `filters` changes the
- * query key, which starts a fresh accumulation instead of mixing results
- * from two different filter sets. */
-export function useInfiniteLeads(filters: LeadFilters) {
+/** Bounded server-side pagination for the leads table. Keeping the page in
+ * the query key prevents rows from different pages or filter sets from being
+ * accumulated, while placeholderData keeps the current page visible during
+ * a short page transition. */
+export function usePagedLeads(filters: LeadFilters, page: number, pageSize: number) {
   const qs = buildLeadsQueryString(filters);
-  return useInfiniteQuery({
-    queryKey: ['leads-infinite', qs],
-    queryFn: async ({ pageParam }) => {
+  return useQuery({
+    queryKey: ['leads', 'paged', qs, page, pageSize],
+    queryFn: async () => {
       try {
-        return await crmFetch<LeadsResponse>(
-          `/api/leads?${qs}&page=${pageParam}&pageSize=${LEADS_BATCH_SIZE}`
-        );
+        return await crmFetch<LeadsResponse>(`/api/leads?${qs}&page=${page}&pageSize=${pageSize}`);
       } catch (err) {
         if (err instanceof Error && 'status' in err && err.status === 401) {
           redirectToLogin();
@@ -211,8 +206,7 @@ export function useInfiniteLeads(filters: LeadFilters) {
         throw err;
       }
     },
-    initialPageParam: 1,
-    getNextPageParam: (last) => (last.page < last.totalPages ? last.page + 1 : undefined),
+    placeholderData: (previous) => previous,
   });
 }
 
@@ -250,6 +244,8 @@ export interface ProfileCleanupStatus {
     retrying: number;
     completed: number;
     completedToday: number;
+    capturedProfiles12h: number;
+    captureEvents12h: number;
     progressPercent: number;
     oldestQueuedAt: string | null;
     latestCompletedAt: string | null;
@@ -476,7 +472,7 @@ export function useReviewProspect() {
       qc.setQueriesData<ProspectsResponse>({ queryKey: ['prospects'] }, (current) =>
         removeProspectRow(current, payload.id)
       );
-      qc.invalidateQueries({ queryKey: ['leads-infinite'] });
+      qc.invalidateQueries({ queryKey: ['leads'] });
     },
   });
 }
@@ -506,16 +502,16 @@ export function useProspectEvents(enabled = true) {
             continue;
           }
           if (event.eventType === 'prospect.reviewed') {
-            await qc.invalidateQueries({ queryKey: ['leads-infinite'] });
+            await qc.invalidateQueries({ queryKey: ['leads'] });
           }
           if (event.eventType === 'lead.profile_normalized') {
             await qc.invalidateQueries({ queryKey: ['profile-cleanup-status'] });
             await qc.invalidateQueries({ queryKey: ['lead-scoring-status'] });
-            await qc.invalidateQueries({ queryKey: ['leads-infinite'] });
+            await qc.invalidateQueries({ queryKey: ['leads'] });
           }
           if (event.eventType === 'lead.scored') {
             await qc.invalidateQueries({ queryKey: ['lead-scoring-status'] });
-            await qc.invalidateQueries({ queryKey: ['leads-infinite'] });
+            await qc.invalidateQueries({ queryKey: ['leads'] });
           }
           const lead = event.payload?.lead;
           if (!lead) continue;
@@ -692,9 +688,6 @@ export function useDeleteEntity() {
     },
     onSuccess: async ({ type }) => {
       await qc.invalidateQueries({ queryKey: [type] });
-      if (type === 'leads') {
-        await qc.invalidateQueries({ queryKey: ['leads-infinite'] });
-      }
     },
   });
 }
@@ -727,10 +720,7 @@ export function useBulkLeads() {
       );
     },
     onSuccess: async () => {
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ['leads'] }),
-        qc.invalidateQueries({ queryKey: ['leads-infinite'] }),
-      ]);
+      await Promise.all([qc.invalidateQueries({ queryKey: ['leads'] })]);
     },
   });
 }
@@ -746,9 +736,6 @@ export function useCreateEntity<T extends Record<string, unknown>>(type: string)
     },
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: [type] });
-      if (type === 'leads') {
-        await qc.invalidateQueries({ queryKey: ['leads-infinite'] });
-      }
     },
   });
 }
@@ -766,7 +753,6 @@ export function useUpdateEntity<T extends Record<string, unknown>>(type: string)
       await Promise.all([
         qc.invalidateQueries({ queryKey: [type] }),
         qc.invalidateQueries({ queryKey: [type, vars.id] }),
-        ...(type === 'leads' ? [qc.invalidateQueries({ queryKey: ['leads-infinite'] })] : []),
       ]);
     },
   });
@@ -1051,7 +1037,6 @@ export function useApplyCandidateLeadAction(leadId: string | null) {
       await Promise.all([
         qc.invalidateQueries({ queryKey: ['candidate-chat', 'context', leadId ?? ''] }),
         qc.invalidateQueries({ queryKey: ['leads'] }),
-        qc.invalidateQueries({ queryKey: ['leads-infinite'] }),
         leadId ? qc.invalidateQueries({ queryKey: ['leads', leadId] }) : Promise.resolve(),
       ]);
     },

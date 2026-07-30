@@ -1,6 +1,6 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import {
-  useInfiniteLeads,
+  usePagedLeads,
   useDeleteEntity,
   useBulkLeads,
   useImportBatches,
@@ -138,6 +138,8 @@ export default function LeadsPage() {
   const [statusFilter, setStatusFilter] = useState<'all' | LeadJourneyStage>('all');
   const [sortBy, setSortBy] = useState<string>('createdAt');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(100);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkActionOpen, setBulkActionOpen] = useState<false | 'status' | 'tag' | 'assign'>(false);
   const [tagInput, setTagInput] = useState('');
@@ -164,6 +166,7 @@ export default function LeadsPage() {
 
   const role = useAuthStore((s) => s.user?.role ?? '');
   const isSuperadmin = useAuthStore((s) => s.user?.isSuperadmin ?? false);
+  const currentUserId = useAuthStore((s) => s.user?.id ?? '');
   const canManage = isSuperadmin || role === 'manager';
 
   const filters: LeadFilters = useMemo(
@@ -191,8 +194,7 @@ export default function LeadsPage() {
     ]
   );
 
-  const { data, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } =
-    useInfiniteLeads(filters);
+  const { data, isLoading, isFetching } = usePagedLeads(filters, page, pageSize);
   const deleteMutation = useDeleteEntity();
   const bulkMutation = useBulkLeads();
   const { data: batches } = useImportBatches();
@@ -209,11 +211,13 @@ export default function LeadsPage() {
   );
   const savedSearches = savedSearchesData?.savedSearches ?? [];
 
-  const leads = useMemo(() => data?.pages.flatMap((p) => p.leads) ?? [], [data]);
-  const firstPage = data?.pages[0];
-  const total = firstPage?.total ?? 0;
-  const loadedCount = leads.length;
-  const statusCounts = firstPage?.statusCounts ?? {};
+  const leads = data?.leads ?? [];
+  const total = data?.total ?? 0;
+  const totalPages = data?.totalPages ?? 0;
+  const statusCounts = data?.statusCounts ?? {};
+  const allStatusTotal = Object.values(statusCounts).reduce((sum, count) => sum + count, 0);
+  const firstVisible = total > 0 ? (page - 1) * pageSize + 1 : 0;
+  const lastVisible = total > 0 ? Math.min(page * pageSize, total) : 0;
   const scoring = scoringStatus?.summary;
   const connectionsToday = scoringStatus?.connectionsToday;
   const connectionProgress = connectionsToday
@@ -232,30 +236,20 @@ export default function LeadsPage() {
   // accumulated selection wouldn't make sense against a different result set.
   useEffect(() => {
     setSelectedIds(new Set());
+    setPage(1);
   }, [filters]);
+
+  // If a mutation removes the final record on the current page, move back to
+  // the last valid page instead of leaving the user on an empty page.
+  useEffect(() => {
+    if (totalPages > 0 && page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
 
   // Debounce search
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search), 300);
     return () => clearTimeout(timer);
   }, [search]);
-
-  // Auto-load more when the sentinel below the table scrolls into view.
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
-  const fetchNextPageRef = useRef(fetchNextPage);
-  fetchNextPageRef.current = fetchNextPage;
-  useEffect(() => {
-    const el = sentinelRef.current;
-    if (!el) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0]?.isIntersecting) fetchNextPageRef.current();
-      },
-      { rootMargin: '200px' }
-    );
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [hasNextPage]);
 
   const applySavedSearch = useCallback((saved: LeadFilters) => {
     setSearch(saved.search ?? '');
@@ -697,7 +691,7 @@ export default function LeadsPage() {
               : 'bg-white border-slate-200 hover:bg-slate-50'
           )}
         >
-          All ({total})
+          All ({allStatusTotal})
         </button>
         {LEAD_JOURNEY_STAGES.map((s) => (
           <button
@@ -1288,7 +1282,9 @@ export default function LeadsPage() {
                   <td className="px-4 py-3 text-slate-600">
                     {canManage
                       ? crmUsers.find((u) => u.id === lead.ownerId)?.displayName || '—'
-                      : 'Me'}
+                      : lead.ownerId === currentUserId
+                        ? 'Me'
+                        : 'Team member'}
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap text-slate-500">
                     <CandidateCreatedAt createdAt={lead.createdAt} location={lead.location} />
@@ -1350,28 +1346,72 @@ export default function LeadsPage() {
         </div>
       </div>
 
-      {/* Incremental loading — accumulates rows instead of paging through them */}
-      <div className="flex flex-col items-center gap-2 py-2">
-        <div className="text-sm text-slate-500">
-          Showing {loadedCount} of {total}
+      {/* Bounded server-side pagination. Nothing auto-fetches on scroll. */}
+      <div className="flex flex-wrap items-center justify-between gap-3 py-2">
+        <div className="flex items-center gap-3 text-sm text-slate-500">
+          <span>
+            Showing {firstVisible}–{lastVisible} of {total}
+          </span>
+          {isFetching && !isLoading && (
+            <span className="inline-flex items-center gap-1 text-blue-600">
+              <Loader2 size={14} className="animate-spin" /> Updating
+            </span>
+          )}
         </div>
-        {hasNextPage && (
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 text-sm text-slate-500">
+            Rows
+            <select
+              value={pageSize}
+              onChange={(event) => {
+                setPageSize(Number(event.target.value));
+                setPage(1);
+              }}
+              className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-slate-700"
+            >
+              {[50, 100, 250, 500].map((size) => (
+                <option key={size} value={size}>
+                  {size}
+                </option>
+              ))}
+            </select>
+          </label>
           <button
-            onClick={() => fetchNextPage()}
-            disabled={isFetchingNextPage}
-            className="flex items-center gap-2 px-4 py-2 border border-slate-200 rounded-md text-sm hover:bg-slate-50 disabled:opacity-50"
+            type="button"
+            onClick={() => setPage(1)}
+            disabled={page <= 1 || isFetching}
+            className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-40"
           >
-            {isFetchingNextPage ? (
-              <>
-                <Loader2 size={16} className="animate-spin" /> Loading...
-              </>
-            ) : (
-              'Load more'
-            )}
+            First
           </button>
-        )}
-        {/* Scrolling this into view auto-triggers the same fetch as the button above */}
-        <div ref={sentinelRef} className="h-1 w-full" />
+          <button
+            type="button"
+            onClick={() => setPage((current) => Math.max(1, current - 1))}
+            disabled={page <= 1 || isFetching}
+            className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-40"
+          >
+            Previous
+          </button>
+          <span className="min-w-24 text-center text-sm font-medium text-slate-700">
+            Page {totalPages === 0 ? 0 : page} of {totalPages}
+          </span>
+          <button
+            type="button"
+            onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+            disabled={page >= totalPages || isFetching}
+            className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-40"
+          >
+            Next
+          </button>
+          <button
+            type="button"
+            onClick={() => setPage(totalPages)}
+            disabled={page >= totalPages || isFetching}
+            className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm hover:bg-slate-50 disabled:opacity-40"
+          >
+            Last
+          </button>
+        </div>
       </div>
 
       <LeadForm open={modalOpen} onClose={closeModal} lead={editLead} />

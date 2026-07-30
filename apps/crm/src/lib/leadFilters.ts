@@ -51,13 +51,6 @@ export function buildLeadConditions(params: LeadFilterParams): SQL[] {
     eq(schema.leads.reviewState, 'accepted') as unknown as SQL,
   ];
 
-  // Managers and superadmins see every lead; members only see leads assigned
-  // to them (mutation is separately locked down for members regardless — see
-  // the /api/leads write-guard middleware in index.ts).
-  if (!params.isSuperadmin && params.role !== 'manager') {
-    conditions.push(eq(schema.leads.ownerId, params.ownerId));
-  }
-
   if (params.statuses?.length) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     conditions.push(inArray(schema.leads.journeyStage, params.statuses as any));

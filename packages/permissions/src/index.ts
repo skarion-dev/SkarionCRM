@@ -2,10 +2,10 @@
 //
 // - isSuperadmin (global flag on identity.users): bypasses all checks. Set once
 //   by platform admins; grants full access to every app.
-// - manager (per-app membership): full access to every record in the app —
-//   view, create, edit, delete, reassign — regardless of who owns it.
-// - member (per-app membership): can view all records, create, edit own records.
-//   Cannot delete or reassign anything. Own-only list filtering.
+// - manager (per-app membership): can view and edit all CRM records and use
+//   manager-only administration features.
+// - member (per-app membership): can view and edit all CRM records so the team
+//   can collaborate on one shared pipeline. Cannot delete or reassign records.
 //
 // Migration from old four-role model:
 //   superadmin -> isSuperadmin=true + manager membership
@@ -31,22 +31,14 @@ export function can(
   isSuperadmin: boolean,
   role: string,
   action: CrmAction,
-  resource: ResourceInfo,
+  _resource: ResourceInfo,
   caller: CallerInfo
 ): boolean {
   if (isSuperadmin || caller.isSuperadmin) return true;
 
   const normalizedRole = role.toLowerCase();
-  if (normalizedRole === 'manager') {
-    // A manager has full access to every record, regardless of who owns it —
-    // not just their own or a "managed team" subset (that concept was never
-    // actually populated by any caller, so it silently blocked managers from
-    // editing/reassigning anything they didn't personally own).
-    return true;
-  }
+  if (normalizedRole === 'manager') return true;
   if (normalizedRole === 'member') {
-    const isOwnResource = resource.ownerId === caller.userId;
-    if (!isOwnResource) return false;
     return action !== 'delete' && action !== 'reassign';
   }
   return false;
@@ -56,13 +48,10 @@ export function canList(
   isSuperadmin: boolean,
   role: string,
   caller: CallerInfo,
-  resourceOwnerId?: string
+  _resourceOwnerId?: string
 ): boolean {
   if (isSuperadmin || caller.isSuperadmin) return true;
   const normalizedRole = role.toLowerCase();
-  if (normalizedRole === 'manager') return true;
-  if (normalizedRole === 'member') {
-    return resourceOwnerId === undefined || resourceOwnerId === caller.userId;
-  }
+  if (normalizedRole === 'manager' || normalizedRole === 'member') return true;
   return false;
 }

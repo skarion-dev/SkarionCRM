@@ -47,6 +47,15 @@ function RequireSuperadmin({ children }: { children: React.ReactNode }) {
   return isSuperadmin ? <>{children}</> : <Navigate to="/" replace />;
 }
 
+function RequireManager({ children }: { children: React.ReactNode }) {
+  const user = useAuthStore((state) => state.user);
+  return user?.isSuperadmin || user?.role === 'manager' ? (
+    <>{children}</>
+  ) : (
+    <Navigate to="/" replace />
+  );
+}
+
 export default function App() {
   return (
     <AppShell>
@@ -152,7 +161,9 @@ export default function App() {
             path="/settings"
             element={
               <RequireAuth>
-                <SettingsPage />
+                <RequireManager>
+                  <SettingsPage />
+                </RequireManager>
               </RequireAuth>
             }
           />

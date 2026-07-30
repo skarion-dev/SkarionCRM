@@ -435,12 +435,13 @@ export default function ProspectReviewPage() {
                 style={{ width: `${cleanup?.progressPercent ?? 0}%` }}
               />
             </div>
-            <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-5">
               {[
                 ['Processing', cleanup?.processing ?? 0],
                 ['Waiting', cleanup?.waiting ?? 0],
                 ['Retrying', cleanup?.retrying ?? 0],
                 ['Completed 24h', cleanup?.completedToday ?? 0],
+                ['Profiles captured 12h', cleanup?.capturedProfiles12h ?? 0],
               ].map(([label, count]) => (
                 <div key={label} className="rounded-md bg-slate-50 px-3 py-2">
                   <div className="text-lg font-semibold tabular-nums text-slate-900">{count}</div>
