@@ -3,6 +3,9 @@ import {
   hasPhdProfileEvidence,
   phdZeroScoreAssessment,
   PHD_ZERO_SCORE_REASON,
+  urlOnlyProvisionalAssessment,
+  URL_ONLY_PROVISIONAL_REASON,
+  URL_ONLY_PROVISIONAL_SCORE,
 } from './leadQualificationPolicy.js';
 
 describe('lead qualification policy', () => {
@@ -30,6 +33,18 @@ describe('lead qualification policy', () => {
       rawScore: 0,
       hardDisqualifier: true,
       reasoningSummary: PHD_ZERO_SCORE_REASON,
+    });
+  });
+
+  it('keeps URL-only prospects actionable without inventing profile evidence', () => {
+    expect(urlOnlyProvisionalAssessment()).toMatchObject({
+      overallScore: URL_ONLY_PROVISIONAL_SCORE,
+      rawScore: 0,
+      classification: 'NURTURE',
+      confidenceLevel: 'low',
+      profileEvidenceQuality: 'insufficient',
+      hardDisqualifier: false,
+      reasoningSummary: URL_ONLY_PROVISIONAL_REASON,
     });
   });
 });

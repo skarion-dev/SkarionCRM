@@ -158,6 +158,7 @@ import {
   hasPhdProfileEvidence,
   phdZeroScoreAssessment,
   PHD_ZERO_SCORE_REASON,
+  urlOnlyProvisionalAssessment,
 } from './lib/leadQualificationPolicy.js';
 import { graduationYear, mostRecentEducation } from './lib/profileEducation.js';
 
@@ -297,6 +298,7 @@ function prospectHasPhdSql() {
 async function enqueueLeadScoring(db: CrmDb, leadId: string): Promise<void> {
   const [lead] = await db
     .select({
+      linkedinUrl: schema.leads.linkedinUrl,
       profileNormalizationStatus: schema.leads.profileNormalizationStatus,
       deletedAt: schema.leads.deletedAt,
       reviewState: schema.leads.reviewState,
@@ -304,14 +306,17 @@ async function enqueueLeadScoring(db: CrmDb, leadId: string): Promise<void> {
     .from(schema.leads)
     .where(eq(schema.leads.id, leadId))
     .limit(1);
-  // Scoring is downstream of profile capture + cleanup. Do not create a
-  // long-lived deferred job for an uncaptured lead; cleanup will enqueue it
-  // when structured evidence is ready.
+  const isUrlOnlyCandidate = Boolean(
+    lead?.linkedinUrl && lead.profileNormalizationStatus === 'not_queued'
+  );
+  // Captured profiles score after cleanup. URL-only imports receive a clearly
+  // labeled neutral provisional score so they remain sortable/actionable until
+  // the extension captures evidence and queues the normal evidence-based score.
   if (
     !lead ||
     lead.deletedAt ||
     lead.reviewState === 'rejected' ||
-    lead.profileNormalizationStatus !== 'completed'
+    (lead.profileNormalizationStatus !== 'completed' && !isUrlOnlyCandidate)
   ) {
     await db
       .delete(schema.leadScoreJobs)
@@ -950,10 +955,15 @@ async function processProspectImport(
       candidates.map((candidate) => [candidate.linkedinProfileKey, candidate])
     );
     const cleanupLeadIds = new Set<string>();
+    const provisionalScoreLeadIds = new Set<string>();
     for (const [profileKey, existing] of existingByKey) {
       if (discardedActiveDuplicateKeys.has(profileKey)) continue;
       const candidate = candidateByKey.get(profileKey);
-      if (!candidate || !hasLeadProfileEvidence({ source: 'linkedin', ...candidate })) continue;
+      if (!candidate) continue;
+      if (!hasLeadProfileEvidence({ source: 'linkedin', ...candidate })) {
+        provisionalScoreLeadIds.add(existing.id);
+        continue;
+      }
       const [enriched] = await db
         .update(schema.leads)
         .set({
@@ -978,12 +988,19 @@ async function processProspectImport(
       if (enriched) cleanupLeadIds.add(enriched.id);
     }
     for (const candidate of newCandidates) {
-      if (!hasLeadProfileEvidence({ source: 'linkedin', ...candidate })) continue;
       const leadId = createdByKey.get(candidate.linkedinProfileKey);
-      if (leadId) cleanupLeadIds.add(leadId);
+      if (!leadId) continue;
+      if (hasLeadProfileEvidence({ source: 'linkedin', ...candidate })) {
+        cleanupLeadIds.add(leadId);
+      } else {
+        provisionalScoreLeadIds.add(leadId);
+      }
     }
     for (const leadId of cleanupLeadIds) {
       await enqueueLeadProfileCleanup(db, leadId);
+    }
+    for (const leadId of provisionalScoreLeadIds) {
+      await enqueueLeadScoring(db, leadId);
     }
     const memberships = candidates
       .map((candidate) => {
@@ -3175,6 +3192,9 @@ async function generateAndSaveLeadScore(
       .limit(1);
     return saved ?? null;
   }
+  if (!hasLeadProfileEvidence(lead) && lead.linkedinUrl) {
+    return saveLeadQualificationAssessment(db, lead, urlOnlyProvisionalAssessment());
+  }
   if (!hasLeadProfileEvidence(lead) || lead.profileNormalizationStatus !== 'completed') {
     return null;
   }
@@ -3358,6 +3378,10 @@ async function drainLeadScoreQueue(db: CrmDb, env: Env, limit: number) {
         from "crm"."leads" unready_lead
         where unready_lead."id" = ${schema.leadScoreJobs.leadId}
           and unready_lead."profile_normalization_status" <> 'completed'
+          and not (
+            unready_lead."profile_normalization_status" = 'not_queued'
+            and unready_lead."linkedin_url" is not null
+          )
       )
     `);
   await db
@@ -3397,7 +3421,13 @@ async function drainLeadScoreQueue(db: CrmDb, env: Env, limit: number) {
         lte(schema.leadScoreJobs.nextAttemptAt, now),
         isNull(schema.leads.deletedAt),
         ne(schema.leads.reviewState, 'rejected'),
-        eq(schema.leads.profileNormalizationStatus, 'completed')
+        or(
+          eq(schema.leads.profileNormalizationStatus, 'completed'),
+          and(
+            eq(schema.leads.profileNormalizationStatus, 'not_queued'),
+            isNotNull(schema.leads.linkedinUrl)
+          )
+        )
       )
     )
     .orderBy(
@@ -3450,7 +3480,12 @@ async function drainLeadScoreQueue(db: CrmDb, env: Env, limit: number) {
       }
 
       const phdProfile = hasPhdProfileEvidence(lead);
-      if (!phdProfile && lead.profileNormalizationStatus !== 'completed') {
+      const urlOnlyCandidate = Boolean(
+        lead.linkedinUrl &&
+        !hasLeadProfileEvidence(lead) &&
+        lead.profileNormalizationStatus === 'not_queued'
+      );
+      if (!phdProfile && !urlOnlyCandidate && lead.profileNormalizationStatus !== 'completed') {
         const hasProfile = hasLeadProfileEvidence(lead);
         if (hasProfile && lead.profileNormalizationStatus === 'not_queued') {
           await enqueueLeadProfileCleanup(db, lead.id);

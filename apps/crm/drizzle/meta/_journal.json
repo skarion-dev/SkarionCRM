@@ -253,6 +253,13 @@
       "when": 1785375500000,
       "tag": "0035_reconcile_captured_prospect_duplicates",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1785427500000,
+      "tag": "0036_url_only_prospect_scoring",
+      "breakpoints": true
     }
   ]
 }

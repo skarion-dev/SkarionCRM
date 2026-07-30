@@ -35,6 +35,23 @@ describe('prospect ingestion', () => {
     );
   });
 
+  it('accepts a CSV row containing only a LinkedIn URL', () => {
+    const result = normalizeProspectCsvRecord(
+      { URL: 'https://www.linkedin.com/in/fares-ibrahim-shehata/' },
+      3
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.row).toMatchObject({
+      sourceRow: 3,
+      linkedinUrl: 'https://www.linkedin.com/in/fares-ibrahim-shehata',
+      linkedinProfileKey: 'fares-ibrahim-shehata',
+      firstName: 'Fares',
+      lastName: 'Ibrahim Shehata',
+      headline: null,
+      generatedName: true,
+    });
+  });
+
   it('preserves rich captured profile fields for cleanup', () => {
     const result = normalizeProspectCsvRecord(
       {
