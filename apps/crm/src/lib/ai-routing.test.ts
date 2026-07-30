@@ -5,6 +5,7 @@ describe('AI model routing', () => {
   it('uses fast Flash for enrichment queues and cheap models for routine text agents', () => {
     expect(selectAiModel({}, 'cheap')).toBe('coding-cheap');
     expect(AI_AGENTS.filter((agent) => agent.tier === 'fast').map((agent) => agent.id)).toEqual([
+      'candidate-conversation',
       'prospect-profile',
       'profile-normalizer',
       'lead-scorer',
@@ -15,7 +16,12 @@ describe('AI model routing', () => {
       AI_AGENTS.filter(
         (agent) =>
           agent.tier !== 'embedding' &&
-          !['prospect-profile', 'profile-normalizer', 'lead-scorer'].includes(agent.id)
+          ![
+            'prospect-profile',
+            'profile-normalizer',
+            'candidate-conversation',
+            'lead-scorer',
+          ].includes(agent.id)
       ).every((agent) => agent.tier === 'cheap')
     ).toBe(true);
     expect(

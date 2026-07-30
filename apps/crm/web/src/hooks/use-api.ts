@@ -775,6 +775,33 @@ export interface CeoChatMessage {
   createdAt: string;
 }
 
+export interface CandidateChatContext {
+  lead: {
+    id: string;
+    leadNumber: string | null;
+    name: string;
+    headline: string | null;
+    location: string | null;
+    journeyStage: string;
+    mostRecentDegree: string | null;
+    mostRecentSchool: string | null;
+    mostRecentGraduationDate: string | null;
+    aiScore: number | null;
+    aiClassification: string | null;
+  };
+  context: {
+    linkedinMessages: number;
+    activities: number;
+    channels: number;
+    latestMessage: {
+      sentAt: string;
+      direction: 'inbound' | 'outbound';
+      senderName: string;
+      content: string;
+    } | null;
+  };
+}
+
 export function useSummarizeLead(id: string) {
   return useMutation({
     mutationFn: async () => {
@@ -953,6 +980,41 @@ export function useClearCeoChatHistory() {
       crmFetch<{ success: true }>('/api/ceo-chat/history', { method: 'DELETE' }),
     onSuccess: () => {
       qc.setQueryData(['ceo-chat', 'history'], { messages: [] });
+    },
+  });
+}
+
+export function useCandidateChatContext(leadId: string | null) {
+  return useCrmQuery(
+    ['candidate-chat', 'context', leadId ?? ''],
+    () => crmFetch<CandidateChatContext>(`/api/candidate-chat/context/${leadId}`),
+    Boolean(leadId)
+  );
+}
+
+export function useCandidateChatHistory(leadId: string | null) {
+  return useCrmQuery(
+    ['candidate-chat', 'history', leadId ?? ''],
+    () =>
+      crmFetch<{ messages: CeoChatMessage[] }>(
+        `/api/candidate-chat/history?leadId=${encodeURIComponent(leadId ?? '')}`
+      ),
+    Boolean(leadId)
+  );
+}
+
+export function useClearCandidateChatHistory(leadId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      if (!leadId) throw new Error('Choose a lead first.');
+      return crmFetch<{ success: true }>(
+        `/api/candidate-chat/history?leadId=${encodeURIComponent(leadId)}`,
+        { method: 'DELETE' }
+      );
+    },
+    onSuccess: () => {
+      qc.setQueryData(['candidate-chat', 'history', leadId ?? ''], { messages: [] });
     },
   });
 }

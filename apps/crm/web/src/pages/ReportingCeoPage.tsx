@@ -26,7 +26,9 @@ import {
   User,
   Upload,
   FileSpreadsheet,
+  MessageSquareText,
 } from 'lucide-react';
+import { CandidateConversationMode } from '../components/candidate/CandidateConversationMode.js';
 import { crmStream } from '../api.js';
 import {
   useCeoChatHistory,
@@ -395,6 +397,7 @@ function messageId() {
 
 export default function ReportingCeoPage() {
   const isSuperadmin = useAuthStore((state) => state.user?.isSuperadmin ?? false);
+  const [mode, setMode] = useState<'reporting' | 'candidate'>('reporting');
   const { data: history, isLoading: historyLoading, refetch } = useCeoChatHistory();
   const clearHistory = useClearCeoChatHistory();
   const importMessages = useImportLinkedinMessages();
@@ -609,6 +612,10 @@ export default function ReportingCeoPage() {
     );
   }
 
+  if (mode === 'candidate') {
+    return <CandidateConversationMode onBack={() => setMode('reporting')} />;
+  }
+
   return (
     <div className="mx-auto flex h-[calc(100vh-7rem)] max-w-6xl flex-col">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
@@ -625,19 +632,29 @@ export default function ReportingCeoPage() {
             </div>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={handleClear}
-          disabled={isStreaming || clearHistory.isPending || messages.length === 0}
-          className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {clearHistory.isPending ? (
-            <Loader2 size={15} className="animate-spin" />
-          ) : (
-            <Trash2 size={15} />
-          )}
-          New conversation
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setMode('candidate')}
+            className="flex items-center gap-2 rounded-lg bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-700"
+          >
+            <MessageSquareText size={15} />
+            Candidate replies
+          </button>
+          <button
+            type="button"
+            onClick={handleClear}
+            disabled={isStreaming || clearHistory.isPending || messages.length === 0}
+            className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {clearHistory.isPending ? (
+              <Loader2 size={15} className="animate-spin" />
+            ) : (
+              <Trash2 size={15} />
+            )}
+            New conversation
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-sm">

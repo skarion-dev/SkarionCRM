@@ -106,6 +106,15 @@ import {
   type ReportingSeriesItem,
 } from './lib/ceo-reporting.js';
 import {
+  buildCandidateConversationPrompt,
+  buildCandidateConversationSystemInstruction,
+  candidateContextReference,
+  parseCandidateConversationRequest,
+  sanitizeCandidateDraft,
+  type CandidateConversationContext,
+  type CandidateConversationMessage,
+} from './lib/candidate-conversation.js';
+import {
   formatBatchTag,
   isLeadActivationStage,
   isLeadHoldingStage,
@@ -8774,6 +8783,164 @@ async function upsertImportedLinkedInChannel(
   await recomputeLeadOutreachStatus(db, lead.id);
 }
 
+function candidateChatLeadReferenceFilter(leadId: string) {
+  return sql`${schema.chatMessages.contextIds} @> ${JSON.stringify(
+    candidateContextReference(leadId)
+  )}::jsonb`;
+}
+
+function normalizeCandidateLinkedinMessages(
+  conversations: Array<{ messages: unknown }>
+): CandidateConversationMessage[] {
+  const byKey = new Map<string, CandidateConversationMessage>();
+  for (const conversation of conversations) {
+    if (!Array.isArray(conversation.messages)) continue;
+    for (const raw of conversation.messages) {
+      if (!raw || typeof raw !== 'object') continue;
+      const message = raw as Record<string, unknown>;
+      const content = typeof message.content === 'string' ? message.content.trim() : '';
+      const sentAt = typeof message.sentAt === 'string' ? message.sentAt : '';
+      const direction = message.direction === 'inbound' ? 'inbound' : 'outbound';
+      if (!content || !sentAt || Number.isNaN(new Date(sentAt).getTime())) continue;
+      const normalized: CandidateConversationMessage = {
+        sentAt,
+        direction,
+        senderName: typeof message.senderName === 'string' ? message.senderName.slice(0, 200) : '',
+        content: content.slice(0, 2_000),
+      };
+      byKey.set(`${sentAt}:${direction}:${content.slice(0, 300)}`, normalized);
+    }
+  }
+  return [...byKey.values()]
+    .sort((a, b) => new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime())
+    .slice(-80);
+}
+
+async function loadCandidateConversationContext(
+  db: CrmDb,
+  lead: typeof schema.leads.$inferSelect
+): Promise<CandidateConversationContext> {
+  const [assessmentRows, channelRows, conversationRows, activityRows] = await Promise.all([
+    db
+      .select({
+        overallScore: schema.leadAiAssessments.overallScore,
+        classification: schema.leadAiAssessments.classification,
+        reasoningSummary: schema.leadAiAssessments.reasoningSummary,
+        recommendedAction: schema.leadAiAssessments.recommendedAction,
+        bestOutreachAngle: schema.leadAiAssessments.bestOutreachAngle,
+        candidateNeedEvidence: schema.leadAiAssessments.candidateNeedEvidence,
+        risksOrMissingInformation: schema.leadAiAssessments.risksOrMissingInformation,
+      })
+      .from(schema.leadAiAssessments)
+      .where(eq(schema.leadAiAssessments.leadId, lead.id))
+      .limit(1),
+    db
+      .select({
+        channel: schema.leadChannels.channel,
+        stage: schema.leadChannels.stage,
+        attemptCount: schema.leadChannels.attemptCount,
+        lastAttemptAt: schema.leadChannels.lastAttemptAt,
+        nextFollowupAt: schema.leadChannels.nextFollowupAt,
+      })
+      .from(schema.leadChannels)
+      .where(eq(schema.leadChannels.leadId, lead.id))
+      .orderBy(desc(schema.leadChannels.updatedAt)),
+    db
+      .select({ messages: schema.linkedinConversations.messages })
+      .from(schema.linkedinConversations)
+      .where(eq(schema.linkedinConversations.leadId, lead.id))
+      .orderBy(desc(schema.linkedinConversations.lastMessageAt))
+      .limit(10),
+    db
+      .select({
+        happenedAt: schema.activities.happenedAt,
+        type: schema.activities.type,
+        subject: schema.activities.subject,
+        content: schema.activities.content,
+      })
+      .from(schema.activities)
+      .where(eq(schema.activities.leadId, lead.id))
+      .orderBy(desc(schema.activities.happenedAt))
+      .limit(30),
+  ]);
+  const assessment = assessmentRows[0];
+  return {
+    lead: {
+      id: lead.id,
+      leadNumber: lead.leadNumber,
+      name: `${lead.firstName} ${lead.lastName}`.trim(),
+      headline: lead.headline,
+      location: lead.location,
+      about: lead.about?.slice(0, 5_000) ?? null,
+      currentRole: lead.currentRole,
+      currentRoleDates: lead.currentRoleDates,
+      experience: lead.experience?.slice(0, 8_000) ?? null,
+      education: lead.education?.slice(0, 5_000) ?? null,
+      skills: lead.skills?.slice(0, 3_000) ?? null,
+      profileSummary: lead.profileSummary?.slice(0, 4_000) ?? null,
+      mostRecentSchool: lead.mostRecentSchool,
+      mostRecentDegree: lead.mostRecentDegree,
+      mostRecentFieldOfStudy: lead.mostRecentFieldOfStudy,
+      mostRecentGraduationDate: lead.mostRecentGraduationDate,
+      journeyStage: lead.journeyStage,
+      source: lead.source,
+      tags: Array.isArray(lead.tags)
+        ? lead.tags.filter((tag): tag is string => typeof tag === 'string').slice(0, 30)
+        : [],
+      notes: lead.notes?.slice(0, 4_000) ?? null,
+    },
+    assessment: assessment
+      ? {
+          overallScore: assessment.overallScore,
+          classification: assessment.classification,
+          reasoningSummary: assessment.reasoningSummary,
+          recommendedAction: assessment.recommendedAction,
+          bestOutreachAngle: assessment.bestOutreachAngle,
+          candidateNeedEvidence: assessment.candidateNeedEvidence,
+          risksOrMissingInformation: Array.isArray(assessment.risksOrMissingInformation)
+            ? assessment.risksOrMissingInformation
+                .filter((item): item is string => typeof item === 'string')
+                .slice(0, 20)
+            : [],
+        }
+      : null,
+    channels: channelRows.map((row) => ({
+      channel: row.channel,
+      stage: row.stage,
+      attemptCount: row.attemptCount,
+      lastAttemptAt: row.lastAttemptAt?.toISOString() ?? null,
+      nextFollowupAt: row.nextFollowupAt?.toISOString() ?? null,
+    })),
+    linkedinMessages: normalizeCandidateLinkedinMessages(conversationRows),
+    activities: activityRows.map((row) => ({
+      happenedAt: row.happenedAt.toISOString(),
+      type: row.type,
+      subject: row.subject.slice(0, 500),
+      content: row.content?.slice(0, 2_000) ?? null,
+    })),
+  };
+}
+
+async function candidateChatHistoryRows(db: CrmDb, userId: string, leadId: string) {
+  return db
+    .select({
+      id: schema.chatMessages.id,
+      role: schema.chatMessages.role,
+      content: schema.chatMessages.content,
+      createdAt: schema.chatMessages.createdAt,
+    })
+    .from(schema.chatMessages)
+    .where(
+      and(
+        eq(schema.chatMessages.userId, userId),
+        inArray(schema.chatMessages.role, ['candidate_user', 'candidate_assistant']),
+        candidateChatLeadReferenceFilter(leadId)
+      )
+    )
+    .orderBy(asc(schema.chatMessages.createdAt))
+    .limit(100);
+}
+
 app.get('/api/ceo-chat/history', async (c) => {
   if (!c.get('isSuperadmin')) return c.json({ error: 'Forbidden.' }, 403);
 
@@ -8824,6 +8991,258 @@ app.delete('/api/ceo-chat/history', async (c) => {
     app: 'crm',
   });
   return c.json({ success: true });
+});
+
+app.get('/api/candidate-chat/context/:leadId', async (c) => {
+  if (!c.get('isSuperadmin')) return c.json({ error: 'Forbidden.' }, 403);
+  const leadId = c.req.param('leadId');
+  const db = getDb(c.env, schema) as CrmDb;
+  const [lead] = await db
+    .select()
+    .from(schema.leads)
+    .where(and(eq(schema.leads.id, leadId), isNull(schema.leads.deletedAt)))
+    .limit(1);
+  if (!lead) return c.json({ error: 'Lead not found.' }, 404);
+
+  const context = await loadCandidateConversationContext(db, lead);
+  const latestMessage = context.linkedinMessages[context.linkedinMessages.length - 1] ?? null;
+  return c.json({
+    lead: {
+      id: context.lead.id,
+      leadNumber: context.lead.leadNumber,
+      name: context.lead.name,
+      headline: context.lead.headline,
+      location: context.lead.location,
+      journeyStage: context.lead.journeyStage,
+      mostRecentDegree: context.lead.mostRecentDegree,
+      mostRecentSchool: context.lead.mostRecentSchool,
+      mostRecentGraduationDate: context.lead.mostRecentGraduationDate,
+      aiScore: context.assessment?.overallScore ?? null,
+      aiClassification: context.assessment?.classification ?? null,
+    },
+    context: {
+      linkedinMessages: context.linkedinMessages.length,
+      activities: context.activities.length,
+      channels: context.channels.length,
+      latestMessage,
+    },
+  });
+});
+
+app.get('/api/candidate-chat/history', async (c) => {
+  if (!c.get('isSuperadmin')) return c.json({ error: 'Forbidden.' }, 403);
+  const leadId = c.req.query('leadId') ?? '';
+  if (!leadId) return c.json({ error: 'leadId is required.' }, 400);
+  const db = getDb(c.env, schema) as CrmDb;
+  const rows = await candidateChatHistoryRows(db, c.get('userId'), leadId);
+  return c.json({
+    messages: rows.map((row) => ({
+      id: row.id,
+      role: row.role === 'candidate_user' ? 'user' : 'assistant',
+      content: row.content,
+      createdAt: row.createdAt.toISOString(),
+    })),
+  });
+});
+
+app.delete('/api/candidate-chat/history', async (c) => {
+  if (!c.get('isSuperadmin')) return c.json({ error: 'Forbidden.' }, 403);
+  const leadId = c.req.query('leadId') ?? '';
+  if (!leadId) return c.json({ error: 'leadId is required.' }, 400);
+  const db = getDb(c.env, schema) as CrmDb;
+  const userId = c.get('userId');
+  await db
+    .delete(schema.chatMessages)
+    .where(
+      and(
+        eq(schema.chatMessages.userId, userId),
+        inArray(schema.chatMessages.role, ['candidate_user', 'candidate_assistant']),
+        candidateChatLeadReferenceFilter(leadId)
+      )
+    );
+  await withAudit(db, schema.auditLog, {
+    actorUserId: userId,
+    action: 'delete',
+    resourceType: 'candidate_chat_history',
+    resourceId: leadId,
+    app: 'crm',
+  });
+  return c.json({ success: true });
+});
+
+app.post('/api/candidate-chat', async (c) => {
+  if (!c.get('isSuperadmin')) return c.json({ error: 'Forbidden.' }, 403);
+  const userId = c.get('userId');
+  const rateLimit = checkRateLimit(`candidate-chat:${userId}`, 40, 5 * 60 * 1000);
+  if (!rateLimit.allowed) {
+    c.header('Retry-After', String(rateLimit.retryAfter ?? 60));
+    return c.json({ error: 'Too many candidate draft requests. Please wait and try again.' }, 429);
+  }
+
+  const request = parseCandidateConversationRequest(await c.req.json().catch(() => null));
+  if (!request) {
+    return c.json(
+      { error: 'A valid lead and a message between 1 and 8,000 characters are required.' },
+      400
+    );
+  }
+
+  const db = getDb(c.env, schema) as CrmDb;
+  const [lead] = await db
+    .select()
+    .from(schema.leads)
+    .where(and(eq(schema.leads.id, request.leadId), isNull(schema.leads.deletedAt)))
+    .limit(1);
+  if (!lead) return c.json({ error: 'Lead not found.' }, 404);
+
+  const aiEnv = await getConfiguredAiEnv(db, c.env, userId);
+  if (!ai.isAiConfigured(aiEnv)) return c.json({ error: ai.AI_NOT_CONFIGURED_MSG }, 503);
+
+  const [context, historyRows] = await Promise.all([
+    loadCandidateConversationContext(db, lead),
+    candidateChatHistoryRows(db, userId, lead.id),
+  ]);
+  const historyForPrompt = historyRows.slice(-12).map((row) => ({
+    role: row.role === 'candidate_assistant' ? ('assistant' as const) : ('user' as const),
+    content: row.content,
+  }));
+  const prompt = buildCandidateConversationPrompt(context, request.message, historyForPrompt);
+  const contextIds = candidateContextReference(lead.id);
+
+  await db.insert(schema.chatMessages).values({
+    userId,
+    role: 'candidate_user',
+    content: request.message,
+    contextIds,
+  });
+
+  const encoder = new TextEncoder();
+  const stream = new TransformStream<Uint8Array, Uint8Array>();
+  const writer = stream.writable.getWriter();
+  let clientConnected = true;
+  const writeEvent = async (event: Record<string, unknown>) => {
+    if (!clientConnected) return false;
+    try {
+      await writer.write(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      return true;
+    } catch {
+      clientConnected = false;
+      return false;
+    }
+  };
+
+  const generate = async () => {
+    let answer = '';
+    let streamInterrupted = false;
+    try {
+      await writeEvent({
+        type: 'ready',
+        lead: {
+          id: lead.id,
+          name: context.lead.name,
+          leadNumber: context.lead.leadNumber,
+        },
+        context: {
+          linkedinMessages: context.linkedinMessages.length,
+          activities: context.activities.length,
+          channels: context.channels.length,
+        },
+      });
+
+      if (request.outputMode === 'reply_only') {
+        const result = await ai.extractStructured<{ draft?: unknown }>(prompt, aiEnv, {
+          tier: 'fast',
+          agent: 'candidate-conversation',
+          temperature: 0.25,
+          systemInstruction: buildCandidateConversationSystemInstruction('reply_only'),
+        });
+        const draft = sanitizeCandidateDraft(result?.draft);
+        if (!draft) throw new Error('The candidate conversation model returned an empty draft.');
+        answer = draft;
+        if (!(await writeEvent({ type: 'delta', delta: draft }))) streamInterrupted = true;
+      } else {
+        for await (const delta of ai.chatCompletionStream([{ role: 'user', text: prompt }], aiEnv, {
+          tier: 'fast',
+          agent: 'candidate-conversation',
+          temperature: 0.3,
+          maxTokens: 1_500,
+          systemInstruction: buildCandidateConversationSystemInstruction('coach'),
+        })) {
+          if (!delta) continue;
+          const remaining = 12_000 - answer.length;
+          if (remaining <= 0) break;
+          const safeDelta = delta.slice(0, remaining);
+          answer += safeDelta;
+          if (!(await writeEvent({ type: 'delta', delta: safeDelta }))) {
+            streamInterrupted = true;
+            break;
+          }
+        }
+      }
+
+      if (streamInterrupted) return;
+      if (!answer.trim()) throw new Error('The candidate conversation model returned no response.');
+
+      const [saved] = await db
+        .insert(schema.chatMessages)
+        .values({
+          userId,
+          role: 'candidate_assistant',
+          content: answer,
+          contextIds,
+        })
+        .returning({
+          id: schema.chatMessages.id,
+          createdAt: schema.chatMessages.createdAt,
+        });
+
+      await withAudit(db, schema.auditLog, {
+        actorUserId: userId,
+        action: 'generate',
+        resourceType: 'candidate_reply_draft',
+        resourceId: saved?.id ?? 'streamed',
+        after: {
+          leadId: lead.id,
+          outputMode: request.outputMode,
+          linkedinMessagesUsed: context.linkedinMessages.length,
+          activitiesUsed: context.activities.length,
+          requestCharacters: request.message.length,
+          answerCharacters: answer.length,
+          sentToCandidate: false,
+        },
+        app: 'crm',
+      });
+
+      await writeEvent({
+        type: 'done',
+        id: saved?.id ?? crypto.randomUUID(),
+        createdAt: saved?.createdAt?.toISOString() ?? new Date().toISOString(),
+      });
+    } catch (error) {
+      console.error('Candidate conversation generation failed:', error);
+      await writeEvent({
+        type: 'error',
+        error: 'The Candidate Conversation Agent could not draft this reply. Please try again.',
+      });
+    } finally {
+      try {
+        await writer.close();
+      } catch {
+        // The browser may have closed the stream.
+      }
+    }
+  };
+  c.executionCtx.waitUntil(generate());
+
+  return new Response(stream.readable, {
+    status: 200,
+    headers: {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    },
+  });
 });
 
 async function linkedinLeadLookup(db: CrmDb) {
