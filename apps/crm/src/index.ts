@@ -5082,7 +5082,10 @@ app.post('/api/leads', async (c) => {
     status: legacy.status as any,
     journeyStage,
     notes: body.notes ?? null,
-    ownerId: caller.userId,
+    // Only managers/superadmins can reach this route (see the /api/leads
+    // write-guard middleware), so any of them may assign the lead to
+    // someone else via body.ownerId; otherwise it defaults to the creator.
+    ownerId: typeof body.ownerId === 'string' && body.ownerId ? body.ownerId : caller.userId,
   };
 
   const [result] = await db.insert(schema.leads).values(data).returning();
@@ -5502,7 +5505,8 @@ app.put('/api/leads/:id', async (c) => {
     }
   }
   if (body.notes !== undefined) update.notes = body.notes;
-  if (body.ownerId !== undefined && isSuperadmin) update.ownerId = body.ownerId;
+  if (body.ownerId !== undefined && (isSuperadmin || role === 'manager'))
+    update.ownerId = body.ownerId;
   // batchId is server-controlled; only superadmins may reassign it.
   if (body.batchId !== undefined && isSuperadmin) update.batchId = body.batchId;
   // leadNumber is server-controlled and never writable via PUT.
@@ -6127,12 +6131,12 @@ app.post('/api/leads/bulk', async (c) => {
     return c.json({ error: 'Forbidden. Superadmin access is required to delete leads.' }, 403);
   }
 
-  // update_tags requires manager or superadmin; assign_owner requires superadmin only.
+  // update_tags and assign_owner both require manager or superadmin.
   if (action === 'update_tags' && !isSuperadmin && role !== 'manager') {
     return c.json({ error: 'Forbidden. Manager role required to bulk-update tags.' }, 403);
   }
-  if (action === 'assign_owner' && !isSuperadmin) {
-    return c.json({ error: 'Forbidden. Superadmin role required to reassign owners.' }, 403);
+  if (action === 'assign_owner' && !isSuperadmin && role !== 'manager') {
+    return c.json({ error: 'Forbidden. Manager role required to reassign owners.' }, 403);
   }
 
   // Rate limit: 10 bulk actions per minute per user
@@ -6144,7 +6148,7 @@ app.post('/api/leads/bulk', async (c) => {
 
   // Verify only the requested leads exist and are accessible.
   const accessConditions = [isNull(schema.leads.deletedAt), inArray(schema.leads.id, ids)];
-  if (!isSuperadmin) {
+  if (!isSuperadmin && role !== 'manager') {
     accessConditions.push(eq(schema.leads.ownerId, caller.userId));
   }
   const allAccessibleLeads = await db

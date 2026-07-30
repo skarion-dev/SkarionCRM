@@ -228,9 +228,7 @@ export default function LeadForm({ open, onClose, lead }: LeadFormProps) {
         </div>
         {canManage && (
           <div>
-            <label className="block text-sm font-medium text-slate-600 mb-1">
-              Owner / Assign to
-            </label>
+            <label className="block text-sm font-medium text-slate-600 mb-1">Assigned to</label>
             <select
               value={form.ownerId}
               onChange={(e) => handleChange('ownerId', e.target.value)}
