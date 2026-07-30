@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   Bar,
   BarChart,
@@ -17,6 +18,8 @@ import {
   AlertCircle,
   BarChart3,
   Bot,
+  CheckCircle2,
+  Database,
   Loader2,
   Send,
   ShieldCheck,
@@ -27,6 +30,7 @@ import {
   Upload,
   FileSpreadsheet,
   MessageSquareText,
+  X,
 } from 'lucide-react';
 import { CandidateConversationMode } from '../components/candidate/CandidateConversationMode.js';
 import { crmFetch } from '../api.js';
@@ -58,6 +62,22 @@ interface ChartSpec {
 
 interface CeoChatResponse {
   message: CeoChatMessage;
+  action: CeoDatabaseAction | null;
+  actionSummary: string | null;
+}
+
+interface CeoDatabaseAction {
+  entity: 'lead' | 'contact' | 'company' | 'opportunity' | 'task';
+  operation: 'update' | 'create';
+  recordIds: string[];
+  changes: Record<string, unknown>;
+  reason: string;
+}
+
+interface CeoActionResult {
+  success: true;
+  affected: number;
+  summary: string;
 }
 
 function parseChartSpec(raw: string): ChartSpec | null {
@@ -400,6 +420,7 @@ function messageId() {
 }
 
 export default function ReportingCeoPage() {
+  const queryClient = useQueryClient();
   const isSuperadmin = useAuthStore((state) => state.user?.isSuperadmin ?? false);
   const [mode, setMode] = useState<'reporting' | 'candidate'>('reporting');
   const { data: history, isLoading: historyLoading, refetch } = useCeoChatHistory();
@@ -412,6 +433,9 @@ export default function ReportingCeoPage() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [streamStatus, setStreamStatus] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [pendingActions, setPendingActions] = useState<Record<string, CeoDatabaseAction>>({});
+  const [actionResults, setActionResults] = useState<Record<string, string>>({});
+  const [applyingActionId, setApplyingActionId] = useState<string | null>(null);
   const [messageFile, setMessageFile] = useState<File | null>(null);
   const [invitationFile, setInvitationFile] = useState<File | null>(null);
   const [ownerProfileUrl, setOwnerProfileUrl] = useState('');
@@ -480,6 +504,9 @@ export default function ReportingCeoPage() {
       setMessages((current) =>
         current.map((message) => (message.id === assistantId ? result.message : message))
       );
+      if (result.action) {
+        setPendingActions((current) => ({ ...current, [result.message.id]: result.action! }));
+      }
       void refetch();
     } catch (caught) {
       const aborted = controller.signal.aborted;
@@ -499,12 +526,56 @@ export default function ReportingCeoPage() {
     }
   };
 
+  const applyAction = async (messageId: string) => {
+    const action = pendingActions[messageId];
+    if (!action || applyingActionId) return;
+    setApplyingActionId(messageId);
+    try {
+      const result = await crmFetch<CeoActionResult>('/api/ceo-chat/action', {
+        method: 'POST',
+        body: JSON.stringify({ action }),
+      });
+      setPendingActions((current) => {
+        const next = { ...current };
+        delete next[messageId];
+        return next;
+      });
+      setActionResults((current) => ({ ...current, [messageId]: result.summary }));
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['dashboard'] }),
+        queryClient.invalidateQueries({ queryKey: ['leads'] }),
+        queryClient.invalidateQueries({ queryKey: ['contacts'] }),
+        queryClient.invalidateQueries({ queryKey: ['companies'] }),
+        queryClient.invalidateQueries({ queryKey: ['opportunities'] }),
+        queryClient.invalidateQueries({ queryKey: ['tasks'] }),
+      ]);
+      showToast(result.summary, 'success');
+    } catch (caught) {
+      showToast(
+        caught instanceof Error ? caught.message : 'CRM change could not be applied',
+        'error'
+      );
+    } finally {
+      setApplyingActionId(null);
+    }
+  };
+
+  const dismissAction = (messageId: string) => {
+    setPendingActions((current) => {
+      const next = { ...current };
+      delete next[messageId];
+      return next;
+    });
+  };
+
   const handleClear = () => {
     if (!window.confirm('Clear your Reporting CEO conversation history?')) return;
     clearHistory.mutate(undefined, {
       onSuccess: () => {
         initializedRef.current = true;
         setMessages([]);
+        setPendingActions({});
+        setActionResults({});
         setError(null);
         showToast('Reporting CEO history cleared', 'success');
       },
@@ -640,7 +711,8 @@ export default function ReportingCeoPage() {
             <h2 className="text-xl font-semibold text-slate-800">Ask for the operating picture</h2>
             <p className="mt-2 max-w-xl text-sm leading-6 text-slate-500">
               This agent reads live aggregate CRM metrics, separates facts from interpretation, and
-              can render verified charts directly in its response.
+              loads relevant business records on demand. It can preview audited CRM changes for you
+              to approve without exposing credentials or integration secrets.
             </p>
             <div className="mt-6 grid w-full gap-3 sm:grid-cols-2">
               {SUGGESTIONS.map((suggestion) => (
@@ -680,7 +752,66 @@ export default function ReportingCeoPage() {
                 >
                   {message.role === 'assistant' ? (
                     message.content ? (
-                      <MarkdownReport content={message.content} />
+                      <>
+                        <MarkdownReport content={message.content} />
+                        {pendingActions[message.id] && (
+                          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                            <div className="flex items-start gap-3">
+                              <div className="rounded-lg bg-amber-100 p-2 text-amber-700">
+                                <Database size={17} />
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <p className="font-semibold text-amber-950">Review CRM change</p>
+                                <p className="mt-1 text-xs leading-5 text-amber-800">
+                                  {pendingActions[message.id]!.operation === 'create'
+                                    ? `Create a ${pendingActions[message.id]!.entity}`
+                                    : `Update ${pendingActions[message.id]!.recordIds.length} ${pendingActions[message.id]!.entity}${pendingActions[message.id]!.recordIds.length === 1 ? '' : 's'}`}
+                                  {' · '}
+                                  {Object.entries(pendingActions[message.id]!.changes)
+                                    .map(
+                                      ([field, value]) =>
+                                        `${field}: ${Array.isArray(value) ? value.join(', ') : String(value)}`
+                                    )
+                                    .join(' · ')}
+                                </p>
+                                <p className="mt-1 text-xs text-amber-700">
+                                  Nothing changes until you click Apply. The result is audit-logged.
+                                </p>
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => void applyAction(message.id)}
+                                    disabled={applyingActionId !== null}
+                                    className="inline-flex items-center gap-2 rounded-lg bg-amber-700 px-3 py-2 text-xs font-semibold text-white hover:bg-amber-800 disabled:opacity-50"
+                                  >
+                                    {applyingActionId === message.id ? (
+                                      <Loader2 size={14} className="animate-spin" />
+                                    ) : (
+                                      <CheckCircle2 size={14} />
+                                    )}
+                                    Apply change
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => dismissAction(message.id)}
+                                    disabled={applyingActionId !== null}
+                                    className="inline-flex items-center gap-2 rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                                  >
+                                    <X size={14} />
+                                    Dismiss
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                        {actionResults[message.id] && (
+                          <div className="mt-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800">
+                            <CheckCircle2 size={15} />
+                            {actionResults[message.id]}
+                          </div>
+                        )}
+                      </>
                     ) : (
                       <div className="flex items-center gap-2 py-1 text-slate-500">
                         <Loader2 size={15} className="animate-spin" />

@@ -100,8 +100,15 @@ import {
   type LinkedInMessageJobPayload,
 } from './lib/linkedinSync.js';
 import {
+  buildCeoActionPrompt,
+  buildCeoActionSystemInstruction,
   buildCeoSystemInstruction,
+  describeCeoDatabaseAction,
+  detectCeoDatabaseActionIntent,
   parseCeoQuestion,
+  sanitizeCeoDatabaseAction,
+  type CeoDatabaseAction,
+  type CeoOperationalContext,
   type CeoReportingSnapshot,
   type ReportingSeriesItem,
 } from './lib/ceo-reporting.js';
@@ -8730,6 +8737,283 @@ async function buildCeoReportingSnapshot(
   };
 }
 
+function ceoQuestionIncludes(question: string, patterns: RegExp[]) {
+  return patterns.some((pattern) => pattern.test(question));
+}
+
+function inferCeoLeadStage(
+  question: string,
+  snapshot: CeoReportingSnapshot
+): LeadJourneyStage | null {
+  const normalized = question.toLowerCase().replace(/[_-]+/g, ' ');
+  for (const stage of LEAD_JOURNEY_STAGES) {
+    if (normalized.includes(stage.replaceAll('_', ' '))) return stage;
+  }
+  const requestedCounts = [...question.matchAll(/\b(\d{1,6})\b/g)].map((match) => Number(match[1]));
+  for (const count of requestedCounts) {
+    const matches = snapshot.leadsByStatus.filter((item) => item.value === count);
+    if (matches.length === 1 && isLeadJourneyStage(matches[0]?.label)) {
+      return matches[0].label;
+    }
+  }
+  if (/\b(?:approach|outreach|reach out|email validity|valid emails?)\b/i.test(question)) {
+    return snapshot.leadsByStatus.some(
+      (item) => item.label === 'ready_to_reach_out' && item.value > 0
+    )
+      ? 'ready_to_reach_out'
+      : null;
+  }
+  return null;
+}
+
+async function buildCeoOperationalContext(
+  db: CrmDb,
+  question: string,
+  snapshot: CeoReportingSnapshot
+): Promise<CeoOperationalContext> {
+  const asksForEverything = /\b(?:everything|all crm|entire crm|company[- ]wide records?)\b/i.test(
+    question
+  );
+  const leadPatterns = [
+    /\bleads?\b/i,
+    /\bcandidates?\b/i,
+    /\bprospects?\b/i,
+    /\bprofiles?\b/i,
+    /\bemails?\b/i,
+    /\boutreach\b/i,
+    /\bapproach/i,
+    /\bscores?\b/i,
+  ];
+  const contactPatterns = [/\bcontacts?\b/i];
+  const companyPatterns = [/\bcompan(?:y|ies)\b/i, /\baccounts?\b/i];
+  const opportunityPatterns = [/\bopportunit(?:y|ies)\b/i, /\bpipeline\b/i, /\brevenue\b/i];
+  const taskPatterns = [/\btasks?\b/i, /\bworkload\b/i, /\boverdue\b/i, /\bassign/i];
+  const activityPatterns = [/\bactivit(?:y|ies)\b/i, /\btimeline\b/i, /\bhistory\b/i];
+  const conversationPatterns = [
+    /\bmessages?\b/i,
+    /\bchats?\b/i,
+    /\bconversations?\b/i,
+    /\blinkedin\b/i,
+    /\brepl(?:y|ies)\b/i,
+  ];
+  const explicitlyNamesEntity = [
+    ...leadPatterns,
+    ...contactPatterns,
+    ...companyPatterns,
+    ...opportunityPatterns,
+    ...taskPatterns,
+    ...activityPatterns,
+    ...conversationPatterns,
+  ].some((pattern) => pattern.test(question));
+  const wantsLeads =
+    asksForEverything || ceoQuestionIncludes(question, leadPatterns) || !explicitlyNamesEntity;
+  const wantsContacts = asksForEverything || ceoQuestionIncludes(question, contactPatterns);
+  const wantsCompanies = asksForEverything || ceoQuestionIncludes(question, companyPatterns);
+  const wantsOpportunities =
+    asksForEverything || ceoQuestionIncludes(question, opportunityPatterns);
+  const wantsTasks = asksForEverything || ceoQuestionIncludes(question, taskPatterns);
+  const wantsActivities = asksForEverything || ceoQuestionIncludes(question, activityPatterns);
+  const wantsConversations =
+    asksForEverything || ceoQuestionIncludes(question, conversationPatterns);
+  const leadLimit = 500;
+  const otherLimit = 200;
+  let inferredStage = wantsLeads ? inferCeoLeadStage(question, snapshot) : null;
+  if (inferredStage && detectCeoDatabaseActionIntent(question)) {
+    const targetPhrase = inferredStage.replaceAll('_', '[\\s_-]+');
+    if (new RegExp(`\\b(?:to|as)\\s+${targetPhrase}\\b`, 'i').test(question)) {
+      inferredStage = null;
+    }
+  }
+  const scope: string[] = [];
+  const truncated: string[] = [];
+
+  const leadRows = wantsLeads
+    ? await db
+        .select({
+          id: schema.leads.id,
+          leadNumber: schema.leads.leadNumber,
+          firstName: schema.leads.firstName,
+          lastName: schema.leads.lastName,
+          email: schema.leads.email,
+          phone: schema.leads.phone,
+          headline: schema.leads.headline,
+          location: schema.leads.location,
+          companyName: schema.leads.companyName,
+          currentRole: schema.leads.currentRole,
+          linkedinUrl: schema.leads.linkedinUrl,
+          source: schema.leads.source,
+          journeyStage: schema.leads.journeyStage,
+          tags: schema.leads.tags,
+          notes: schema.leads.notes,
+          profileCaptureStatus: schema.leads.profileCaptureStatus,
+          dataCompleteness: schema.leads.dataCompleteness,
+          mostRecentSchool: schema.leads.mostRecentSchool,
+          mostRecentDegree: schema.leads.mostRecentDegree,
+          mostRecentGraduationDate: schema.leads.mostRecentGraduationDate,
+          ownerId: schema.leads.ownerId,
+          createdAt: schema.leads.createdAt,
+          updatedAt: schema.leads.updatedAt,
+          score: schema.leadAiAssessments.overallScore,
+          classification: schema.leadAiAssessments.classification,
+          evidenceQuality: schema.leadAiAssessments.profileEvidenceQuality,
+          marketEntryTiming: schema.leadAiAssessments.marketEntryTiming,
+          candidateNeedEvidence: schema.leadAiAssessments.candidateNeedEvidence,
+          recommendedAction: schema.leadAiAssessments.recommendedAction,
+          bestOutreachAngle: schema.leadAiAssessments.bestOutreachAngle,
+          reasoningSummary: schema.leadAiAssessments.reasoningSummary,
+        })
+        .from(schema.leads)
+        .leftJoin(schema.leadAiAssessments, eq(schema.leadAiAssessments.leadId, schema.leads.id))
+        .where(
+          and(
+            isNull(schema.leads.deletedAt),
+            eq(schema.leads.reviewState, 'accepted'),
+            ...(inferredStage ? [eq(schema.leads.journeyStage, inferredStage)] : [])
+          )
+        )
+        .orderBy(
+          sql`${schema.leadAiAssessments.overallScore} desc nulls last`,
+          desc(schema.leads.updatedAt)
+        )
+        .limit(leadLimit + 1)
+    : [];
+  if (wantsLeads) scope.push(inferredStage ? `leads:${inferredStage}` : 'leads');
+  if (leadRows.length > leadLimit) truncated.push('leads');
+
+  const contactRows = wantsContacts
+    ? await db
+        .select()
+        .from(schema.contacts)
+        .where(isNull(schema.contacts.deletedAt))
+        .orderBy(desc(schema.contacts.updatedAt))
+        .limit(otherLimit + 1)
+    : [];
+  if (wantsContacts) scope.push('contacts');
+  if (contactRows.length > otherLimit) truncated.push('contacts');
+
+  const companyRows = wantsCompanies
+    ? await db
+        .select()
+        .from(schema.companies)
+        .where(isNull(schema.companies.deletedAt))
+        .orderBy(desc(schema.companies.updatedAt))
+        .limit(otherLimit + 1)
+    : [];
+  if (wantsCompanies) scope.push('companies');
+  if (companyRows.length > otherLimit) truncated.push('companies');
+
+  const opportunityRows = wantsOpportunities
+    ? await db
+        .select()
+        .from(schema.opportunities)
+        .where(isNull(schema.opportunities.deletedAt))
+        .orderBy(desc(schema.opportunities.updatedAt))
+        .limit(otherLimit + 1)
+    : [];
+  if (wantsOpportunities) scope.push('opportunities');
+  if (opportunityRows.length > otherLimit) truncated.push('opportunities');
+
+  const taskRows = wantsTasks
+    ? await db
+        .select()
+        .from(schema.tasks)
+        .where(isNull(schema.tasks.deletedAt))
+        .orderBy(desc(schema.tasks.updatedAt))
+        .limit(otherLimit + 1)
+    : [];
+  if (wantsTasks) scope.push('tasks');
+  if (taskRows.length > otherLimit) truncated.push('tasks');
+
+  const activityRows = wantsActivities
+    ? await db
+        .select()
+        .from(schema.activities)
+        .orderBy(desc(schema.activities.happenedAt))
+        .limit(otherLimit + 1)
+    : [];
+  if (wantsActivities) scope.push('activities');
+  if (activityRows.length > otherLimit) truncated.push('activities');
+
+  const conversationRows = wantsConversations
+    ? await db
+        .select({
+          id: schema.linkedinConversations.id,
+          leadId: schema.linkedinConversations.leadId,
+          otherPartyName: schema.linkedinConversations.otherPartyName,
+          otherPartyProfileUrl: schema.linkedinConversations.otherPartyProfileUrl,
+          messageCount: schema.linkedinConversations.messageCount,
+          outboundCount: schema.linkedinConversations.outboundCount,
+          lastMessageAt: schema.linkedinConversations.lastMessageAt,
+          lastMessageFromUs: schema.linkedinConversations.lastMessageFromUs,
+          messages: schema.linkedinConversations.messages,
+        })
+        .from(schema.linkedinConversations)
+        .orderBy(desc(schema.linkedinConversations.lastMessageAt))
+        .limit(otherLimit + 1)
+    : [];
+  if (wantsConversations) scope.push('linkedinConversations');
+  if (conversationRows.length > otherLimit) truncated.push('linkedinConversations');
+
+  return {
+    scope,
+    recordLimit: leadLimit,
+    truncated,
+    leads: leadRows.slice(0, leadLimit).map((row) => ({
+      ...row,
+      name: `${row.firstName} ${row.lastName}`.trim(),
+      emailQuality: row.email
+        ? isRealEmail(row.email)
+          ? 'valid_format_non_placeholder'
+          : 'placeholder_or_invalid'
+        : 'missing',
+      notes: row.notes?.slice(0, 2_000) ?? null,
+      reasoningSummary: row.reasoningSummary?.slice(0, 2_000) ?? null,
+      createdAt: dashboardIsoString(row.createdAt),
+      updatedAt: dashboardIsoString(row.updatedAt),
+    })),
+    contacts: contactRows.slice(0, otherLimit).map((row) => ({
+      ...row,
+      name: `${row.firstName} ${row.lastName}`.trim(),
+      emailQuality: isRealEmail(row.email)
+        ? 'valid_format_non_placeholder'
+        : 'placeholder_or_invalid',
+      deletedAt: undefined,
+      createdAt: dashboardIsoString(row.createdAt),
+      updatedAt: dashboardIsoString(row.updatedAt),
+    })),
+    companies: companyRows.slice(0, otherLimit).map((row) => ({
+      ...row,
+      deletedAt: undefined,
+      createdAt: dashboardIsoString(row.createdAt),
+      updatedAt: dashboardIsoString(row.updatedAt),
+    })),
+    opportunities: opportunityRows.slice(0, otherLimit).map((row) => ({
+      ...row,
+      deletedAt: undefined,
+      createdAt: dashboardIsoString(row.createdAt),
+      updatedAt: dashboardIsoString(row.updatedAt),
+    })),
+    tasks: taskRows.slice(0, otherLimit).map((row) => ({
+      ...row,
+      deletedAt: undefined,
+      dueDate: dashboardIsoString(row.dueDate),
+      completedAt: dashboardIsoString(row.completedAt),
+      createdAt: dashboardIsoString(row.createdAt),
+      updatedAt: dashboardIsoString(row.updatedAt),
+    })),
+    activities: activityRows.slice(0, otherLimit).map((row) => ({
+      ...row,
+      content: row.content?.slice(0, 2_000) ?? null,
+      happenedAt: dashboardIsoString(row.happenedAt),
+    })),
+    linkedinConversations: conversationRows.slice(0, otherLimit).map((row) => ({
+      ...row,
+      messages: Array.isArray(row.messages) ? row.messages.slice(-20) : [],
+      lastMessageAt: dashboardIsoString(row.lastMessageAt),
+    })),
+  };
+}
+
 // ─── DASHBOARD SUMMARY ───────────────────────────────────────────────────
 // Role-aware reporting summary. Managers and superadmins receive the team
 // snapshot; members receive the same shape filtered to records they own.
@@ -10781,6 +11065,253 @@ app.post('/api/ceo-chat/import-linkedin', async (c) => {
   });
 });
 
+async function applyCeoDatabaseAction(
+  db: CrmDb,
+  userId: string,
+  action: CeoDatabaseAction
+): Promise<{ affected: number; summary: string }> {
+  if (action.operation === 'create') {
+    if (action.entity !== 'task') throw new Error('Only task creation is supported.');
+    const changes = { ...action.changes };
+    const completed = changes.completed === true;
+    delete changes.completed;
+    const [created] = await db
+      .insert(schema.tasks)
+      .values({
+        ...(changes as typeof schema.tasks.$inferInsert),
+        completedAt: completed ? new Date() : null,
+        completedBy: completed ? userId : null,
+      })
+      .returning();
+    if (!created) throw new Error('The task could not be created.');
+    await withAudit(db, schema.auditLog, {
+      actorUserId: userId,
+      action: 'create',
+      resourceType: 'task',
+      resourceId: created.id,
+      after: { ...created, reportingCeoReason: action.reason },
+      app: 'crm',
+    });
+    return { affected: 1, summary: `Created task “${created.title}”.` };
+  }
+
+  if (action.recordIds.length === 0) throw new Error('No valid record IDs were supplied.');
+  const updatedAt = new Date();
+
+  if (action.entity === 'lead') {
+    const existing = await db
+      .select()
+      .from(schema.leads)
+      .where(and(inArray(schema.leads.id, action.recordIds), isNull(schema.leads.deletedAt)));
+    if (existing.length === 0) throw new Error('None of the requested leads still exist.');
+    const changed: Array<typeof schema.leads.$inferSelect> = [];
+    for (const lead of existing) {
+      const update: Record<string, unknown> = { ...action.changes, updatedAt };
+      if (isLeadJourneyStage(update.journeyStage)) {
+        const stage = update.journeyStage;
+        const legacy = legacyFieldsForJourney(stage);
+        update.status = legacy.status;
+        update.outreachStatus = legacy.outreachStatus;
+        update.tags = syncHoldingTagsForJourney(
+          Array.isArray(update.tags) ? update.tags : lead.tags,
+          stage
+        );
+        if (isLeadHoldingStage(stage)) {
+          await ensureTagDefinitions(
+            db,
+            [stage === 'future' ? 'Future' : 'Foreign National'],
+            userId,
+            true
+          );
+        }
+      }
+      const [result] = await db
+        .update(schema.leads)
+        .set(update)
+        .where(eq(schema.leads.id, lead.id))
+        .returning();
+      if (!result) continue;
+      changed.push(result);
+
+      if (
+        isLeadJourneyStage(action.changes.journeyStage) &&
+        isLeadHoldingStage(lead.journeyStage) &&
+        isLeadActivationStage(action.changes.journeyStage)
+      ) {
+        await enqueueLeadScoring(db, result.id);
+      }
+      if (
+        ['headline', 'location'].some((field) => field in action.changes) &&
+        hasLeadProfileEvidence(result)
+      ) {
+        await enqueueLeadProfileCleanup(db, result.id);
+      }
+    }
+    await withAudit(db, schema.auditLog, {
+      actorUserId: userId,
+      action: 'bulk_edit',
+      resourceType: 'lead',
+      resourceId: `reporting-ceo:${crypto.randomUUID()}`,
+      before: existing.map((lead) => ({ id: lead.id, updatedAt: lead.updatedAt })),
+      after: {
+        action,
+        affectedIds: changed.map((lead) => lead.id),
+      },
+      app: 'crm',
+    });
+    return {
+      affected: changed.length,
+      summary: `Updated ${changed.length} lead${changed.length === 1 ? '' : 's'}.`,
+    };
+  }
+
+  if (action.entity === 'contact') {
+    const existing = await db
+      .select()
+      .from(schema.contacts)
+      .where(and(inArray(schema.contacts.id, action.recordIds), isNull(schema.contacts.deletedAt)));
+    const changed = await db
+      .update(schema.contacts)
+      .set({ ...action.changes, updatedAt })
+      .where(and(inArray(schema.contacts.id, action.recordIds), isNull(schema.contacts.deletedAt)))
+      .returning({ id: schema.contacts.id });
+    await withAudit(db, schema.auditLog, {
+      actorUserId: userId,
+      action: 'bulk_edit',
+      resourceType: 'contact',
+      resourceId: `reporting-ceo:${crypto.randomUUID()}`,
+      before: existing.map((record) => ({ id: record.id, updatedAt: record.updatedAt })),
+      after: { action, affectedIds: changed.map((record) => record.id) },
+      app: 'crm',
+    });
+    return {
+      affected: changed.length,
+      summary: `Updated ${changed.length} contact${changed.length === 1 ? '' : 's'}.`,
+    };
+  }
+
+  if (action.entity === 'company') {
+    const existing = await db
+      .select()
+      .from(schema.companies)
+      .where(
+        and(inArray(schema.companies.id, action.recordIds), isNull(schema.companies.deletedAt))
+      );
+    const changed = await db
+      .update(schema.companies)
+      .set({ ...action.changes, updatedAt })
+      .where(
+        and(inArray(schema.companies.id, action.recordIds), isNull(schema.companies.deletedAt))
+      )
+      .returning({ id: schema.companies.id });
+    await withAudit(db, schema.auditLog, {
+      actorUserId: userId,
+      action: 'bulk_edit',
+      resourceType: 'company',
+      resourceId: `reporting-ceo:${crypto.randomUUID()}`,
+      before: existing.map((record) => ({ id: record.id, updatedAt: record.updatedAt })),
+      after: { action, affectedIds: changed.map((record) => record.id) },
+      app: 'crm',
+    });
+    return {
+      affected: changed.length,
+      summary: `Updated ${changed.length} compan${changed.length === 1 ? 'y' : 'ies'}.`,
+    };
+  }
+
+  if (action.entity === 'opportunity') {
+    const existing = await db
+      .select()
+      .from(schema.opportunities)
+      .where(
+        and(
+          inArray(schema.opportunities.id, action.recordIds),
+          isNull(schema.opportunities.deletedAt)
+        )
+      );
+    const changed = await db
+      .update(schema.opportunities)
+      .set({ ...action.changes, updatedAt })
+      .where(
+        and(
+          inArray(schema.opportunities.id, action.recordIds),
+          isNull(schema.opportunities.deletedAt)
+        )
+      )
+      .returning({ id: schema.opportunities.id });
+    await withAudit(db, schema.auditLog, {
+      actorUserId: userId,
+      action: 'bulk_edit',
+      resourceType: 'opportunity',
+      resourceId: `reporting-ceo:${crypto.randomUUID()}`,
+      before: existing.map((record) => ({ id: record.id, updatedAt: record.updatedAt })),
+      after: { action, affectedIds: changed.map((record) => record.id) },
+      app: 'crm',
+    });
+    return {
+      affected: changed.length,
+      summary: `Updated ${changed.length} opportunit${changed.length === 1 ? 'y' : 'ies'}.`,
+    };
+  }
+
+  const existing = await db
+    .select()
+    .from(schema.tasks)
+    .where(and(inArray(schema.tasks.id, action.recordIds), isNull(schema.tasks.deletedAt)));
+  const taskChanges: Record<string, unknown> = { ...action.changes, updatedAt };
+  if (typeof taskChanges.completed === 'boolean') {
+    const completed = taskChanges.completed;
+    delete taskChanges.completed;
+    taskChanges.completedAt = completed ? new Date() : null;
+    taskChanges.completedBy = completed ? userId : null;
+  }
+  const changed = await db
+    .update(schema.tasks)
+    .set(taskChanges)
+    .where(and(inArray(schema.tasks.id, action.recordIds), isNull(schema.tasks.deletedAt)))
+    .returning({ id: schema.tasks.id });
+  await withAudit(db, schema.auditLog, {
+    actorUserId: userId,
+    action: 'bulk_edit',
+    resourceType: 'task',
+    resourceId: `reporting-ceo:${crypto.randomUUID()}`,
+    before: existing.map((record) => ({ id: record.id, updatedAt: record.updatedAt })),
+    after: { action, affectedIds: changed.map((record) => record.id) },
+    app: 'crm',
+  });
+  return {
+    affected: changed.length,
+    summary: `Updated ${changed.length} task${changed.length === 1 ? '' : 's'}.`,
+  };
+}
+
+app.post('/api/ceo-chat/action', async (c) => {
+  if (!c.get('isSuperadmin')) return c.json({ error: 'Forbidden.' }, 403);
+  const body = await c.req.json().catch(() => null);
+  const action = sanitizeCeoDatabaseAction(
+    body && typeof body === 'object' ? (body as { action?: unknown }).action : null
+  );
+  if (!action) return c.json({ error: 'A valid confirmed CRM action is required.' }, 400);
+
+  try {
+    const result = await applyCeoDatabaseAction(
+      getDb(c.env, schema) as CrmDb,
+      c.get('userId'),
+      action
+    );
+    return c.json({ success: true, action, ...result });
+  } catch (error) {
+    console.error('Reporting CEO action failed:', error);
+    return c.json(
+      {
+        error:
+          error instanceof Error ? error.message : 'The confirmed CRM change could not be applied.',
+      },
+      409
+    );
+  }
+});
+
 app.post('/api/ceo-chat', async (c) => {
   const isSuperadmin = c.get('isSuperadmin') ?? false;
   if (!isSuperadmin) return c.json({ error: 'Forbidden.' }, 403);
@@ -10797,6 +11328,9 @@ app.post('/api/ceo-chat', async (c) => {
   if (!question) {
     return c.json({ error: 'A message between 1 and 8,000 characters is required.' }, 400);
   }
+  const isGreeting = /^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[\s!,.?]*$/i.test(
+    question
+  );
 
   const db = getDb(c.env, schema) as CrmDb;
   const aiEnv = await getConfiguredAiEnv(db, c.env, userId);
@@ -10819,6 +11353,47 @@ app.post('/api/ceo-chat', async (c) => {
       .orderBy(desc(schema.chatMessages.createdAt))
       .limit(12),
   ]);
+  const operationalContext: CeoOperationalContext = isGreeting
+    ? {
+        scope: [],
+        recordLimit: 0,
+        truncated: [],
+        leads: [],
+        contacts: [],
+        companies: [],
+        opportunities: [],
+        tasks: [],
+        activities: [],
+        linkedinConversations: [],
+      }
+    : await buildCeoOperationalContext(db, question, snapshot);
+  let proposedAction: CeoDatabaseAction | null = null;
+  if (!isGreeting && detectCeoDatabaseActionIntent(question)) {
+    try {
+      proposedAction = sanitizeCeoDatabaseAction(
+        await ai.extractStructured<unknown>(
+          buildCeoActionPrompt(
+            question,
+            operationalContext,
+            recentHistoryRowsWithPossibleOrphan
+              .slice(0, 6)
+              .reverse()
+              .map((row) => `${row.role}: ${row.content}`)
+              .join('\n\n')
+          ),
+          aiEnv,
+          {
+            tier: 'cheap',
+            agent: 'reporting-ceo',
+            temperature: 0,
+            systemInstruction: buildCeoActionSystemInstruction(),
+          }
+        )
+      );
+    } catch (error) {
+      console.error('Reporting CEO action proposal failed safely:', error);
+    }
+  }
 
   const [savedUserMessage] = await db
     .insert(schema.chatMessages)
@@ -10845,16 +11420,17 @@ app.post('/api/ceo-chat', async (c) => {
   // stream below for older cached clients while new clients request JSON.
   if (c.req.header('Accept')?.includes('application/json')) {
     try {
-      const isGreeting = /^(?:hi|hello|hey|good\s+(?:morning|afternoon|evening))[\s!,.?]*$/i.test(
-        question
-      );
       const generated = isGreeting
         ? 'Hi — I’m ready. Ask me about pipeline, lead quality, outreach, team workload, AI usage, or operational risks.'
         : await ai.chatCompletion(conversation, aiEnv, {
             tier: 'cheap',
             agent: 'reporting-ceo',
             temperature: 0.2,
-            systemInstruction: buildCeoSystemInstruction(snapshot),
+            systemInstruction: buildCeoSystemInstruction(
+              snapshot,
+              operationalContext,
+              proposedAction
+            ),
           });
       const answer = generated?.trim().slice(0, 40_000) ?? '';
       if (!answer) {
@@ -10869,7 +11445,21 @@ app.post('/api/ceo-chat', async (c) => {
           userId,
           role: 'ceo_assistant',
           content: answer,
-          contextIds: [{ resourceType: 'reporting_snapshot', resourceId: snapshot.generatedAt }],
+          contextIds: [
+            { resourceType: 'reporting_snapshot', resourceId: snapshot.generatedAt },
+            ...operationalContext.scope.map((scope) => ({
+              resourceType: 'ceo_operational_scope',
+              resourceId: scope,
+            })),
+            ...(proposedAction
+              ? [
+                  {
+                    resourceType: 'ceo_action_proposal',
+                    resourceId: proposedAction.entity,
+                  },
+                ]
+              : []),
+          ],
         })
         .returning({
           id: schema.chatMessages.id,
@@ -10887,6 +11477,8 @@ app.post('/api/ceo-chat', async (c) => {
           answerCharacters: answer.length,
           responseMode: 'json',
           deterministicGreeting: isGreeting,
+          operationalScope: operationalContext.scope,
+          proposedAction,
         },
         app: 'crm',
       });
@@ -10898,6 +11490,8 @@ app.post('/api/ceo-chat', async (c) => {
           content: answer,
           createdAt: saved?.createdAt?.toISOString() ?? new Date().toISOString(),
         },
+        action: proposedAction,
+        actionSummary: proposedAction ? describeCeoDatabaseAction(proposedAction) : null,
       });
     } catch (error) {
       console.error('Reporting CEO JSON generation failed:', error);
@@ -10946,7 +11540,7 @@ app.post('/api/ceo-chat', async (c) => {
         agent: 'reporting-ceo',
         temperature: 0.2,
         maxTokens: 4_000,
-        systemInstruction: buildCeoSystemInstruction(snapshot),
+        systemInstruction: buildCeoSystemInstruction(snapshot, operationalContext, null),
       })) {
         if (!delta) continue;
         const remaining = 40_000 - answer.length;
