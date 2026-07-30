@@ -3350,7 +3350,6 @@ async function drainLeadProfileQueue(db: CrmDb, env: Env, limit: number) {
 }
 
 async function drainLeadScoreQueue(db: CrmDb, env: Env, limit: number) {
-  const now = new Date();
   // Migrations run before the new Worker is published. If an older Worker
   // sees freshly queued URL-only prospects during that rolling-deploy window,
   // it can mark them deferred. Recover every unassessed URL-only row here so
@@ -3389,6 +3388,11 @@ async function drainLeadScoreQueue(db: CrmDb, env: Env, limit: number) {
         WHERE assessment."lead_id" = lead."id"
       )
   `);
+  // Capture the claim cutoff after recovery. PostgreSQL's now() above can be a
+  // few milliseconds newer than a timestamp captured before the query, which
+  // would otherwise leave every recovered job perpetually just outside the
+  // eligible window.
+  const now = new Date();
   await db.update(schema.leadScoreJobs).set({
     status: 'completed',
     completedAt: now,
