@@ -1,4 +1,5 @@
 import { canonicalizeLinkedinUrl, linkedinProfileKey } from './leadDedup.js';
+import type { LeadJourneyStage } from './leadJourney.js';
 
 export const PROSPECT_DISPOSITIONS = [
   'excellent_fit',
@@ -105,6 +106,23 @@ export function dispositionTag(disposition: ProspectDisposition): string {
       return 'Foreign National';
     case 'disqualified':
       return 'Disqualified';
+  }
+}
+
+export function journeyStageForProspectDisposition(
+  disposition: ProspectDisposition
+): LeadJourneyStage {
+  switch (disposition) {
+    case 'excellent_fit':
+    case 'maybe':
+    case 'worth_trying':
+      return 'ready_to_reach_out';
+    case 'future':
+      return 'future';
+    case 'foreign_national':
+      return 'foreign_national';
+    case 'disqualified':
+      return 'disqualified';
   }
 }
 

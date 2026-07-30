@@ -149,6 +149,7 @@ import {
   dispositionTag,
   findActiveLeadIdentityDuplicate,
   isProspectDisposition,
+  journeyStageForProspectDisposition,
   normalizeProspectCsvRecord,
   type ProspectDisposition,
   type ProspectCsvRow,
@@ -546,14 +547,7 @@ async function reviewProspect(
   });
   const effectiveDisposition: ProspectDisposition = phdDetected ? 'disqualified' : disposition;
   const accepted = effectiveDisposition !== 'disqualified';
-  const journeyStage: LeadJourneyStage =
-    effectiveDisposition === 'disqualified'
-      ? 'disqualified'
-      : effectiveDisposition === 'future'
-        ? 'future'
-        : effectiveDisposition === 'foreign_national'
-          ? 'foreign_national'
-          : 'new';
+  const journeyStage = journeyStageForProspectDisposition(effectiveDisposition);
   const legacy = legacyFieldsForJourney(journeyStage);
   const profileEvidence = Boolean(
     phdDetected ||

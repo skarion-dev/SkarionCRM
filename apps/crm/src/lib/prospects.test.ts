@@ -4,6 +4,7 @@ import {
   deriveProspectName,
   dispositionTag,
   findActiveLeadIdentityDuplicate,
+  journeyStageForProspectDisposition,
   normalizeProspectCsvRecord,
   prospectIdentityNameKey,
 } from './prospects.js';
@@ -101,6 +102,15 @@ describe('prospect ingestion', () => {
     expect(dispositionTag('excellent_fit')).toBe('Excellent Fit');
     expect(dispositionTag('foreign_national')).toBe('Foreign National');
     expect(dispositionTag('disqualified')).toBe('Disqualified');
+  });
+
+  it('moves actionable prospect dispositions directly to ready to reach out', () => {
+    expect(journeyStageForProspectDisposition('excellent_fit')).toBe('ready_to_reach_out');
+    expect(journeyStageForProspectDisposition('maybe')).toBe('ready_to_reach_out');
+    expect(journeyStageForProspectDisposition('worth_trying')).toBe('ready_to_reach_out');
+    expect(journeyStageForProspectDisposition('future')).toBe('future');
+    expect(journeyStageForProspectDisposition('foreign_national')).toBe('foreign_national');
+    expect(journeyStageForProspectDisposition('disqualified')).toBe('disqualified');
   });
 
   it('scores data completeness deterministically', () => {
