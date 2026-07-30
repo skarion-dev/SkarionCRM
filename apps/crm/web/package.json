@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && node scripts/inline-build-css.mjs",
     "preview": "vite preview",
     "test": "echo \"(stub) no tests yet for @skarion/crm-web\"",
     "typecheck": "tsc --noEmit",
