@@ -8,26 +8,43 @@ import { eq, and, isNull, sql } from 'drizzle-orm';
 import * as schema from '../db/schema.js';
 import type { CrmDb } from '../db/types.js';
 
+function linkedinUrlCandidate(raw: string): string {
+  const cleaned = raw.trim().replace(/\\\//g, '/').replace(/&amp;/gi, '&');
+  const origins = [...cleaned.matchAll(/https?:\/\/(?:(?:www|m|mobile)\.)?linkedin\.com/gi)];
+  const lastOrigin = origins.at(-1);
+  const candidate = lastOrigin?.index === undefined ? cleaned : cleaned.slice(lastOrigin.index);
+  return candidate.split(/[\s<>"']/u, 1)[0] ?? '';
+}
+
+function safeProfileIdentifier(value: string | undefined): string | null {
+  if (!value) return null;
+  try {
+    const decoded = decodeURIComponent(value).trim();
+    if (!decoded || decoded === '.' || decoded === '..' || decoded.includes('/')) return null;
+    return encodeURIComponent(decoded);
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Canonicalizes a LinkedIn profile URL so different formattings of the same
- * profile compare equal: lowercase host+path, no query string/fragment/
- * trailing slash, mobile hosts folded to www. Returns null for anything
- * that isn't parseable or isn't actually a linkedin.com URL.
+ * Canonicalizes a LinkedIn member URL to the one direct profile shape used by
+ * the CRM: https://www.linkedin.com/in/<identifier>.
+ *
+ * Recruiter exports sometimes concatenate two origins and use the
+ * /talent/profile/<member-id> route. That route is converted locally to the
+ * equivalent direct /in/<member-id> route; this function never fetches
+ * LinkedIn. Identifier casing is preserved because exported member IDs are
+ * opaque. Query strings, fragments and trailing path segments are discarded.
  */
 export function canonicalizeLinkedinUrl(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
-  const trimmed = raw
-    .trim()
-    // Recruiter exports occasionally concatenate the LinkedIn origin twice.
-    .replace(
-      /^https?:\/\/www\.linkedin\.comhttps?:\/\/(?:www\.)?linkedin\.com/i,
-      'https://www.linkedin.com'
-    );
-  if (!trimmed) return null;
+  const candidate = linkedinUrlCandidate(raw);
+  if (!candidate) return null;
 
   let parsed: URL;
   try {
-    parsed = new URL(/^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`);
+    parsed = new URL(/^https?:\/\//i.test(candidate) ? candidate : `https://${candidate}`);
   } catch {
     return null;
   }
@@ -38,8 +55,14 @@ export function canonicalizeLinkedinUrl(raw: unknown): string | null {
   }
   if (host !== 'www.linkedin.com') return null;
 
-  const path = parsed.pathname.toLowerCase().replace(/\/+$/, '');
-  return `https://${host}${path}`;
+  const parts = parsed.pathname.split('/').filter(Boolean);
+  const identifier =
+    parts[0]?.toLowerCase() === 'in'
+      ? safeProfileIdentifier(parts[1])
+      : parts[0]?.toLowerCase() === 'talent' && parts[1]?.toLowerCase() === 'profile'
+        ? safeProfileIdentifier(parts[2])
+        : null;
+  return identifier ? `https://${host}/in/${identifier}` : null;
 }
 
 /** Stable workspace-local identity for a LinkedIn profile. Unlike the full
@@ -51,9 +74,6 @@ export function linkedinProfileKey(raw: unknown): string | null {
     const parts = new URL(canonical).pathname.split('/').filter(Boolean);
     if (parts[0] === 'in' && parts[1]) {
       return decodeURIComponent(parts[1]).toLowerCase();
-    }
-    if (parts[0] === 'talent' && parts[1] === 'profile' && parts[2]) {
-      return `talent:${decodeURIComponent(parts[2]).toLowerCase()}`;
     }
     return null;
   } catch {
@@ -206,12 +226,13 @@ export async function findExactMatch(
   input: { linkedinUrl: string | null; email: string | null; phone: string | null }
 ): Promise<DedupMatch | null> {
   if (input.linkedinUrl) {
+    const linkedinUrlLower = input.linkedinUrl.toLowerCase();
     const [lead] = await db
       .select()
       .from(schema.leads)
       .where(
         and(
-          eq(sql`lower(${schema.leads.linkedinUrl})`, input.linkedinUrl),
+          eq(sql`lower(${schema.leads.linkedinUrl})`, linkedinUrlLower),
           isNull(schema.leads.deletedAt)
         )
       )
@@ -223,7 +244,7 @@ export async function findExactMatch(
       .from(schema.contacts)
       .where(
         and(
-          eq(sql`lower(${schema.contacts.linkedinUrl})`, input.linkedinUrl),
+          eq(sql`lower(${schema.contacts.linkedinUrl})`, linkedinUrlLower),
           isNull(schema.contacts.deletedAt)
         )
       )

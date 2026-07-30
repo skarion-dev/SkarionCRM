@@ -81,7 +81,8 @@ describe('prospect ingestion', () => {
       5
     );
     expect(result.row).toMatchObject({
-      linkedinProfileKey: 'talent:aemaaexample',
+      linkedinUrl: 'https://www.linkedin.com/in/AEMAAExample',
+      linkedinProfileKey: 'aemaaexample',
       headline: 'Data Scientist | SQL, Tableau, Statistics',
       location: null,
       currentRole: null,

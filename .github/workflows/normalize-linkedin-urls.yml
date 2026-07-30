@@ -1,0 +1,42 @@
+name: Normalize LinkedIn Profile URLs
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Preview or apply the idempotent Neon backfill
+        required: true
+        type: choice
+        default: dry-run
+        options:
+          - dry-run
+          - apply
+
+permissions:
+  contents: read
+
+concurrency:
+  group: normalize-linkedin-profile-urls
+  cancel-in-progress: false
+
+jobs:
+  normalize:
+    name: ${{ inputs.mode }} LinkedIn profile URL normalization
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Test the canonicalizer
+        run: pnpm --filter @skarion/crm exec vitest run src/lib/leadDedup.test.ts src/lib/prospects.test.ts src/lib/linkedinExport.test.ts
+      - name: Typecheck CRM
+        run: pnpm --filter @skarion/crm typecheck
+      - name: Preview or apply normalization
+        run: pnpm --filter @skarion/crm backfill:linkedin-urls
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          LINKEDIN_URL_BACKFILL_MODE: ${{ inputs.mode }}

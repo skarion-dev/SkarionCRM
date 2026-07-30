@@ -11,19 +11,28 @@ import {
 } from './leadDedup.js';
 
 describe('canonicalizeLinkedinUrl', () => {
-  it('lowercases and strips query string, fragment, and trailing slash', () => {
+  it('preserves the identifier and strips query string, fragment, and trailing slash', () => {
     expect(canonicalizeLinkedinUrl('https://www.linkedin.com/in/John-Doe/?trk=profile#about')).toBe(
-      'https://www.linkedin.com/in/john-doe'
+      'https://www.linkedin.com/in/John-Doe'
     );
   });
 
-  it('repairs and identifies Recruiter profile URLs without fetching them', () => {
+  it('repairs and converts Recruiter profile URLs without fetching them', () => {
     const malformed =
       'https://www.linkedin.comhttps://www.linkedin.com/talent/profile/AEMAAExample';
-    expect(canonicalizeLinkedinUrl(malformed)).toBe(
-      'https://www.linkedin.com/talent/profile/aemaaexample'
-    );
-    expect(linkedinProfileKey(malformed)).toBe('talent:aemaaexample');
+    expect(canonicalizeLinkedinUrl(malformed)).toBe('https://www.linkedin.com/in/AEMAAExample');
+    expect(linkedinProfileKey(malformed)).toBe('aemaaexample');
+  });
+
+  it('uses the last LinkedIn origin in multiply-concatenated export values', () => {
+    const malformed =
+      'https://www.linkedin.comhttps://m.linkedin.comhttps://www.linkedin.com/talent/profile/ACoAAbC123?trk=foo';
+    expect(canonicalizeLinkedinUrl(malformed)).toBe('https://www.linkedin.com/in/ACoAAbC123');
+  });
+
+  it('is idempotent for direct profile URLs containing opaque mixed-case IDs', () => {
+    const direct = 'https://www.linkedin.com/in/AEMAAExample';
+    expect(canonicalizeLinkedinUrl(canonicalizeLinkedinUrl(direct))).toBe(direct);
   });
 
   it('folds mobile and bare linkedin.com hosts to www', () => {
@@ -39,9 +48,9 @@ describe('canonicalizeLinkedinUrl', () => {
   });
 
   it('treats these three formattings of the same profile as equal', () => {
-    const a = canonicalizeLinkedinUrl('https://www.linkedin.com/in/john-doe');
-    const b = canonicalizeLinkedinUrl('https://www.linkedin.com/in/john-doe/?trk=profile');
-    const c = canonicalizeLinkedinUrl('https://linkedin.com/in/john-doe#about');
+    const a = canonicalizeLinkedinUrl('https://www.linkedin.com/in/John-Doe');
+    const b = canonicalizeLinkedinUrl('https://www.linkedin.com/in/John-Doe/?trk=profile');
+    const c = canonicalizeLinkedinUrl('https://linkedin.com/in/John-Doe#about');
     expect(a).toBe(b);
     expect(b).toBe(c);
   });
@@ -52,7 +61,9 @@ describe('canonicalizeLinkedinUrl', () => {
     );
   });
 
-  it('rejects non-LinkedIn URLs and non-strings', () => {
+  it('rejects non-profile LinkedIn URLs, non-LinkedIn URLs, and non-strings', () => {
+    expect(canonicalizeLinkedinUrl('https://www.linkedin.com/company/skarion')).toBeNull();
+    expect(canonicalizeLinkedinUrl('https://www.linkedin.com/jobs/view/123')).toBeNull();
     expect(canonicalizeLinkedinUrl('https://example.com/in/john-doe')).toBeNull();
     expect(canonicalizeLinkedinUrl('not a url at all')).toBeNull();
     expect(canonicalizeLinkedinUrl(null)).toBeNull();
