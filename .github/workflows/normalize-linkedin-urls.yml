@@ -40,3 +40,13 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           LINKEDIN_URL_BACKFILL_MODE: ${{ inputs.mode }}
+          LINKEDIN_URL_CASE_MAP_01: ${{ secrets.LINKEDIN_URL_CASE_MAP_01 }}
+          LINKEDIN_URL_CASE_MAP_02: ${{ secrets.LINKEDIN_URL_CASE_MAP_02 }}
+          LINKEDIN_URL_CASE_MAP_03: ${{ secrets.LINKEDIN_URL_CASE_MAP_03 }}
+          LINKEDIN_URL_CASE_MAP_04: ${{ secrets.LINKEDIN_URL_CASE_MAP_04 }}
+          LINKEDIN_URL_CASE_MAP_05: ${{ secrets.LINKEDIN_URL_CASE_MAP_05 }}
+          LINKEDIN_URL_CASE_MAP_06: ${{ secrets.LINKEDIN_URL_CASE_MAP_06 }}
+          LINKEDIN_URL_CASE_MAP_07: ${{ secrets.LINKEDIN_URL_CASE_MAP_07 }}
+          LINKEDIN_URL_CASE_MAP_08: ${{ secrets.LINKEDIN_URL_CASE_MAP_08 }}
+          LINKEDIN_URL_CASE_MAP_09: ${{ secrets.LINKEDIN_URL_CASE_MAP_09 }}
+          LINKEDIN_URL_CASE_MAP_10: ${{ secrets.LINKEDIN_URL_CASE_MAP_10 }}

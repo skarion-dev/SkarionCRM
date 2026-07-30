@@ -1,4 +1,5 @@
 import { neon } from '@neondatabase/serverless';
+import { gunzipSync } from 'node:zlib';
 import { canonicalizeLinkedinUrl, linkedinProfileKey } from '../lib/leadDedup.js';
 
 type SqlRow = Record<string, unknown>;
@@ -31,14 +32,43 @@ type Change = DirectChange | JsonChange;
 const databaseUrl = process.env.DATABASE_URL ?? '';
 const mode = process.env.LINKEDIN_URL_BACKFILL_MODE === 'apply' ? 'apply' : 'dry-run';
 const batchSize = 100;
+const caseMapPayload = Array.from(
+  { length: 10 },
+  (_, index) => process.env[`LINKEDIN_URL_CASE_MAP_${String(index + 1).padStart(2, '0')}`] ?? ''
+).join('');
 
 if (!databaseUrl) throw new Error('DATABASE_URL is required.');
 
 const sql = neon(databaseUrl);
+const caseMap = new Map<string, string>();
+if (caseMapPayload) {
+  const parsed = JSON.parse(
+    gunzipSync(Buffer.from(caseMapPayload, 'base64')).toString('utf8')
+  ) as Record<string, unknown>;
+  for (const [rawKey, rawUrl] of Object.entries(parsed)) {
+    const canonical = canonicalizeLinkedinUrl(rawUrl);
+    const profileKey = linkedinProfileKey(canonical);
+    if (
+      typeof rawUrl !== 'string' ||
+      !canonical ||
+      canonical !== rawUrl ||
+      profileKey !== rawKey.toLowerCase()
+    ) {
+      throw new Error(`Invalid case-map entry for profile key ${rawKey}.`);
+    }
+    caseMap.set(profileKey, canonical);
+  }
+}
+
+function canonicalForBackfill(value: unknown): string | null {
+  const canonical = canonicalizeLinkedinUrl(value);
+  const profileKey = linkedinProfileKey(canonical);
+  return (profileKey && caseMap.get(profileKey)) || canonical;
+}
 
 function canonicalChange(value: unknown): { before: string; after: string } | null {
   if (typeof value !== 'string' || !value.trim()) return null;
-  const after = canonicalizeLinkedinUrl(value);
+  const after = canonicalForBackfill(value);
   if (!after || value === after) return null;
   return { before: value, after };
 }
@@ -51,7 +81,7 @@ function normalizeProfileUrlsInJson(
     if (!propertyName || !/(?:linkedinUrl|profileUrl)$/i.test(propertyName)) {
       return { value, changed: 0 };
     }
-    const normalized = canonicalizeLinkedinUrl(value);
+    const normalized = canonicalForBackfill(value);
     return normalized && normalized !== value
       ? { value: normalized, changed: 1 }
       : { value, changed: 0 };
@@ -134,7 +164,7 @@ async function loadPlans(): Promise<{
     options?: { secondaryId?: string; profileKey?: string }
   ) => {
     if (typeof value !== 'string' || !value.trim()) return;
-    const canonical = canonicalizeLinkedinUrl(value);
+    const canonical = canonicalForBackfill(value);
     if (!canonical) {
       unresolved.push({ table, column, id, value });
       return;
@@ -172,7 +202,7 @@ async function loadPlans(): Promise<{
 
   for (const row of leads as SqlRow[]) {
     const rawUrl = typeof row.linkedin_url === 'string' ? row.linkedin_url : '';
-    const canonical = canonicalizeLinkedinUrl(rawUrl);
+    const canonical = canonicalForBackfill(rawUrl);
     if (!canonical) {
       if (!rawUrl.trim() || !/linkedin\.com/i.test(rawUrl)) {
         changes.push({
@@ -291,7 +321,7 @@ async function loadPlans(): Promise<{
   const activeContactTargets = new Map<string, string>();
   for (const row of contacts as SqlRow[]) {
     if (row.deleted_at) continue;
-    const canonical = canonicalizeLinkedinUrl(row.linkedin_url);
+    const canonical = canonicalForBackfill(row.linkedin_url);
     if (!canonical) continue;
     const key = canonical.toLowerCase();
     const prior = activeContactTargets.get(key);
@@ -304,7 +334,7 @@ async function loadPlans(): Promise<{
 
   const invitationTargets = new Map<string, string>();
   for (const row of invitations as SqlRow[]) {
-    const canonical = canonicalizeLinkedinUrl(row.other_party_profile_url);
+    const canonical = canonicalForBackfill(row.other_party_profile_url);
     if (!canonical) continue;
     const key = `${String(row.import_id)}\u0000${canonical.toLowerCase()}`;
     const prior = invitationTargets.get(key);
@@ -402,6 +432,7 @@ console.log(
   JSON.stringify(
     {
       mode,
+      caseMapEntries: caseMap.size,
       totalRowsToUpdate: plan.changes.length,
       byField: describeChanges(plan.changes),
       unresolvedCount: plan.unresolved.length,
