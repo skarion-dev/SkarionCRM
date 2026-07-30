@@ -1366,6 +1366,7 @@ async function enrichExtensionLead(
     tags: body.tags,
   });
   const now = new Date();
+  const promotedFromProspect = existing.reviewState === 'pending';
   await ensureTagDefinitions(db, [PROFILE_CAPTURE_COMPLETE_TAG], actorUserId, true);
   const tags = await ensureTagDefinitions(
     db,
@@ -1381,6 +1382,14 @@ async function enrichExtensionLead(
     tags,
     profileCaptureStatus: 'captured' as const,
     lastCapturedAt: now,
+    ...(promotedFromProspect
+      ? {
+          reviewState: 'accepted' as const,
+          reviewedAt: now,
+          reviewedBy: actorUserId,
+          rowVersion: sql`${schema.leads.rowVersion} + 1`,
+        }
+      : {}),
     ...(typeof patch.linkedinUrl === 'string'
       ? { linkedinProfileKey: linkedinProfileKey(patch.linkedinUrl) }
       : {}),
@@ -1399,6 +1408,14 @@ async function enrichExtensionLead(
   } else if (hasLeadProfileEvidence(lead)) {
     await enqueueLeadProfileCleanup(db, lead.id);
   }
+  if (promotedFromProspect) {
+    await db
+      .delete(schema.prospectReviewClaims)
+      .where(eq(schema.prospectReviewClaims.leadId, finalLead.id));
+    if (!isLeadHoldingStage(finalLead.journeyStage)) {
+      await autoCreateLeadChannels(db, finalLead);
+    }
+  }
   await linkImportedLinkedInConversationsToLead(db, finalLead);
   await withAudit(db, schema.auditLog, {
     actorUserId,
@@ -1409,6 +1426,9 @@ async function enrichExtensionLead(
     after: { ...finalLead, enrichedFields: appliedFields, source: 'linkedin-extension' },
     app: 'crm',
   });
+  if (promotedFromProspect) {
+    await publishLeadEvent(db, 'prospect.reviewed', actorUserId, finalLead);
+  }
   return { lead: finalLead, enrichedFields: appliedFields };
 }
 
@@ -4580,17 +4600,27 @@ app.get('/api/prospect-events', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   if (!getRole(c)) return c.json({ error: 'Forbidden.' }, 403);
   const after = Math.max(0, Number.parseInt(c.req.query('after') || '0', 10) || 0);
-  const events = await db
-    .select()
-    .from(schema.leadEventOutbox)
-    .where(
-      and(
-        eq(schema.leadEventOutbox.workspaceId, DEFAULT_WORKSPACE_ID),
-        sql`${schema.leadEventOutbox.sequence} > ${after}`
-      )
-    )
-    .orderBy(asc(schema.leadEventOutbox.sequence))
-    .limit(200);
+  const events =
+    after === 0
+      ? (
+          await db
+            .select()
+            .from(schema.leadEventOutbox)
+            .where(eq(schema.leadEventOutbox.workspaceId, DEFAULT_WORKSPACE_ID))
+            .orderBy(desc(schema.leadEventOutbox.sequence))
+            .limit(200)
+        ).reverse()
+      : await db
+          .select()
+          .from(schema.leadEventOutbox)
+          .where(
+            and(
+              eq(schema.leadEventOutbox.workspaceId, DEFAULT_WORKSPACE_ID),
+              sql`${schema.leadEventOutbox.sequence} > ${after}`
+            )
+          )
+          .orderBy(asc(schema.leadEventOutbox.sequence))
+          .limit(200);
   return c.json({
     events,
     cursor: events.at(-1)?.sequence ?? after,

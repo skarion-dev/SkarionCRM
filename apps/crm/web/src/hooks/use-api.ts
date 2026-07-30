@@ -435,6 +435,32 @@ export type ProspectDisposition =
   | 'foreign_national'
   | 'disqualified';
 
+function removeProspectRow(
+  current: ProspectsResponse | undefined,
+  prospectId: string
+): ProspectsResponse | undefined {
+  if (!current) return current;
+  const removed = current.prospects.find((prospect) => prospect.id === prospectId);
+  if (!removed) return current;
+  const total = Math.max(0, current.total - 1);
+  const hasActiveClaim =
+    Boolean(removed.claimedBy) &&
+    Boolean(removed.claimExpiresAt) &&
+    new Date(removed.claimExpiresAt as string).getTime() > Date.now();
+  return {
+    ...current,
+    prospects: current.prospects.filter((prospect) => prospect.id !== prospectId),
+    total,
+    totalPages: Math.ceil(total / current.pageSize),
+    matchingTotal: Math.max(0, current.matchingTotal - 1),
+    availableTotal: Math.max(
+      0,
+      current.availableTotal - (removed.linkedinUrl && !hasActiveClaim ? 1 : 0)
+    ),
+    awaitingReviewTotal: Math.max(0, current.awaitingReviewTotal - 1),
+  };
+}
+
 export function useReviewProspect() {
   const qc = useQueryClient();
   return useMutation({
@@ -447,15 +473,9 @@ export function useReviewProspect() {
         }),
       }),
     onSuccess: (_data, payload) => {
-      qc.setQueriesData<ProspectsResponse>({ queryKey: ['prospects'] }, (current) => {
-        if (!current) return current;
-        return {
-          ...current,
-          prospects: current.prospects.filter((prospect) => prospect.id !== payload.id),
-          total: Math.max(0, current.total - 1),
-        };
-      });
-      qc.invalidateQueries({ queryKey: ['prospects'] });
+      qc.setQueriesData<ProspectsResponse>({ queryKey: ['prospects'] }, (current) =>
+        removeProspectRow(current, payload.id)
+      );
       qc.invalidateQueries({ queryKey: ['leads-infinite'] });
     },
   });
@@ -481,14 +501,12 @@ export function useProspectEvents(enabled = true) {
         if (stopped) return;
         cursor.current = data.cursor;
         for (const event of data.events) {
-          if (
-            event.eventType === 'prospect.import.completed' ||
-            event.eventType === 'prospect.reviewed' ||
-            event.eventType === 'prospect.claimed'
-          ) {
+          if (event.eventType === 'prospect.import.completed') {
             await qc.invalidateQueries({ queryKey: ['prospects'] });
-            await qc.invalidateQueries({ queryKey: ['leads-infinite'] });
             continue;
+          }
+          if (event.eventType === 'prospect.reviewed') {
+            await qc.invalidateQueries({ queryKey: ['leads-infinite'] });
           }
           if (event.eventType === 'lead.profile_normalized') {
             await qc.invalidateQueries({ queryKey: ['profile-cleanup-status'] });
@@ -505,12 +523,7 @@ export function useProspectEvents(enabled = true) {
             if (!current) return current;
             const existingIndex = current.prospects.findIndex((row) => row.id === lead.id);
             if (lead.reviewState !== 'pending') {
-              if (existingIndex < 0) return current;
-              return {
-                ...current,
-                prospects: current.prospects.filter((row) => row.id !== lead.id),
-                total: Math.max(0, current.total - 1),
-              };
+              return removeProspectRow(current, lead.id);
             }
             if (existingIndex < 0) return current;
             const prospects = [...current.prospects];

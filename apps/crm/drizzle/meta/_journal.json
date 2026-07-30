@@ -232,6 +232,13 @@
       "when": 1785371000000,
       "tag": "0032_gate_scoring_on_profile_capture",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1785372500000,
+      "tag": "0033_promote_extension_captured_prospects",
+      "breakpoints": true
     }
   ]
 }
