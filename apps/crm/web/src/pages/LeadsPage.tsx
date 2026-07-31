@@ -13,7 +13,7 @@ import {
   useProspectEvents,
   useTags,
 } from '../hooks/use-api.js';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../stores/auth.js';
 import {
   Target,
@@ -1489,9 +1489,14 @@ export default function LeadsPage() {
                   </td>
                   <td className="px-4 py-3 min-w-64">
                     <div className="flex items-center gap-2">
-                      <div className="font-medium whitespace-nowrap">
+                      <Link
+                        to={`/leads/${lead.id}`}
+                        onClick={(event) => event.stopPropagation()}
+                        className="font-medium whitespace-nowrap text-slate-900 hover:text-blue-700 hover:underline"
+                        title="Open lead"
+                      >
                         {lead.firstName} {lead.lastName}
-                      </div>
+                      </Link>
                       <select
                         value={journeyOverrides[lead.id] ?? lead.journeyStage}
                         onClick={(event) => event.stopPropagation()}
@@ -1515,7 +1520,14 @@ export default function LeadsPage() {
                   </td>
                   <td className="px-4 py-3">
                     {lead.leadNumber ? (
-                      <span className="font-mono text-xs text-slate-500">{lead.leadNumber}</span>
+                      <Link
+                        to={`/leads/${lead.id}`}
+                        onClick={(event) => event.stopPropagation()}
+                        className="font-mono text-xs text-slate-500 hover:text-blue-700 hover:underline"
+                        title="Open lead"
+                      >
+                        {lead.leadNumber}
+                      </Link>
                     ) : (
                       '—'
                     )}
@@ -1617,15 +1629,14 @@ export default function LeadsPage() {
                       >
                         <Pencil size={14} />
                       </button>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          navigate(`/leads/${lead.id}`);
-                        }}
+                      <Link
+                        to={`/leads/${lead.id}`}
+                        onClick={(event) => event.stopPropagation()}
                         className="p-1.5 rounded hover:bg-slate-200 text-slate-500"
+                        title="Open lead"
                       >
                         <ArrowRight size={14} />
-                      </button>
+                      </Link>
                       {isSuperadmin && (
                         <button
                           onClick={(e) => {
