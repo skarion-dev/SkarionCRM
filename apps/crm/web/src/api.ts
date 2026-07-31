@@ -696,6 +696,13 @@ export interface LeadAiAssessment {
   updatedAt: string;
 }
 
+export interface CandidateOutreachDraft {
+  channel: 'inmail' | 'email';
+  subject: string;
+  body: string;
+  wordCount: number;
+}
+
 export type OpportunityStage =
   | 'prospecting'
   | 'qualification'

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   cosineSimilarity,
+  normalizeCandidateOutreachDraft,
   normalizeLinkedinConnectionNote,
   sanitizeNormalizedLeadProfile,
 } from './ai-service.js';
@@ -18,6 +19,25 @@ describe('LinkedIn connection note normalization', () => {
     const note = normalizeLinkedinConnectionNote(`Hi Sam, ${'fiber design '.repeat(40)}🚀`);
     expect([...note].length).toBeLessThanOrEqual(300);
     expect(note.endsWith('...')).toBe(true);
+  });
+});
+
+describe('candidate outreach draft normalization', () => {
+  it('returns an editable copy-ready subject and body for the requested channel', () => {
+    expect(
+      normalizeCandidateOutreachDraft(
+        {
+          subject: 'Subject: Your fiber design work',
+          body: '```text\nBody: Hi Sam, your OSP design work caught my attention.\n\nHow is your search going?\n```',
+        },
+        'inmail'
+      )
+    ).toEqual({
+      channel: 'inmail',
+      subject: 'Your fiber design work',
+      body: 'Hi Sam, your OSP design work caught my attention.\n\nHow is your search going?',
+      wordCount: 14,
+    });
   });
 });
 

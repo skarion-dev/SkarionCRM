@@ -26,6 +26,7 @@ import {
   leadIntakeDocumentFraming,
   parseJsonFromAiText,
 } from './ai-prompts.js';
+import { buildSkarionPlaybookContext } from './skarion-operating-knowledge.js';
 
 interface Env extends AiGatewayEnv {
   AI_PROVIDER?: string;
@@ -564,6 +565,130 @@ No markdown formatting, plain text only. Include one clear call to action. ${SUP
     tier: 'cheap',
     agent: 'outreach-writer',
   });
+}
+
+export type CandidateOutreachChannel = 'inmail' | 'email';
+
+export interface CandidateOutreachDraft {
+  channel: CandidateOutreachChannel;
+  subject: string;
+  body: string;
+  wordCount: number;
+}
+
+export interface CandidateOutreachAssessmentContext {
+  classification: string;
+  verifiedPositiveSignals: string[];
+  risksOrMissingInformation: string[];
+  bestOutreachAngle: string;
+  qualificationQuestions: string[];
+}
+
+function cleanOutreachDraftText(value: unknown): string {
+  return String(value ?? '')
+    .replace(/```(?:text|markdown)?/gi, '')
+    .replace(/```/g, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+export function normalizeCandidateOutreachDraft(
+  draft: Partial<CandidateOutreachDraft>,
+  channel: CandidateOutreachChannel
+): CandidateOutreachDraft {
+  const subject = cleanOutreachDraftText(draft.subject)
+    .replace(/^subject\s*:\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .slice(0, 80)
+    .trim();
+  const body = cleanOutreachDraftText(draft.body)
+    .replace(/^(?:body|message)\s*:\s*/i, '')
+    .replace(/^["“]|["”]$/g, '');
+  return {
+    channel,
+    subject,
+    body,
+    wordCount: body ? body.split(/\s+/).length : 0,
+  };
+}
+
+export async function draftCandidateOutreach(
+  lead: LeadQualificationInput,
+  assessment: CandidateOutreachAssessmentContext | null,
+  channel: CandidateOutreachChannel,
+  env: Env
+): Promise<CandidateOutreachDraft | null> {
+  if (!isAiConfigured(env)) return null;
+
+  const channelRules =
+    channel === 'inmail'
+      ? `Write a LinkedIn InMail with a 3-7 word subject and a 55-90 word body.
+It must feel native to LinkedIn and conversational, not like an email campaign.`
+      : `Write a cold email with a 3-8 word subject and an 80-130 word body.
+Use short paragraphs that are easy to scan on a phone.`;
+  const playbook = buildSkarionPlaybookContext(
+    `Draft concise ${channel} candidate outreach using the supported pathway, candidate journey, conversation style, discovery, and ethical rules.`
+  );
+
+  const result = await extractStructured<Partial<CandidateOutreachDraft>>(
+    `You are Skarion's Candidate Outreach Drafting Agent. You run only when an
+operator explicitly requests a draft. Create one copy-ready first-touch message.
+
+${channelRules}
+
+MESSAGE REQUIREMENTS
+- Use one specific verified profile detail as the opening hook.
+- Connect that detail to one realistic Skarion-supported career pathway.
+- Give the person a reason to reply without presenting a long sales pitch.
+- End with one easy, relevant question about their target roles, current search,
+  or openness to the identified pathway.
+- Ask exactly one question. Do not request a meeting in the first message.
+- Do not include a booking link, fee explanation, guarantee, emoji, hashtag,
+  generic praise, invented pain point, or unsupported personal inference.
+- Do not call Skarion a staffing agency or imply that Skarion is the employer.
+- Output only JSON with string fields "subject" and "body".
+
+CANONICAL SKARION PLAYBOOK
+${playbook}
+
+VERIFIED LEAD CONTEXT
+Name: ${lead.firstName} ${lead.lastName}
+${lead.companyName ? `Company: ${lead.companyName}` : ''}
+${lead.title ? `Headline/title: ${lead.title}` : ''}
+Status: ${lead.status}
+Source: ${lead.source}
+${lead.profileSummary ? `Clean profile summary: ${lead.profileSummary}` : ''}
+${lead.education?.length ? `Education: ${JSON.stringify(lead.education).substring(0, 6000)}` : ''}
+${lead.experience?.length ? `Experience: ${JSON.stringify(lead.experience).substring(0, 9000)}` : ''}
+${lead.skills?.length ? `Skills: ${lead.skills.join(', ').substring(0, 3000)}` : ''}
+${lead.notes ? `Additional verified notes: ${lead.notes.substring(0, 8000)}` : ''}
+
+${
+  assessment
+    ? `SAVED QUALIFICATION CONTEXT
+Classification: ${assessment.classification}
+Verified positive signals: ${assessment.verifiedPositiveSignals.join('; ')}
+Missing or risky information: ${assessment.risksOrMissingInformation.join('; ')}
+Best supported outreach angle: ${assessment.bestOutreachAngle}
+Useful qualification questions: ${assessment.qualificationQuestions.join('; ')}`
+    : 'No saved qualification assessment is available. Stay conservative and use only the verified lead context.'
+}
+
+Return:
+{"subject":"...","body":"..."}`,
+    env,
+    {
+      agent: 'candidate-outreach-drafter',
+      tier: 'cheap',
+      temperature: 0.35,
+    }
+  );
+  if (!result) return null;
+
+  const normalized = normalizeCandidateOutreachDraft(result, channel);
+  return normalized.subject && normalized.body ? normalized : null;
 }
 
 // ── PDF lead extraction ────────────────────────────────────────────────────

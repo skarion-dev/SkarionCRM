@@ -3,7 +3,22 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark light" />
   <title>Skarion CRM</title>
+  <script>
+    (() => {
+      let theme = null;
+      try {
+        theme = localStorage.getItem('skarion-crm-theme');
+      } catch {
+        // Storage can be unavailable in locked-down browsers; default to dark.
+      }
+      const selected = theme === 'light' ? 'light' : 'dark';
+      document.documentElement.classList.toggle('dark', selected === 'dark');
+      document.documentElement.dataset.theme = selected;
+      document.documentElement.style.colorScheme = selected;
+    })();
+  </script>
 </head>
 <body>
   <div id="root"></div>

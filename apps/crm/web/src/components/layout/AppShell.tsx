@@ -33,7 +33,22 @@ import {
   Info,
   Crown,
   ClipboardCheck,
+  Moon,
+  Sun,
 } from 'lucide-react';
+
+const THEME_STORAGE_KEY = 'skarion-crm-theme';
+
+type Theme = 'dark' | 'light';
+
+function getInitialTheme(): Theme {
+  if (typeof window === 'undefined') return 'dark';
+  try {
+    return window.localStorage.getItem(THEME_STORAGE_KEY) === 'light' ? 'light' : 'dark';
+  } catch {
+    return 'dark';
+  }
+}
 
 const NAV_ITEMS = [
   { icon: LayoutDashboard, label: 'Dashboard', path: '/', roles: ['manager', 'member'] },
@@ -77,6 +92,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const logout = useAuthStore((s: AuthStore) => s.logout);
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [theme, setTheme] = useState<Theme>(getInitialTheme);
   const navigate = useNavigate();
 
   // Search state
@@ -99,6 +115,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const searchResults = searchData?.results ?? [];
   const notifications = notificationsData?.notifications ?? [];
   const unreadCount = countData?.count ?? 0;
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.toggle('dark', theme === 'dark');
+    root.dataset.theme = theme;
+    root.style.colorScheme = theme;
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // The theme still works for this session when storage is unavailable.
+    }
+  }, [theme]);
 
   useEffect(() => {
     if (!user) {
@@ -351,6 +379,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
 
           <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
+              className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-white px-2.5 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900"
+              aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+              aria-pressed={theme === 'dark'}
+              title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+            >
+              {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+              <span className="hidden xl:inline">{theme === 'dark' ? 'Light' : 'Dark'}</span>
+            </button>
+
             {/* Notifications */}
             <div className="relative" ref={notifRef}>
               <button

@@ -11798,6 +11798,60 @@ app.post('/api/leads/:id/outreach', async (c) => {
   return c.json({ draft });
 });
 
+app.post('/api/leads/:id/candidate-outreach-draft', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const id = c.req.param('id');
+  const role = getRole(c);
+  const isSuperadmin = c.get('isSuperadmin');
+  const caller = { userId: c.get('userId'), isSuperadmin };
+
+  const [lead] = await db
+    .select()
+    .from(schema.leads)
+    .where(and(eq(schema.leads.id, id), isNull(schema.leads.deletedAt)));
+  if (!lead) return c.json({ error: 'Not found.' }, 404);
+  if (!can(isSuperadmin, role, 'view', { ownerId: lead.ownerId }, caller)) {
+    return c.json({ error: 'Forbidden.' }, 403);
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const channel = body.channel === 'inmail' || body.channel === 'email' ? body.channel : null;
+  if (!channel) {
+    return c.json({ error: 'Channel must be either "inmail" or "email".' }, 400);
+  }
+
+  const [assessment] = await db
+    .select()
+    .from(schema.leadAiAssessments)
+    .where(eq(schema.leadAiAssessments.leadId, id))
+    .limit(1);
+  const assessmentContext = assessment
+    ? {
+        classification: assessment.classification,
+        verifiedPositiveSignals: Array.isArray(assessment.verifiedPositiveSignals)
+          ? (assessment.verifiedPositiveSignals as string[])
+          : [],
+        risksOrMissingInformation: Array.isArray(assessment.risksOrMissingInformation)
+          ? (assessment.risksOrMissingInformation as string[])
+          : [],
+        bestOutreachAngle: assessment.bestOutreachAngle,
+        qualificationQuestions: Array.isArray(assessment.qualificationQuestions)
+          ? (assessment.qualificationQuestions as string[])
+          : [],
+      }
+    : null;
+
+  const draft = await ai.draftCandidateOutreach(
+    structuredLeadQualificationInput(lead),
+    assessmentContext,
+    channel,
+    await getConfiguredAiEnv(db, c.env)
+  );
+  if (!draft) return c.json({ error: ai.AI_NOT_CONFIGURED_MSG }, 503);
+
+  return c.json({ draft });
+});
+
 app.post('/api/leads/:id/score', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const id = c.req.param('id');

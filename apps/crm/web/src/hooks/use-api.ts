@@ -7,6 +7,7 @@ import {
   type Contact,
   type Lead,
   type LeadAiAssessment,
+  type CandidateOutreachDraft,
   type Opportunity,
   type Task,
   type DashboardData,
@@ -866,6 +867,20 @@ export function useDraftOutreach(id: string) {
         method: 'POST',
         body: JSON.stringify(opts),
       });
+    },
+  });
+}
+
+export function useDraftCandidateOutreach(id: string) {
+  return useMutation({
+    mutationFn: async (channel: 'inmail' | 'email') => {
+      return crmFetch<{ draft: CandidateOutreachDraft }>(
+        `/api/leads/${id}/candidate-outreach-draft`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ channel }),
+        }
+      );
     },
   });
 }

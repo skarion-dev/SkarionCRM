@@ -7,6 +7,7 @@ import {
   useGenerateLeadAiAssessment,
   useUpdateLeadConnectionNote,
   useLogOutreachAction,
+  useDraftCandidateOutreach,
 } from '../hooks/use-api.js';
 import { showToast } from '../stores/toast.js';
 import {
@@ -48,7 +49,7 @@ import ActivityForm from '../components/ActivityForm.js';
 import LeadForm from '../components/forms/LeadForm.js';
 import ChannelPanel from '../components/ChannelPanel.js';
 import Attachments from '../components/Attachments.js';
-import type { ActivityType, LeadJourneyStage } from '../api.js';
+import type { ActivityType, CandidateOutreachDraft, LeadJourneyStage } from '../api.js';
 import {
   ACTIVE_LEAD_JOURNEY,
   LEAD_JOURNEY_LABELS,
@@ -133,6 +134,7 @@ export default function LeadDetail() {
   const generateAiAssessment = useGenerateLeadAiAssessment(id ?? '');
   const updateConnectionNote = useUpdateLeadConnectionNote(id ?? '');
   const updateOutreachStage = useLogOutreachAction(id ?? '');
+  const draftCandidateOutreach = useDraftCandidateOutreach(id ?? '');
   const deleteMutation = useDeleteEntity();
   const updateLead = useUpdateEntity('leads');
   const [editOpen, setEditOpen] = useState(false);
@@ -142,6 +144,9 @@ export default function LeadDetail() {
   const [connectionNoteAction, setConnectionNoteAction] = useState<
     'copied' | 'copied-and-sent' | null
   >(null);
+  const [outreachDraft, setOutreachDraft] = useState<CandidateOutreachDraft | null>(null);
+  const [draftingChannel, setDraftingChannel] = useState<'inmail' | 'email' | null>(null);
+  const [outreachDraftCopied, setOutreachDraftCopied] = useState(false);
   const aiAssessment = aiAssessmentData?.assessment ?? generateAiAssessment.data?.assessment;
 
   useEffect(() => {
@@ -278,6 +283,39 @@ export default function LeadDetail() {
             : 'Could not copy the connection note',
         'error'
       );
+    }
+  };
+
+  const handleDraftCandidateOutreach = (channel: 'inmail' | 'email') => {
+    setDraftingChannel(channel);
+    setOutreachDraftCopied(false);
+    draftCandidateOutreach.mutate(channel, {
+      onSuccess: ({ draft }) => {
+        setOutreachDraft(draft);
+        showToast(`${channel === 'inmail' ? 'InMail' : 'Email'} draft ready`, 'success');
+      },
+      onError: (error) =>
+        showToast(
+          error instanceof Error ? error.message : 'Could not create the outreach draft',
+          'error'
+        ),
+      onSettled: () => setDraftingChannel(null),
+    });
+  };
+
+  const handleCopyOutreachDraft = async () => {
+    if (!outreachDraft) return;
+    const copyText = `Subject: ${outreachDraft.subject}\n\n${outreachDraft.body}`.trim();
+    try {
+      await navigator.clipboard.writeText(copyText);
+      setOutreachDraftCopied(true);
+      showToast(
+        `${outreachDraft.channel === 'inmail' ? 'InMail' : 'Email'} draft copied`,
+        'success'
+      );
+      window.setTimeout(() => setOutreachDraftCopied(false), 2500);
+    } catch {
+      showToast('Could not copy the outreach draft', 'error');
     }
   };
 
@@ -444,6 +482,36 @@ export default function LeadDetail() {
                   : 'Generate Connection Note'}
             </button>
 
+            <button
+              type="button"
+              onClick={() => handleDraftCandidateOutreach('inmail')}
+              disabled={draftCandidateOutreach.isPending}
+              className="flex items-center gap-1.5 rounded-md border border-indigo-200 px-3 py-2 text-sm font-medium text-indigo-700 transition-colors hover:bg-indigo-50 disabled:cursor-wait disabled:opacity-60"
+              title="Run the playbook-grounded agent once and draft a concise LinkedIn InMail"
+            >
+              {draftingChannel === 'inmail' ? (
+                <LoaderCircle size={16} className="animate-spin" />
+              ) : (
+                <Linkedin size={16} />
+              )}
+              {draftingChannel === 'inmail' ? 'Drafting InMail…' : 'Draft InMail'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleDraftCandidateOutreach('email')}
+              disabled={draftCandidateOutreach.isPending}
+              className="flex items-center gap-1.5 rounded-md border border-indigo-200 px-3 py-2 text-sm font-medium text-indigo-700 transition-colors hover:bg-indigo-50 disabled:cursor-wait disabled:opacity-60"
+              title="Run the playbook-grounded agent once and draft a concise cold email"
+            >
+              {draftingChannel === 'email' ? (
+                <LoaderCircle size={16} className="animate-spin" />
+              ) : (
+                <Mail size={16} />
+              )}
+              {draftingChannel === 'email' ? 'Drafting Email…' : 'Draft Email'}
+            </button>
+
             {lead.journeyStage === 'connected' && (
               <button
                 onClick={() => handleStatusChange('engaged')}
@@ -502,6 +570,83 @@ export default function LeadDetail() {
               )}
             </div>
           </div>
+
+          {outreachDraft && (
+            <div className="mb-6 rounded-xl border border-indigo-200 bg-indigo-50/60 p-4">
+              <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Sparkles size={17} className="text-indigo-600" />
+                    <h2 className="font-semibold text-indigo-950">
+                      Candidate Outreach Drafting Agent
+                    </h2>
+                    <span className="rounded-full bg-indigo-600 px-2.5 py-1 text-xs font-semibold text-white">
+                      {outreachDraft.channel === 'inmail' ? 'InMail' : 'Email'}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-indigo-700">
+                    Playbook-grounded · Runs only when clicked · Editable · Never auto-sent
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCopyOutreachDraft}
+                  className="flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700"
+                >
+                  {outreachDraftCopied ? <Check size={15} /> : <Copy size={15} />}
+                  {outreachDraftCopied ? 'Copied' : 'Copy Draft'}
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                <label className="block">
+                  <span className="mb-1 block text-xs font-semibold uppercase tracking-wider text-indigo-700">
+                    Subject
+                  </span>
+                  <input
+                    type="text"
+                    value={outreachDraft.subject}
+                    maxLength={80}
+                    onChange={(event) =>
+                      setOutreachDraft((current) =>
+                        current ? { ...current, subject: event.target.value } : current
+                      )
+                    }
+                    className="w-full rounded-md border border-indigo-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 flex items-center justify-between gap-3 text-xs font-semibold uppercase tracking-wider text-indigo-700">
+                    <span>Message</span>
+                    <span className="font-medium normal-case text-slate-500">
+                      {outreachDraft.body.trim()
+                        ? outreachDraft.body.trim().split(/\s+/).length
+                        : 0}{' '}
+                      words
+                    </span>
+                  </span>
+                  <textarea
+                    value={outreachDraft.body}
+                    rows={6}
+                    onChange={(event) =>
+                      setOutreachDraft((current) =>
+                        current
+                          ? {
+                              ...current,
+                              body: event.target.value,
+                              wordCount: event.target.value.trim()
+                                ? event.target.value.trim().split(/\s+/).length
+                                : 0,
+                            }
+                          : current
+                      )
+                    }
+                    className="w-full resize-y rounded-md border border-indigo-200 bg-white px-3 py-2 text-sm leading-relaxed text-slate-800 outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+                  />
+                </label>
+              </div>
+            </div>
+          )}
 
           {aiAssessment && (
             <div className="mb-6 rounded-xl border border-violet-200 bg-violet-50/60 p-4">

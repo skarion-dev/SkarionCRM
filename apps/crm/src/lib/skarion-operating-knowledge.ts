@@ -301,6 +301,12 @@ const AGENT_ROLES: Record<string, { operationalRole: string; storedContext: stri
     operationalRole: 'Drafts channel-appropriate email, LinkedIn, and SMS outreach.',
     storedContext: 'Generated draft returned to the operator; not automatically marked sent.',
   },
+  'candidate-outreach-drafter': {
+    operationalRole:
+      'Creates concise, playbook-grounded InMail and email drafts only when an operator requests one.',
+    storedContext:
+      'Uses the cleaned lead profile and saved qualification assessment; drafts are editable and are never automatically sent.',
+  },
   'lead-scorer': {
     operationalRole: 'Applies the canonical 105-point Need/Fit/Openness qualification rubric.',
     storedContext:
@@ -371,4 +377,11 @@ export function buildSkarionOperatingKnowledge(
       'Never expose credentials, tokens, authentication secrets, or integration secrets.',
     ],
   };
+}
+
+export function buildSkarionPlaybookContext(question: string): string {
+  const knowledge = buildSkarionOperatingKnowledge(question, []);
+  return knowledge.sections
+    .map((section) => `## ${section.title}\n${section.content}`)
+    .join('\n\n');
 }

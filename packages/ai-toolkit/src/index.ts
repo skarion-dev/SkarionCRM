@@ -201,6 +201,7 @@ export type AiAgentId =
   | 'linkedin-connection-writer'
   | 'linkedin-message-updater'
   | 'linkedin-invitation-reconciler'
+  | 'candidate-outreach-drafter'
   | 'outreach-writer'
   | 'lead-scorer'
   | 'next-best-action'
@@ -294,6 +295,13 @@ export const AI_AGENTS: ReadonlyArray<{
     id: 'outreach-writer',
     name: 'Outreach Writer',
     description: 'Drafts email, LinkedIn, and SMS outreach.',
+    tier: 'cheap',
+  },
+  {
+    id: 'candidate-outreach-drafter',
+    name: 'Candidate Outreach Drafting Agent',
+    description:
+      'Runs only on demand to create concise, playbook-grounded InMail and email drafts with a reply-oriented hook.',
     tier: 'cheap',
   },
   {
