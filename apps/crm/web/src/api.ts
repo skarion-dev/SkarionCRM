@@ -36,6 +36,71 @@ export function getAccessToken(): string | null {
   return accessToken;
 }
 
+interface AuthUser {
+  id: string;
+  email: string;
+  name?: string;
+  role: string;
+  isSuperadmin: boolean;
+}
+
+type AuthChannelMessage =
+  | { type: 'session-request'; requestId: string }
+  | { type: 'session-response'; requestId: string; accessToken: string }
+  | { type: 'session-updated'; accessToken: string };
+
+const authChannel =
+  typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel('skarion-crm-auth');
+
+function publishAccessToken(token: string): void {
+  authChannel?.postMessage({
+    type: 'session-updated',
+    accessToken: token,
+  } satisfies AuthChannelMessage);
+}
+
+function requestPeerAccessToken(timeoutMs = 650): Promise<string | null> {
+  if (!authChannel) return Promise.resolve(null);
+
+  const requestId =
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  return new Promise((resolve) => {
+    const finish = (token: string | null) => {
+      window.clearTimeout(timeout);
+      authChannel.removeEventListener('message', handleMessage);
+      resolve(token);
+    };
+    const handleMessage = (event: MessageEvent<AuthChannelMessage>) => {
+      const message = event.data;
+      if (message.type === 'session-response' && message.requestId === requestId) {
+        finish(message.accessToken);
+      }
+    };
+    const timeout = window.setTimeout(() => finish(null), timeoutMs);
+
+    authChannel.addEventListener('message', handleMessage);
+    authChannel.postMessage({ type: 'session-request', requestId } satisfies AuthChannelMessage);
+  });
+}
+
+authChannel?.addEventListener('message', (event: MessageEvent<AuthChannelMessage>) => {
+  const message = event.data;
+  if (message.type === 'session-request' && accessToken) {
+    authChannel.postMessage({
+      type: 'session-response',
+      requestId: message.requestId,
+      accessToken,
+    } satisfies AuthChannelMessage);
+  } else if (message.type === 'session-updated') {
+    // Access JWTs stay in memory. This keeps already-open tabs synchronized
+    // after one tab refreshes without exposing the token to persistent storage.
+    accessToken = message.accessToken;
+  }
+});
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -121,6 +186,27 @@ interface RefreshedSession {
   };
 }
 
+async function validateAccessToken(token: string): Promise<AuthUser | null> {
+  try {
+    const response = await fetch(`${IDENTITY_API_URL}/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    return {
+      id: data.id,
+      email: data.email,
+      name: data.displayName,
+      role: data.apps?.crm ?? '',
+      isSuperadmin: data.isSuperadmin,
+    };
+  } catch (err) {
+    console.error('[Auth] Failed to validate access token:', err);
+    return null;
+  }
+}
+
 async function requestRefreshedSession(): Promise<RefreshedSession | null> {
   const refresh = async (): Promise<RefreshedSession | null> => {
     let refreshTokenUsed = safeStorageGet('refresh_token');
@@ -156,6 +242,7 @@ async function requestRefreshedSession(): Promise<RefreshedSession | null> {
     const data = (await response.json()) as RefreshedSession;
     accessToken = data.access_token;
     if (data.refresh_token) safeStorageSet('refresh_token', data.refresh_token);
+    publishAccessToken(data.access_token);
     return data;
   };
 
@@ -211,32 +298,25 @@ export async function bootstrapAuth(): Promise<{
         console.log('[Auth] bootstrapAuth: hash tokens found, validating...');
         accessToken = hashTokens.accessToken;
         safeStorageSet('refresh_token', hashTokens.refreshToken);
-        try {
-          console.log('[Auth] bootstrapAuth: fetching /me to validate access token...');
-          const response = await fetch(`${IDENTITY_API_URL}/me`, {
-            headers: { Authorization: `Bearer ${accessToken}` },
-          });
-          console.log(
-            '[Auth] bootstrapAuth: /me response status:',
-            response.status,
-            'ok:',
-            response.ok
-          );
-          if (response.ok) {
-            const data = await response.json();
-            console.log('[Auth] bootstrapAuth: /me validation successful, user:', data.email);
-            return {
-              id: data.id,
-              email: data.email,
-              name: data.displayName,
-              role: data.apps?.crm ?? '',
-              isSuperadmin: data.isSuperadmin,
-            };
-          } else {
-            console.warn('[Auth] bootstrapAuth: /me returned non-ok status:', response.status);
-          }
-        } catch (meErr) {
-          console.error('[Auth] bootstrapAuth: /me fetch failed with error:', meErr);
+        const hashUser = await validateAccessToken(hashTokens.accessToken);
+        if (hashUser) {
+          console.log('[Auth] bootstrapAuth: hash token validation successful:', hashUser.email);
+          publishAccessToken(hashTokens.accessToken);
+          return hashUser;
+        }
+      }
+
+      // A newly opened CRM tab has no in-memory JWT. Ask an authenticated tab
+      // on the same origin for its short-lived token before rotating the shared
+      // refresh token or sending the user back through the login form.
+      console.log('[Auth] bootstrapAuth: requesting session from an open CRM tab...');
+      const peerToken = await requestPeerAccessToken();
+      if (peerToken) {
+        const peerUser = await validateAccessToken(peerToken);
+        if (peerUser) {
+          accessToken = peerToken;
+          console.log('[Auth] bootstrapAuth: peer session accepted:', peerUser.email);
+          return peerUser;
         }
       }
 
