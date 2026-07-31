@@ -70,6 +70,13 @@ describe('lead tags', () => {
     expect(
       profileCaptureCompleteTags(['Batch 8', 'Needs Profile Capture', 'PROFILE CAPTURE COMPLETE'])
     ).toEqual(['Batch 8', 'profile capture complete']);
+    expect(
+      profileCaptureCompleteTags([
+        'Batch 9',
+        'profile-capture-needed',
+        'Needs LinkedIn Profile Capture',
+      ])
+    ).toEqual(['Batch 9', 'profile capture complete']);
     expect(profileCaptureCompleteTags(null)).toEqual(['profile capture complete']);
   });
 });

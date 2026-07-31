@@ -23,6 +23,19 @@ export type LeadJourneyStage = (typeof LEAD_JOURNEY_STAGES)[number];
 export const NEEDS_PROFILE_CAPTURE_TAG = 'needs profile capture';
 export const PROFILE_CAPTURE_COMPLETE_TAG = 'profile capture complete';
 
+const PROFILE_CAPTURE_PENDING_TAGS = new Set([
+  'needs profile capture',
+  'profile capture needed',
+  'profile capture required',
+  'profile capture pending',
+  'needs linkedin profile capture',
+  'linkedin profile capture needed',
+]);
+
+function normalizedWorkflowTagName(tag: string): string {
+  return tag.trim().toLowerCase().replace(/[-_]+/g, ' ').replace(/\s+/g, ' ');
+}
+
 const ACTIVE_STAGE_RANK: Partial<Record<LeadJourneyStage, number>> = {
   future: 0,
   foreign_national: 0,
@@ -186,12 +199,13 @@ export function hasLeadTag(values: unknown, expectedTag: string): boolean {
 }
 
 export function profileCaptureCompleteTags(values: unknown): string[] {
-  const obsoleteTags = new Set([
-    NEEDS_PROFILE_CAPTURE_TAG.toLowerCase(),
-    PROFILE_CAPTURE_COMPLETE_TAG.toLowerCase(),
-  ]);
   return normalizeTagNames([
-    ...normalizeTagNames(values).filter((tag) => !obsoleteTags.has(tag.toLowerCase())),
+    ...normalizeTagNames(values).filter((tag) => {
+      const normalized = normalizedWorkflowTagName(tag);
+      return (
+        !PROFILE_CAPTURE_PENDING_TAGS.has(normalized) && normalized !== PROFILE_CAPTURE_COMPLETE_TAG
+      );
+    }),
     PROFILE_CAPTURE_COMPLETE_TAG,
   ]);
 }

@@ -1551,8 +1551,12 @@ export default function LeadsPage() {
                       <span className="inline-flex items-center gap-1 text-xs text-slate-500">
                         <Loader2 size={13} className="animate-spin" /> Profile cleanup
                       </span>
-                    ) : lead.profileNormalizationStatus !== 'completed' ? (
+                    ) : !['captured', 'partial'].includes(lead.profileCaptureStatus) ? (
                       <span className="text-xs text-slate-400">Capture needed</span>
+                    ) : lead.profileNormalizationStatus === 'failed' ? (
+                      <span className="text-xs font-medium text-amber-600">
+                        Cleanup retry queued
+                      </span>
                     ) : (
                       <span className="text-xs text-slate-400">Awaiting score</span>
                     )}

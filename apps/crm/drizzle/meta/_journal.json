@@ -288,6 +288,13 @@
       "when": 1785520000000,
       "tag": "0040_stem_holding_stage",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1785520800000,
+      "tag": "0041_enforce_profile_capture_tags",
+      "breakpoints": true
     }
   ]
 }
