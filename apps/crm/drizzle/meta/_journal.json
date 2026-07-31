@@ -281,6 +281,13 @@
       "when": 1785444200000,
       "tag": "0039_capture_owner_api_key",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1785520000000,
+      "tag": "0040_stem_holding_stage",
+      "breakpoints": true
     }
   ]
 }

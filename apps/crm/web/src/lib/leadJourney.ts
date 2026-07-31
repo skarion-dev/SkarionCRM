@@ -3,6 +3,7 @@ import type { LeadJourneyStage } from '../api.js';
 export const LEAD_JOURNEY_STAGES: LeadJourneyStage[] = [
   'future',
   'foreign_national',
+  'stem',
   'new',
   'ready_to_reach_out',
   'connection_sent',
@@ -22,6 +23,7 @@ export const LEAD_JOURNEY_STAGES: LeadJourneyStage[] = [
 export const ACTIVE_LEAD_JOURNEY: LeadJourneyStage[] = [
   'future',
   'foreign_national',
+  'stem',
   'new',
   'ready_to_reach_out',
   'connection_sent',
@@ -37,6 +39,7 @@ export const ACTIVE_LEAD_JOURNEY: LeadJourneyStage[] = [
 export const LEAD_JOURNEY_LABELS: Record<LeadJourneyStage, string> = {
   future: 'Future',
   foreign_national: 'Foreign National',
+  stem: 'STEM',
   new: 'New',
   ready_to_reach_out: 'Ready to reach out',
   connection_sent: 'Connection sent',
@@ -62,6 +65,7 @@ export function journeyBadgeClass(stage: LeadJourneyStage | string): string {
   if (stage === 'converted') return 'bg-emerald-100 text-emerald-700';
   if (stage === 'future') return 'bg-cyan-100 text-cyan-700';
   if (stage === 'foreign_national') return 'bg-indigo-100 text-indigo-700';
+  if (stage === 'stem') return 'bg-teal-100 text-teal-700';
   if (
     stage === 'qualified' ||
     stage === 'meeting_booked' ||

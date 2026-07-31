@@ -73,6 +73,7 @@ const STATUS_PIPELINE: {
     icon:
       key === 'future' ||
       key === 'foreign_national' ||
+      key === 'stem' ||
       key === 'new' ||
       key === 'ready_to_reach_out'
         ? Sparkles

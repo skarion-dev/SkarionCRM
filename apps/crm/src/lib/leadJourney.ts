@@ -1,6 +1,7 @@
 export const LEAD_JOURNEY_STAGES = [
   'future',
   'foreign_national',
+  'stem',
   'new',
   'ready_to_reach_out',
   'connection_sent',
@@ -25,6 +26,7 @@ export const PROFILE_CAPTURE_COMPLETE_TAG = 'profile capture complete';
 const ACTIVE_STAGE_RANK: Partial<Record<LeadJourneyStage, number>> = {
   future: 0,
   foreign_national: 0,
+  stem: 0,
   new: 1,
   ready_to_reach_out: 2,
   connection_sent: 3,
@@ -59,7 +61,14 @@ export function isLeadActivationStage(stage: LeadJourneyStage): boolean {
 }
 
 export function isLeadHoldingStage(stage: LeadJourneyStage | string): boolean {
-  return stage === 'future' || stage === 'foreign_national';
+  return stage === 'future' || stage === 'foreign_national' || stage === 'stem';
+}
+
+export function holdingStageTagName(stage: LeadJourneyStage | string): string | null {
+  if (stage === 'future') return 'Future';
+  if (stage === 'foreign_national') return 'Foreign National';
+  if (stage === 'stem') return 'STEM';
+  return null;
 }
 
 export function journeyStageFromLegacy(input: {
@@ -197,21 +206,25 @@ function isForeignNationalTagName(tag: string): boolean {
   return normalized === 'foreign national' || normalized.startsWith('foreign national ');
 }
 
+function isStemTagName(tag: string): boolean {
+  const normalized = tag.trim().toLowerCase();
+  return normalized === 'stem' || normalized.startsWith('stem ');
+}
+
 export function journeyStageForTags(stage: LeadJourneyStage, tags: unknown): LeadJourneyStage {
   const normalizedTags = normalizeTagNames(tags);
   if (normalizedTags.some(isFutureTagName)) return 'future';
   if (normalizedTags.some(isForeignNationalTagName)) return 'foreign_national';
+  if (normalizedTags.some(isStemTagName)) return 'stem';
   return stage;
 }
 
 export function syncHoldingTagsForJourney(values: unknown, stage: LeadJourneyStage): string[] {
   const withoutHoldingTags = normalizeTagNames(values).filter(
-    (tag) => !isFutureTagName(tag) && !isForeignNationalTagName(tag)
+    (tag) => !isFutureTagName(tag) && !isForeignNationalTagName(tag) && !isStemTagName(tag)
   );
-  if (stage === 'future') return normalizeTagNames([...withoutHoldingTags, 'Future']);
-  if (stage === 'foreign_national') {
-    return normalizeTagNames([...withoutHoldingTags, 'Foreign National']);
-  }
+  const holdingTag = holdingStageTagName(stage);
+  if (holdingTag) return normalizeTagNames([...withoutHoldingTags, holdingTag]);
   return withoutHoldingTags;
 }
 

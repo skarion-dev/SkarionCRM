@@ -143,6 +143,11 @@ describe('Candidate conversation agent', () => {
       updates: {},
       noteToAppend: null,
     });
+    expect(parseDirectCandidateJourneyAction('Set this candidate stage to STEM')).toEqual({
+      journeyStage: 'stem',
+      updates: {},
+      noteToAppend: null,
+    });
     expect(parseDirectCandidateJourneyAction('Update this lead company to New Company')).toBeNull();
     expect(detectCandidateLeadActionIntent("Don't disqualify this lead; draft a reply")).toBe(
       false

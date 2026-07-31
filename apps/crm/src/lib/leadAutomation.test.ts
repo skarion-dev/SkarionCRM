@@ -34,5 +34,13 @@ describe('LinkedIn connection note automation', () => {
         tags: ['Foreign National'],
       })
     ).toBe(false);
+    expect(
+      shouldAutoGenerateLinkedinConnectionNote({
+        source: 'linkedin',
+        status: 'new',
+        journeyStage: 'stem',
+        tags: ['STEM'],
+      })
+    ).toBe(false);
   });
 });

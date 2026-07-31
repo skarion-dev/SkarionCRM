@@ -14,11 +14,12 @@ export function shouldAutoGenerateLinkedinConnectionNote(lead: LeadAutomationCan
   const isHolding =
     lead.journeyStage === 'future' ||
     lead.journeyStage === 'foreign_national' ||
+    lead.journeyStage === 'stem' ||
     (Array.isArray(lead.tags) &&
       lead.tags.some(
         (tag) =>
           typeof tag === 'string' &&
-          ['future', 'foreign national'].includes(tag.trim().toLowerCase())
+          ['future', 'foreign national', 'stem'].includes(tag.trim().toLowerCase())
       ));
   return lead.source === 'linkedin' && lead.status === 'new' && !isHolding;
 }

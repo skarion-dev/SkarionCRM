@@ -135,6 +135,7 @@ import {
 } from './lib/candidate-conversation.js';
 import {
   formatBatchTag,
+  holdingStageTagName,
   isLeadActivationStage,
   isLeadHoldingStage,
   isLeadJourneyStage,
@@ -2814,7 +2815,7 @@ app.get('/api/dashboard', async (c) => {
         '[]'::jsonb
       ) AS value
       FROM unnest(ARRAY[
-        'future', 'foreign_national', 'new', 'ready_to_reach_out', 'connection_sent',
+        'future', 'foreign_national', 'stem', 'new', 'ready_to_reach_out', 'connection_sent',
         'connected', 'engaged', 'qualified', 'meeting_booked', 'opportunity',
         'follow_up', 'converted', 'nurture', 'no_response', 'disqualified', 'lost'
       ]::text[]) WITH ORDINALITY AS stages(stage, position)
@@ -3184,6 +3185,7 @@ async function enforcePhdAutoDisqualification(
             'Maybe',
             'Future',
             'Foreign National',
+            'STEM',
             'needs profile capture',
           ]
         ),
@@ -5685,12 +5687,7 @@ app.put('/api/leads/:id', async (c) => {
     update.outreachStatus = legacy.outreachStatus;
     const syncedTags = syncHoldingTagsForJourney(updatedTags ?? existing.tags, journeyStage);
     if (isLeadHoldingStage(journeyStage)) {
-      await ensureTagDefinitions(
-        db,
-        [journeyStage === 'future' ? 'Future' : 'Foreign National'],
-        caller.userId,
-        true
-      );
+      await ensureTagDefinitions(db, [holdingStageTagName(journeyStage)!], caller.userId, true);
     }
     update.tags = syncedTags;
     updatedTags = syncedTags;
@@ -6412,12 +6409,7 @@ app.post('/api/leads/bulk', async (c) => {
     }
     const legacy = legacyFieldsForJourney(requestedStage);
     if (isLeadHoldingStage(requestedStage)) {
-      await ensureTagDefinitions(
-        db,
-        [requestedStage === 'future' ? 'Future' : 'Foreign National'],
-        caller.userId,
-        true
-      );
+      await ensureTagDefinitions(db, [holdingStageTagName(requestedStage)!], caller.userId, true);
     }
     const now = new Date();
     for (const lead of allLeads) {
@@ -9961,7 +9953,7 @@ app.post('/api/candidate-chat/lead-action', async (c) => {
     if (isLeadHoldingStage(request.action.journeyStage)) {
       await ensureTagDefinitions(
         db,
-        [request.action.journeyStage === 'future' ? 'Future' : 'Foreign National'],
+        [holdingStageTagName(request.action.journeyStage)!],
         userId,
         true
       );
@@ -11214,12 +11206,7 @@ async function applyCeoDatabaseAction(
           stage
         );
         if (isLeadHoldingStage(stage)) {
-          await ensureTagDefinitions(
-            db,
-            [stage === 'future' ? 'Future' : 'Foreign National'],
-            userId,
-            true
-          );
+          await ensureTagDefinitions(db, [holdingStageTagName(stage)!], userId, true);
         }
       }
       const [result] = await db

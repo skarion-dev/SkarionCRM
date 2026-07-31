@@ -47,18 +47,23 @@ describe('lead tags', () => {
     expect(journeyStageForTags('new', ['Future'])).toBe('future');
     expect(journeyStageForTags('new', ['Future Candidates'])).toBe('future');
     expect(journeyStageForTags('new', ['Foreign National'])).toBe('foreign_national');
+    expect(journeyStageForTags('new', ['STEM'])).toBe('stem');
     expect(syncHoldingTagsForJourney(['Batch 8'], 'future')).toEqual(['Batch 8', 'Future']);
     expect(syncHoldingTagsForJourney(['Batch 8'], 'foreign_national')).toEqual([
       'Batch 8',
       'Foreign National',
     ]);
+    expect(syncHoldingTagsForJourney(['Batch 8'], 'stem')).toEqual(['Batch 8', 'STEM']);
     expect(syncHoldingTagsForJourney(['Future', 'Batch 8'], 'new')).toEqual(['Batch 8']);
     expect(syncHoldingTagsForJourney(['Foreign National', 'Batch 8'], 'new')).toEqual(['Batch 8']);
+    expect(syncHoldingTagsForJourney(['STEM', 'Batch 8'], 'new')).toEqual(['Batch 8']);
     expect(syncHoldingTagsForJourney(['Future'], 'foreign_national')).toEqual(['Foreign National']);
+    expect(syncHoldingTagsForJourney(['Foreign National'], 'stem')).toEqual(['STEM']);
     expect(isLeadActivationStage('new')).toBe(true);
     expect(isLeadActivationStage('future')).toBe(false);
     expect(isLeadHoldingStage('future')).toBe(true);
     expect(isLeadHoldingStage('foreign_national')).toBe(true);
+    expect(isLeadHoldingStage('stem')).toBe(true);
   });
 
   it('replaces the pending profile-capture tag with one canonical completion tag', () => {

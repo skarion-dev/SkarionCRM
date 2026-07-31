@@ -408,6 +408,7 @@ export interface Contact {
 export type LeadJourneyStage =
   | 'future'
   | 'foreign_national'
+  | 'stem'
   | 'new'
   | 'ready_to_reach_out'
   | 'connection_sent'
