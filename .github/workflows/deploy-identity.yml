@@ -153,7 +153,7 @@ jobs:
         run: pnpm build
         env:
           VITE_IDENTITY_API_URL: ${{ vars.VITE_IDENTITY_API_URL || 'https://skarion-identity.skarion-talentos.workers.dev' }}
-          VITE_CRM_URL: ${{ vars.VITE_CRM_URL || '' }}
+          VITE_CRM_URL: https://crm.skarion.com
           VITE_HR_URL: ${{ vars.VITE_HR_URL || '' }}
           VITE_BOOKS_URL: ${{ vars.VITE_BOOKS_URL || '' }}
           VITE_IDENTITY_LOGIN_URL: ${{ vars.VITE_IDENTITY_LOGIN_URL || '' }}

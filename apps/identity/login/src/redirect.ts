@@ -5,10 +5,10 @@
 
 import type { AppMembershipsMap } from './api.js';
 
-// Known app URLs for Cloudflare default-domain deployments.
-// When running on *.pages.dev or *.workers.dev, these are the exact URLs.
+// Canonical app URLs. CRM always uses its custom domain, even when the login
+// page itself is reached through a Cloudflare preview/default hostname.
 const APP_PAGES_URLS: Record<string, string> = {
-  crm: import.meta.env.VITE_CRM_URL || 'https://skarion-crm-cv9.pages.dev',
+  crm: 'https://crm.skarion.com',
   hr: import.meta.env.VITE_HR_URL || 'https://skarion-hr-4in.pages.dev',
   books: import.meta.env.VITE_BOOKS_URL || 'https://skarion-books-2r7.pages.dev',
 };
@@ -23,7 +23,8 @@ const ALLOWED_ORIGINS = new Set([
   import.meta.env.VITE_IDENTITY_ADMIN_URL || 'https://skarion-identity-admin-dx5.pages.dev',
   import.meta.env.VITE_IDENTITY_API_URL || 'https://skarion-identity.skarion-talentos.workers.dev',
   import.meta.env.VITE_CRM_API_URL || 'https://skarion-crm-platform.skarion-talentos.workers.dev',
-  import.meta.env.VITE_BOOKS_API_URL || 'https://skarion-books-platform.skarion-talentos.workers.dev',
+  import.meta.env.VITE_BOOKS_API_URL ||
+    'https://skarion-books-platform.skarion-talentos.workers.dev',
   import.meta.env.VITE_HR_API_URL || 'https://skarion-hr-platform.skarion-talentos.workers.dev',
   'http://localhost:5173',
   'http://localhost:5174',
@@ -116,7 +117,7 @@ export function redirectAfterLogin(
     window.location.href = returnTo;
     return;
   }
-  
+
   try {
     const primaryUrl = primaryAppUrl(apps);
     const url = new URL(primaryUrl);

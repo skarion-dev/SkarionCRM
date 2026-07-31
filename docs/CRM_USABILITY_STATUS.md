@@ -6,20 +6,20 @@
 
 ## Production URLs
 
-| Service | URL |
-|---------|-----|
-| CRM Pages (UI) | https://skarion-crm.pages.dev |
-| CRM Worker (API) | https://skarion-crm-platform.alsaki1999.workers.dev |
-| Identity Worker (API) | https://skarion-identity.alsaki1999.workers.dev |
-| Identity Login Pages | https://skarion-identity-login.pages.dev |
-| CRM Health | https://skarion-crm-platform.alsaki1999.workers.dev/health |
-| CRM Debug | https://skarion-crm-platform.alsaki1999.workers.dev/api/debug/version |
-| Identity Debug | https://skarion-identity.alsaki1999.workers.dev/debug/version |
+| Service               | URL                                                                   |
+| --------------------- | --------------------------------------------------------------------- |
+| CRM Pages (UI)        | https://crm.skarion.com                                               |
+| CRM Worker (API)      | https://skarion-crm-platform.alsaki1999.workers.dev                   |
+| Identity Worker (API) | https://skarion-identity.alsaki1999.workers.dev                       |
+| Identity Login Pages  | https://skarion-identity-login.pages.dev                              |
+| CRM Health            | https://skarion-crm-platform.alsaki1999.workers.dev/health            |
+| CRM Debug             | https://skarion-crm-platform.alsaki1999.workers.dev/api/debug/version |
+| Identity Debug        | https://skarion-identity.alsaki1999.workers.dev/debug/version         |
 
 ## Admin Login
 
 - **Email:** `admin@skarion.com`
-- **Password:** *(set during initial setup — change immediately after first login)*
+- **Password:** _(set during initial setup — change immediately after first login)_
 - **Role:** superadmin + CRM manager
 
 > ⚠️ **Security Note:** The default admin password should be changed immediately after the first login. Do not commit production credentials to the repository.
@@ -27,6 +27,7 @@
 ## What Works
 
 ### Leads Management
+
 - ✅ View all leads (320 total in database)
 - ✅ Pagination (page size: 25, 50, 100, 250)
 - ✅ Search across name, email, company, LinkedIn URL
@@ -41,6 +42,7 @@
 - ✅ Delete/archive leads
 
 ### Import
+
 - ✅ CSV/TXT import with flexible column mapping
 - ✅ Supported aliases: `name`, `full name`, `linkedin`, `company`, `title`, `notes`, `status`, `connection`
 - ✅ Duplicate detection by email, LinkedIn URL, or name+company
@@ -48,11 +50,13 @@
 - ✅ Notes extraction from headline, location, education, industry, profile URL, score
 
 ### Export
+
 - ✅ Export all filtered leads as CSV
 - ✅ Export includes all fields: name, email, phone, company, LinkedIn, outreach status, connection status, source sheet, row number, notes, timestamps
 - ✅ Export respects current filters (status, outreach status, search)
 
 ### Database
+
 - ✅ 320 leads imported from Excel
 - ✅ 100% have LinkedIn URLs
 - ✅ 2 marked as `approached` (from Excel status), 318 as `not_approached`
@@ -61,33 +65,33 @@
 
 ## What Is Disabled / Not Working
 
-| Feature | Status | Reason |
-|---------|--------|--------|
-| AI chat / summarization | ❌ Hidden | Out of scope for this sprint |
-| PDF import | ❌ Hidden | No document converter deployed |
-| MarkItDown converter | ❌ Not deployed | Docker-based, not on Cloudflare |
-| Email automation | ❌ Hidden | Out of scope |
-| Workflow automation | ❌ Hidden | Out of scope |
-| Custom domains | ❌ Not configured | Out of scope |
+| Feature                 | Status            | Reason                          |
+| ----------------------- | ----------------- | ------------------------------- |
+| AI chat / summarization | ❌ Hidden         | Out of scope for this sprint    |
+| PDF import              | ❌ Hidden         | No document converter deployed  |
+| MarkItDown converter    | ❌ Not deployed   | Docker-based, not on Cloudflare |
+| Email automation        | ❌ Hidden         | Out of scope                    |
+| Workflow automation     | ❌ Hidden         | Out of scope                    |
+| Custom domains          | ❌ Not configured | Out of scope                    |
 
 ## Import Column Mapping
 
 The CSV importer recognizes these column aliases (case-insensitive, spaces/underscores ignored):
 
-| Field | Recognized Aliases |
-|-------|-------------------|
-| **First Name** | `firstName`, `first name`, `first_name`, `firstname` |
-| **Last Name** | `lastName`, `last name`, `last_name`, `lastname` |
-| **Full Name** | `name`, `full name`, `fullname`, `candidate name` |
-| **Email** | `email`, `emailAddress`, `email address`, `e-mail` |
+| Field            | Recognized Aliases                                                                                                                                |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **First Name**   | `firstName`, `first name`, `first_name`, `firstname`                                                                                              |
+| **Last Name**    | `lastName`, `last name`, `last_name`, `lastname`                                                                                                  |
+| **Full Name**    | `name`, `full name`, `fullname`, `candidate name`                                                                                                 |
+| **Email**        | `email`, `emailAddress`, `email address`, `e-mail`                                                                                                |
 | **LinkedIn URL** | `linkedin`, `linkedin url`, `linkedin profile`, `profile url`, `profile`, `linkedinLink`, `linkedin_link`, `profile_link`, `guessed linkedin url` |
-| **Company** | `company`, `company name`, `organization`, `school`, `university`, `current company`, `employer` |
-| **Title** | `title`, `position`, `jobTitle`, `job title`, `role`, `currentRole` |
-| **Phone** | `phone`, `phoneNumber`, `phone number`, `mobile`, `tel` |
-| **Status** | `status`, `leadStatus`, `lead status`, `outreachStatus`, `outreach status` |
-| **Connection** | `connection`, `connectionStatus`, `connected`, `approached` |
-| **Notes** | `notes`, `comments`, `personalizedNote`, `note`, `remarks` |
-| **Source** | `source`, `leadSource`, `lead source`, `category`, `type` |
+| **Company**      | `company`, `company name`, `organization`, `school`, `university`, `current company`, `employer`                                                  |
+| **Title**        | `title`, `position`, `jobTitle`, `job title`, `role`, `currentRole`                                                                               |
+| **Phone**        | `phone`, `phoneNumber`, `phone number`, `mobile`, `tel`                                                                                           |
+| **Status**       | `status`, `leadStatus`, `lead status`, `outreachStatus`, `outreach status`                                                                        |
+| **Connection**   | `connection`, `connectionStatus`, `connected`, `approached`                                                                                       |
+| **Notes**        | `notes`, `comments`, `personalizedNote`, `note`, `remarks`                                                                                        |
+| **Source**       | `source`, `leadSource`, `lead source`, `category`, `type`                                                                                         |
 
 ## Duplicate Rules
 
@@ -127,22 +131,22 @@ Default behavior: **skip** duplicates.
 
 ## Smoke Test Results
 
-| Test | Status | Notes |
-|------|--------|-------|
-| CI passes on `main` | ✅ Pass | Commit `2780c7d` |
-| CRM deploy passes | ✅ Pass | Worker + Pages |
-| Identity deploy passes | ✅ Pass | Worker + Login Pages |
-| Debug endpoints return correct commit | ✅ Pass | CRM shows `2780c7d...` |
-| DB has 320 leads | ✅ Pass | Verified via direct query |
-| All 320 have LinkedIn URL | ✅ Pass | Verified via direct query |
-| API pagination works | ✅ Pass | `page`/`pageSize`/`total`/`totalPages` |
-| API outreach status counts | ✅ Pass | Returns `outreachStatusCounts` |
-| Export CSV endpoint | ✅ Pass | Returns CSV with all fields |
-| Login as admin | ⚠️ Not tested | Requires browser auth flow |
-| Browser UI shows 320 leads | ⚠️ Not tested | Requires browser verification |
-| Search finds lead | ⚠️ Not tested | Requires browser verification |
-| Add lead manually | ⚠️ Not tested | Requires browser verification |
-| Edit lead outreach status | ⚠️ Not tested | Requires browser verification |
-| Open LinkedIn from table | ⚠️ Not tested | Requires browser verification |
-| Lead detail page | ⚠️ Not tested | Requires browser verification |
-| Export downloads CSV | ⚠️ Not tested | Requires browser verification |
+| Test                                  | Status        | Notes                                  |
+| ------------------------------------- | ------------- | -------------------------------------- |
+| CI passes on `main`                   | ✅ Pass       | Commit `2780c7d`                       |
+| CRM deploy passes                     | ✅ Pass       | Worker + Pages                         |
+| Identity deploy passes                | ✅ Pass       | Worker + Login Pages                   |
+| Debug endpoints return correct commit | ✅ Pass       | CRM shows `2780c7d...`                 |
+| DB has 320 leads                      | ✅ Pass       | Verified via direct query              |
+| All 320 have LinkedIn URL             | ✅ Pass       | Verified via direct query              |
+| API pagination works                  | ✅ Pass       | `page`/`pageSize`/`total`/`totalPages` |
+| API outreach status counts            | ✅ Pass       | Returns `outreachStatusCounts`         |
+| Export CSV endpoint                   | ✅ Pass       | Returns CSV with all fields            |
+| Login as admin                        | ⚠️ Not tested | Requires browser auth flow             |
+| Browser UI shows 320 leads            | ⚠️ Not tested | Requires browser verification          |
+| Search finds lead                     | ⚠️ Not tested | Requires browser verification          |
+| Add lead manually                     | ⚠️ Not tested | Requires browser verification          |
+| Edit lead outreach status             | ⚠️ Not tested | Requires browser verification          |
+| Open LinkedIn from table              | ⚠️ Not tested | Requires browser verification          |
+| Lead detail page                      | ⚠️ Not tested | Requires browser verification          |
+| Export downloads CSV                  | ⚠️ Not tested | Requires browser verification          |

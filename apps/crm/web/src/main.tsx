@@ -17,12 +17,27 @@ const queryClient = new QueryClient({
   },
 });
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <App />
-      </BrowserRouter>
-    </QueryClientProvider>
-  </StrictMode>
-);
+const canonicalCrmOrigin = 'https://crm.skarion.com';
+const legacyPagesHost =
+  window.location.hostname === 'skarion-crm-cv9.pages.dev' ||
+  window.location.hostname.endsWith('.skarion-crm-cv9.pages.dev') ||
+  window.location.hostname === 'skarion-crm.pages.dev' ||
+  window.location.hostname.endsWith('.skarion-crm.pages.dev');
+
+if (import.meta.env.PROD && legacyPagesHost) {
+  const canonicalUrl = new URL(canonicalCrmOrigin);
+  canonicalUrl.pathname = window.location.pathname;
+  canonicalUrl.search = window.location.search;
+  canonicalUrl.hash = window.location.hash;
+  window.location.replace(canonicalUrl.toString());
+} else {
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter>
+          <App />
+        </BrowserRouter>
+      </QueryClientProvider>
+    </StrictMode>
+  );
+}

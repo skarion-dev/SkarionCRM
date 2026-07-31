@@ -13,10 +13,7 @@ chrome.runtime.onMessage.addListener((message) => {
   }
 });
 
-const CRM_TAB_ORIGINS = new Set([
-  'https://crm.skarion.com',
-  'https://skarion-crm-cv9.pages.dev',
-]);
+const CRM_TAB_ORIGINS = new Set(['https://crm.skarion.com']);
 
 async function openCrmRecord(leadId) {
   const path = `/leads/${encodeURIComponent(leadId)}`;
@@ -35,8 +32,7 @@ async function openCrmRecord(leadId) {
 
   const existing = candidates.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))[0];
   if (existing?.id && existing.url) {
-    const origin = new URL(existing.url).origin;
-    await chrome.tabs.update(existing.id, { url: `${origin}${path}`, active: true });
+    await chrome.tabs.update(existing.id, { url: `https://crm.skarion.com${path}`, active: true });
     return;
   }
   await chrome.tabs.create({ url: `https://crm.skarion.com${path}`, active: true });

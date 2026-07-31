@@ -31,10 +31,10 @@ import type { AppName, Env } from './lib/types.js';
 
 const APP_LABELS: Record<AppName, string> = { crm: 'CRM', hr: 'Employee Portal', books: 'Books' };
 const APP_SUBDOMAINS: Record<AppName, string> = { crm: 'crm', hr: 'team', books: 'books' };
-const APP_PAGES_SUBDOMAINS: Record<AppName, string> = {
-  crm: 'skarion-crm',
-  hr: 'skarion-hr',
-  books: 'skarion-books',
+const APP_PRODUCTION_URLS: Record<AppName, string> = {
+  crm: 'https://crm.skarion.com',
+  hr: 'https://skarion-hr-4in.pages.dev',
+  books: 'https://skarion-books-2r7.pages.dev',
 };
 
 /** Derives e.g. https://crm.skarion.com from the identity app's own https://auth.skarion.com.
@@ -48,7 +48,7 @@ function appUrlFor(identityAppUrl: string, app: AppName): string {
       return `${url.protocol}//${APP_SUBDOMAINS[app]}.${rootDomain}`;
     }
     if (hostname.endsWith('.workers.dev') || hostname.endsWith('.pages.dev')) {
-      return `${url.protocol}//${APP_PAGES_SUBDOMAINS[app]}.pages.dev`;
+      return APP_PRODUCTION_URLS[app];
     }
     return identityAppUrl; // local dev fallback
   } catch {

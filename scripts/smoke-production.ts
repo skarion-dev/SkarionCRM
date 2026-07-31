@@ -5,8 +5,9 @@
 // Required env vars: CRM_URL, IDENTITY_URL, ADMIN_EMAIL, ADMIN_PASSWORD
 
 const CRM_URL = process.env.CRM_URL || 'https://skarion-crm-platform.skarion-talentos.workers.dev';
-const IDENTITY_URL = process.env.IDENTITY_URL || 'https://skarion-identity.skarion-talentos.workers.dev';
-const PAGES_URL = process.env.PAGES_URL || 'https://skarion-crm.pages.dev';
+const IDENTITY_URL =
+  process.env.IDENTITY_URL || 'https://skarion-identity.skarion-talentos.workers.dev';
+const PAGES_URL = process.env.PAGES_URL || 'https://crm.skarion.com';
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@skarion.com';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'changeme-now';
 
@@ -51,14 +52,20 @@ test('CRM Worker /health', async () => {
   const res = await fetch(`${CRM_URL}/health`);
   if (!res.ok) return { pass: false, detail: `HTTP ${res.status}` };
   const body = (await res.json()) as { status: string; service: string };
-  return { pass: body.status === 'ok' && body.service === 'skarion-crm-platform', detail: JSON.stringify(body) };
+  return {
+    pass: body.status === 'ok' && body.service === 'skarion-crm-platform',
+    detail: JSON.stringify(body),
+  };
 });
 
 test('Identity Worker /health', async () => {
   const res = await fetch(`${IDENTITY_URL}/health`);
   if (!res.ok) return { pass: false, detail: `HTTP ${res.status}` };
   const body = (await res.json()) as { status: string; service: string };
-  return { pass: body.status === 'ok' && body.service === 'skarion-identity', detail: JSON.stringify(body) };
+  return {
+    pass: body.status === 'ok' && body.service === 'skarion-identity',
+    detail: JSON.stringify(body),
+  };
 });
 
 // ─── Auth Flow ─────────────────────────────────────────────────────────────
@@ -75,7 +82,10 @@ test('Login returns token', async () => {
 });
 
 test('Refresh token works', async () => {
-  const res = await fetch(`${IDENTITY_URL}/auth/refresh`, { method: 'POST', credentials: 'include' });
+  const res = await fetch(`${IDENTITY_URL}/auth/refresh`, {
+    method: 'POST',
+    credentials: 'include',
+  });
   if (res.ok) {
     const body = (await res.json()) as { access_token?: string };
     return { pass: !!body.access_token, detail: 'Refresh succeeded' };
@@ -112,7 +122,11 @@ test('Create company', async () => {
   const res = await fetch(`${CRM_URL}/api/companies`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-    body: JSON.stringify({ name: 'Smoke Test Company', industry: 'Engineering', domain: 'smoke-test.com' }),
+    body: JSON.stringify({
+      name: 'Smoke Test Company',
+      industry: 'Engineering',
+      domain: 'smoke-test.com',
+    }),
   });
   if (!res.ok) return { pass: false, detail: `HTTP ${res.status}` };
   const body = (await res.json()) as { company: { id: string } };
@@ -124,7 +138,12 @@ test('Create contact', async () => {
   const res = await fetch(`${CRM_URL}/api/contacts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-    body: JSON.stringify({ firstName: 'Smoke', lastName: 'Test', email: 'smoke@test.com', companyId: createdCompanyId }),
+    body: JSON.stringify({
+      firstName: 'Smoke',
+      lastName: 'Test',
+      email: 'smoke@test.com',
+      companyId: createdCompanyId,
+    }),
   });
   if (!res.ok) return { pass: false, detail: `HTTP ${res.status}` };
   const body = (await res.json()) as { contact: { id: string } };
@@ -136,7 +155,13 @@ test('Create lead', async () => {
   const res = await fetch(`${CRM_URL}/api/leads`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-    body: JSON.stringify({ firstName: 'Smoke', lastName: 'Lead', email: 'smoke-lead@test.com', companyName: 'Smoke Test Company', source: 'other' }),
+    body: JSON.stringify({
+      firstName: 'Smoke',
+      lastName: 'Lead',
+      email: 'smoke-lead@test.com',
+      companyName: 'Smoke Test Company',
+      source: 'other',
+    }),
   });
   if (!res.ok) return { pass: false, detail: `HTTP ${res.status}` };
   const body = (await res.json()) as { lead: { id: string } };
@@ -187,7 +212,10 @@ test('AI summarize lead', async () => {
   });
   if (!res.ok) return { pass: false, detail: `HTTP ${res.status}` };
   const body = (await res.json()) as { summary?: string };
-  return { pass: !!body.summary, detail: body.summary ? body.summary.substring(0, 100) : 'No summary' };
+  return {
+    pass: !!body.summary,
+    detail: body.summary ? body.summary.substring(0, 100) : 'No summary',
+  };
 });
 
 test('AI draft outreach', async () => {

@@ -8,7 +8,7 @@ enabled = true
 head_sampling_rate = 1
 
 [vars]
-APP_URL = "https://skarion-crm-cv9.pages.dev"
+APP_URL = "https://crm.skarion.com"
 AI_PROVIDER = "vertex_proxy"
 AI_MODEL_DEFAULT = "coding-cheap"
 AI_MODEL_REASONING = "coding-cheap"

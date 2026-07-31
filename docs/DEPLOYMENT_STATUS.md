@@ -2,11 +2,11 @@
 
 Last updated: 2026-06-21
 
-## Production URLs (Cloudflare Default)
+## Production URLs
 
 | Service              | Type              | URL                                                         | Status                          |
 | -------------------- | ----------------- | ----------------------------------------------------------- | ------------------------------- |
-| CRM Frontend         | Cloudflare Pages  | `https://skarion-crm.pages.dev`                             | ✅ Deployed                     |
+| CRM Frontend         | Cloudflare Pages  | `https://crm.skarion.com`                                   | ✅ Deployed                     |
 | CRM Worker/API       | Cloudflare Worker | `https://skarion-crm-platform.alsaki1999.workers.dev`       | ✅ Deployed                     |
 | Identity Worker/API  | Cloudflare Worker | `https://skarion-identity.alsaki1999.workers.dev`           | ✅ Deployed                     |
 | Identity Login Pages | Cloudflare Pages  | `https://skarion-identity-login.pages.dev`                  | ✅ Deployed                     |
@@ -72,7 +72,7 @@ Set in Cloudflare dashboard for each Pages project:
 
 | Worker                 | Var                      | Value                                                   |
 | ---------------------- | ------------------------ | ------------------------------------------------------- |
-| `skarion-crm-platform` | `APP_URL`                | `https://skarion-crm.pages.dev`                         |
+| `skarion-crm-platform` | `APP_URL`                | `https://crm.skarion.com`                               |
 | `skarion-crm-platform` | `AI_PROVIDER`            | `google`                                                |
 | `skarion-crm-platform` | `GOOGLE_MODEL`           | `gemini-2.5-flash-lite`                                 |
 | `skarion-crm-platform` | `GOOGLE_FALLBACK_MODEL`  | `gemini-2.5-flash`                                      |
