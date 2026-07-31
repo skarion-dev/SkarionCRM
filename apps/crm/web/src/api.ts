@@ -232,11 +232,14 @@ async function requestRefreshedSession(): Promise<RefreshedSession | null> {
     }
 
     if (!response.ok) {
-      if (safeStorageGet('refresh_token') === refreshTokenUsed) {
-        safeStorageRemove('refresh_token');
+      if (response.status === 401 || response.status === 403) {
+        if (safeStorageGet('refresh_token') === refreshTokenUsed) {
+          safeStorageRemove('refresh_token');
+        }
+        accessToken = null;
+        return null;
       }
-      accessToken = null;
-      return null;
+      throw new ApiError('Session service is temporarily unavailable.', response.status);
     }
 
     const data = (await response.json()) as RefreshedSession;
@@ -268,8 +271,10 @@ export async function refreshAccessToken(): Promise<string | null> {
       return session?.access_token ?? null;
     } catch (err) {
       console.error('[Auth] refreshAccessToken: refresh failed with error:', err);
-      accessToken = null;
-      return null;
+      // A transient Identity/network failure is not a logout. Preserve the
+      // browser session and let the caller retry instead of deleting tokens
+      // or forcing the user through the password form.
+      throw err;
     } finally {
       refreshPromise = null;
     }
@@ -384,7 +389,12 @@ async function crmRequest(path: string, init: RequestInit = {}): Promise<Respons
 
   if (response.status === 401) {
     console.log('[API] crmFetch: token unauthorized (401), refreshing...');
-    const refreshed = await refreshAccessToken();
+    let refreshed: string | null;
+    try {
+      refreshed = await refreshAccessToken();
+    } catch {
+      throw new ApiError('Your session could not be refreshed. Please retry.', 503);
+    }
     if (!refreshed) {
       console.warn('[API] crmFetch: refresh failed on 401, redirecting...');
       redirectToLogin();
@@ -442,7 +452,12 @@ export async function identityFetch<T>(path: string, init: RequestInit = {}): Pr
 
   let response = await request();
   if (response.status === 401) {
-    const refreshed = await refreshAccessToken();
+    let refreshed: string | null;
+    try {
+      refreshed = await refreshAccessToken();
+    } catch {
+      throw new ApiError('Your session could not be refreshed. Please retry.', 503);
+    }
     if (!refreshed) {
       redirectToLogin();
       throw new ApiError('Session expired.', 401);

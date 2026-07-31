@@ -149,6 +149,9 @@ export default function LeadDetail() {
   const [draftingChannel, setDraftingChannel] = useState<'inmail' | 'email' | null>(null);
   const [outreachDraftCopied, setOutreachDraftCopied] = useState(false);
   const aiAssessment = aiAssessmentData?.assessment ?? generateAiAssessment.data?.assessment;
+  const returnToLeads = () => {
+    navigate('/leads');
+  };
 
   useEffect(() => {
     setConnectionNoteDraft(aiAssessment?.connectionNote ?? '');
@@ -159,7 +162,7 @@ export default function LeadDetail() {
     return (
       <div className="space-y-4">
         <button
-          onClick={() => navigate('/leads')}
+          onClick={returnToLeads}
           className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"
         >
           <ArrowLeft size={16} /> Back to leads
@@ -324,7 +327,7 @@ export default function LeadDetail() {
     <div className="space-y-4">
       {/* Back link */}
       <button
-        onClick={() => navigate('/leads')}
+        onClick={returnToLeads}
         className="flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800"
       >
         <ArrowLeft size={16} /> Back to leads

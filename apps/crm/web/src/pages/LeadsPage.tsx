@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   usePagedLeads,
   useDeleteEntity,
@@ -80,6 +80,98 @@ const LEAD_SORT_OPTIONS = [
   ['originalRowNumber', 'Import row'],
 ] as const;
 
+const LEADS_VIEW_STORAGE_KEY = 'skarion.crm.leads-view.v1';
+const LEAD_PAGE_SIZES = [50, 100, 250, 500] as const;
+
+interface PersistedLeadsView {
+  search: string;
+  statusFilter: 'all' | LeadJourneyStage;
+  sortBy: string;
+  sortOrder: 'asc' | 'desc';
+  page: number;
+  pageSize: number;
+  batchFilter: string;
+  moreFiltersOpen: boolean;
+  dateFrom: string;
+  dateTo: string;
+  tagFilters: string[];
+  excludedTagFilters: string[];
+  tagMatch: 'any' | 'all';
+  tagPresence: 'any' | 'tagged' | 'untagged';
+  ownerFilters: string[];
+  scrollY: number;
+}
+
+const DEFAULT_LEADS_VIEW: PersistedLeadsView = {
+  search: '',
+  statusFilter: 'all',
+  sortBy: 'createdAt',
+  sortOrder: 'desc',
+  page: 1,
+  pageSize: 100,
+  batchFilter: 'all',
+  moreFiltersOpen: false,
+  dateFrom: '',
+  dateTo: '',
+  tagFilters: [],
+  excludedTagFilters: [],
+  tagMatch: 'any',
+  tagPresence: 'any',
+  ownerFilters: [],
+  scrollY: 0,
+};
+
+function readPersistedLeadsView(): PersistedLeadsView {
+  try {
+    const stored = window.localStorage.getItem(LEADS_VIEW_STORAGE_KEY);
+    if (!stored) return DEFAULT_LEADS_VIEW;
+    const candidate = JSON.parse(stored) as Partial<PersistedLeadsView>;
+    const statusFilter =
+      candidate.statusFilter === 'all' ||
+      LEAD_JOURNEY_STAGES.includes(candidate.statusFilter as LeadJourneyStage)
+        ? (candidate.statusFilter as 'all' | LeadJourneyStage)
+        : 'all';
+
+    return {
+      search: typeof candidate.search === 'string' ? candidate.search : '',
+      statusFilter,
+      sortBy:
+        typeof candidate.sortBy === 'string' &&
+        LEAD_SORT_OPTIONS.some(([value]) => value === candidate.sortBy)
+          ? candidate.sortBy
+          : 'createdAt',
+      sortOrder: candidate.sortOrder === 'asc' ? 'asc' : 'desc',
+      page:
+        typeof candidate.page === 'number' && candidate.page > 0 ? Math.floor(candidate.page) : 1,
+      pageSize: LEAD_PAGE_SIZES.includes(candidate.pageSize as (typeof LEAD_PAGE_SIZES)[number])
+        ? Number(candidate.pageSize)
+        : 100,
+      batchFilter: typeof candidate.batchFilter === 'string' ? candidate.batchFilter : 'all',
+      moreFiltersOpen: candidate.moreFiltersOpen === true,
+      dateFrom: typeof candidate.dateFrom === 'string' ? candidate.dateFrom : '',
+      dateTo: typeof candidate.dateTo === 'string' ? candidate.dateTo : '',
+      tagFilters: Array.isArray(candidate.tagFilters)
+        ? candidate.tagFilters.filter((tag): tag is string => typeof tag === 'string')
+        : [],
+      excludedTagFilters: Array.isArray(candidate.excludedTagFilters)
+        ? candidate.excludedTagFilters.filter((tag): tag is string => typeof tag === 'string')
+        : [],
+      tagMatch: candidate.tagMatch === 'all' ? 'all' : 'any',
+      tagPresence:
+        candidate.tagPresence === 'tagged' || candidate.tagPresence === 'untagged'
+          ? candidate.tagPresence
+          : 'any',
+      ownerFilters: Array.isArray(candidate.ownerFilters)
+        ? candidate.ownerFilters.filter((owner): owner is string => typeof owner === 'string')
+        : [],
+      scrollY:
+        typeof candidate.scrollY === 'number' && candidate.scrollY > 0 ? candidate.scrollY : 0,
+    };
+  } catch {
+    return DEFAULT_LEADS_VIEW;
+  }
+}
+
 function SortableHeader({
   column,
   label,
@@ -138,18 +230,21 @@ function CandidateCreatedAt({
 }
 
 export default function LeadsPage() {
-  const [search, setSearch] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | LeadJourneyStage>('all');
-  const [sortBy, setSortBy] = useState<string>('createdAt');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(100);
+  const [initialView] = useState(readPersistedLeadsView);
+  const [search, setSearch] = useState(initialView.search);
+  const [debouncedSearch, setDebouncedSearch] = useState(initialView.search);
+  const [statusFilter, setStatusFilter] = useState<'all' | LeadJourneyStage>(
+    initialView.statusFilter
+  );
+  const [sortBy, setSortBy] = useState<string>(initialView.sortBy);
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>(initialView.sortOrder);
+  const [page, setPage] = useState(initialView.page);
+  const [pageSize, setPageSize] = useState(initialView.pageSize);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkActionOpen, setBulkActionOpen] = useState<false | 'status' | 'tag' | 'assign'>(false);
   const [tagInput, setTagInput] = useState('');
   const [assigneeId, setAssigneeId] = useState('');
-  const [batchFilter, setBatchFilter] = useState<'all' | string>('all');
+  const [batchFilter, setBatchFilter] = useState<'all' | string>(initialView.batchFilter);
   const [modalOpen, setModalOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [pdfImportOpen, setPdfImportOpen] = useState(false);
@@ -158,16 +253,23 @@ export default function LeadsPage() {
 
   // Additive "More filters" — date range, tag, and (superadmin/manager-only)
   // owner multi-select. Journey remains the fast primary filter above.
-  const [moreFiltersOpen, setMoreFiltersOpen] = useState(false);
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
-  const [tagFilters, setTagFilters] = useState<string[]>([]);
-  const [excludedTagFilters, setExcludedTagFilters] = useState<string[]>([]);
-  const [tagMatch, setTagMatch] = useState<'any' | 'all'>('any');
-  const [tagPresence, setTagPresence] = useState<'any' | 'tagged' | 'untagged'>('any');
+  const [moreFiltersOpen, setMoreFiltersOpen] = useState(initialView.moreFiltersOpen);
+  const [dateFrom, setDateFrom] = useState(initialView.dateFrom);
+  const [dateTo, setDateTo] = useState(initialView.dateTo);
+  const [tagFilters, setTagFilters] = useState<string[]>(initialView.tagFilters);
+  const [excludedTagFilters, setExcludedTagFilters] = useState<string[]>(
+    initialView.excludedTagFilters
+  );
+  const [tagMatch, setTagMatch] = useState<'any' | 'all'>(initialView.tagMatch);
+  const [tagPresence, setTagPresence] = useState<'any' | 'tagged' | 'untagged'>(
+    initialView.tagPresence
+  );
   const [tagFilterInput, setTagFilterInput] = useState('');
   const [tagSearch, setTagSearch] = useState('');
-  const [ownerFilters, setOwnerFilters] = useState<string[]>([]);
+  const [ownerFilters, setOwnerFilters] = useState<string[]>(initialView.ownerFilters);
+  const filterResetReady = useRef(false);
+  const scrollRestored = useRef(false);
+  const scrollPosition = useRef(initialView.scrollY);
 
   // Saved searches
   const [savedSearchesOpen, setSavedSearchesOpen] = useState(false);
@@ -271,6 +373,10 @@ export default function LeadsPage() {
   // accumulated selection wouldn't make sense against a different result set.
   useEffect(() => {
     setSelectedIds(new Set());
+    if (!filterResetReady.current) {
+      filterResetReady.current = true;
+      return;
+    }
     setPage(1);
   }, [filters]);
 
@@ -285,6 +391,78 @@ export default function LeadsPage() {
     const timer = setTimeout(() => setDebouncedSearch(search), 300);
     return () => clearTimeout(timer);
   }, [search]);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      scrollPosition.current = window.scrollY;
+    };
+    const persistScroll = () => {
+      try {
+        const stored = readPersistedLeadsView();
+        window.localStorage.setItem(
+          LEADS_VIEW_STORAGE_KEY,
+          JSON.stringify({ ...stored, scrollY: scrollPosition.current })
+        );
+      } catch {
+        // Ignore storage failures; navigation still works without restoration.
+      }
+    };
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    window.addEventListener('pagehide', persistScroll);
+    return () => {
+      persistScroll();
+      window.removeEventListener('scroll', handleScroll);
+      window.removeEventListener('pagehide', persistScroll);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (isLoading || scrollRestored.current) return;
+    scrollRestored.current = true;
+    window.requestAnimationFrame(() => window.scrollTo({ top: initialView.scrollY }));
+  }, [initialView.scrollY, isLoading]);
+
+  useEffect(() => {
+    const view: PersistedLeadsView = {
+      search,
+      statusFilter,
+      sortBy,
+      sortOrder,
+      page,
+      pageSize,
+      batchFilter,
+      moreFiltersOpen,
+      dateFrom,
+      dateTo,
+      tagFilters,
+      excludedTagFilters,
+      tagMatch,
+      tagPresence,
+      ownerFilters,
+      scrollY: scrollPosition.current,
+    };
+    try {
+      window.localStorage.setItem(LEADS_VIEW_STORAGE_KEY, JSON.stringify(view));
+    } catch {
+      // The list still works when browser storage is unavailable.
+    }
+  }, [
+    batchFilter,
+    dateFrom,
+    dateTo,
+    excludedTagFilters,
+    moreFiltersOpen,
+    ownerFilters,
+    page,
+    pageSize,
+    search,
+    sortBy,
+    sortOrder,
+    statusFilter,
+    tagFilters,
+    tagMatch,
+    tagPresence,
+  ]);
 
   const applySavedSearch = useCallback((saved: LeadFilters) => {
     setSearch(saved.search ?? '');
@@ -1701,7 +1879,7 @@ export default function LeadsPage() {
               }}
               className="rounded-md border border-slate-200 bg-white px-2 py-1.5 text-slate-700"
             >
-              {[50, 100, 250, 500].map((size) => (
+              {LEAD_PAGE_SIZES.map((size) => (
                 <option key={size} value={size}>
                   {size}
                 </option>

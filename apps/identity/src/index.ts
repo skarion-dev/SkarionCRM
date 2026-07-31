@@ -347,15 +347,18 @@ app.post('/auth/login/verify', async (c) => {
 });
 
 app.post('/auth/refresh', async (c) => {
-  let token = getCookie(c, REFRESH_COOKIE);
-  if (!token) {
-    try {
-      const body = await c.req.json().catch(() => ({}));
-      token = body.refresh_token || c.req.header('X-Refresh-Token');
-    } catch {
-      // fallback if no body
-    }
+  // Prefer the token explicitly supplied by the active app. A browser can
+  // retain an older cookie after another tab has rotated the shared session;
+  // allowing that stale cookie to shadow the current body token incorrectly
+  // logs the user out even though the CRM still holds the valid replacement.
+  let token: string | undefined;
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    token = body.refresh_token || c.req.header('X-Refresh-Token');
+  } catch {
+    // Cookie fallback below supports clients that do not send a body.
   }
+  token ||= getCookie(c, REFRESH_COOKIE);
   if (!token) return c.json({ error: 'No refresh token.' }, 401);
   const db = getDb(c.env, schema);
   try {
