@@ -650,31 +650,31 @@ export default function LeadDetail() {
           )}
 
           {aiAssessment && (
-            <div className="mb-6 rounded-xl border border-violet-200 bg-violet-50/60 p-4">
+            <div className="ai-qualification-card mb-6 rounded-xl border p-4">
               <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="font-semibold text-violet-950">AI Lead Qualification</h2>
+                    <h2 className="ai-qualification-title font-semibold">AI Lead Qualification</h2>
                     <span className="rounded-full bg-violet-600 px-2.5 py-1 text-xs font-semibold text-white">
                       {aiAssessment.overallScore}/100
                     </span>
-                    <span className="rounded-full border border-violet-200 bg-white px-2.5 py-1 text-xs font-medium text-violet-800">
+                    <span className="ai-qualification-chip rounded-full border px-2.5 py-1 text-xs font-medium">
                       {aiAssessment.classification}
                     </span>
                   </div>
-                  <p className="mt-1 text-xs text-violet-700">
+                  <p className="ai-qualification-accent mt-1 text-xs">
                     {hasConnectionNote
                       ? 'Generated from the lead details saved in CRM. Edit the note before copying if needed.'
                       : 'Scored automatically from the lead details saved in CRM. Generate a connection note when you are ready to reach out.'}
                   </p>
                   <div className="mt-2 flex flex-wrap gap-1.5">
-                    <span className="rounded-full border border-violet-200 bg-white px-2 py-0.5 text-xs text-violet-700">
+                    <span className="ai-qualification-chip rounded-full border px-2 py-0.5 text-xs">
                       Evidence: {aiAssessment.profileEvidenceQuality.replace(/_/g, ' ')}
                     </span>
-                    <span className="rounded-full border border-violet-200 bg-white px-2 py-0.5 text-xs text-violet-700">
+                    <span className="ai-qualification-chip rounded-full border px-2 py-0.5 text-xs">
                       Timing: {aiAssessment.marketEntryTiming.replace(/_/g, ' ')}
                     </span>
-                    <span className="rounded-full border border-violet-200 bg-white px-2 py-0.5 text-xs text-violet-700">
+                    <span className="ai-qualification-chip rounded-full border px-2 py-0.5 text-xs">
                       Need: {aiAssessment.candidateNeedEvidence}
                     </span>
                   </div>
@@ -686,7 +686,7 @@ export default function LeadDetail() {
                         type="button"
                         onClick={handleSaveConnectionNote}
                         disabled={connectionNoteBusy}
-                        className="flex items-center gap-1.5 rounded-md border border-violet-300 bg-white px-3 py-2 text-sm font-medium text-violet-700 hover:bg-violet-50 disabled:cursor-wait disabled:opacity-60 transition-colors"
+                        className="ai-qualification-secondary-button flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium disabled:cursor-wait disabled:opacity-60 transition-colors"
                       >
                         <Save size={15} />
                         Save Changes
@@ -722,15 +722,15 @@ export default function LeadDetail() {
               </div>
 
               {aiAssessment.reasoningSummary && (
-                <p className="mb-3 text-sm leading-relaxed text-slate-700">
+                <p className="ai-qualification-muted mb-3 text-sm leading-relaxed">
                   {aiAssessment.reasoningSummary}
                 </p>
               )}
 
               {hasConnectionNote && (
-                <div className="rounded-lg border border-violet-200 bg-white p-3">
+                <div className="ai-qualification-surface rounded-lg border p-3">
                   <div className="mb-2 flex items-center justify-between gap-2">
-                    <span className="text-xs font-semibold uppercase tracking-wider text-violet-700">
+                    <span className="ai-qualification-accent text-xs font-semibold uppercase tracking-wider">
                       LinkedIn connection note
                     </span>
                     <span
@@ -747,7 +747,7 @@ export default function LeadDetail() {
                     onChange={(event) => setConnectionNoteDraft(event.target.value)}
                     maxLength={300}
                     rows={4}
-                    className="w-full resize-y rounded-md border border-slate-200 px-3 py-2 text-sm leading-relaxed text-slate-800 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
+                    className="ai-qualification-input w-full resize-y rounded-md border px-3 py-2 text-sm leading-relaxed outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100"
                     aria-label="Editable LinkedIn connection note"
                   />
                 </div>
