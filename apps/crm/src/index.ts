@@ -9502,18 +9502,22 @@ app.get('/api/dashboard/prospect-operations', async (c) => {
       GROUP BY windows.label, windows.duration ORDER BY windows.duration
     `),
       db.execute(sql`
-      SELECT CASE
-        WHEN assessment.overall_score >= 80 THEN '80-100'
-        WHEN assessment.overall_score >= 70 THEN '70-79'
-        WHEN assessment.overall_score >= 60 THEN '60-69'
-        WHEN assessment.overall_score >= 50 THEN '50-59'
-        WHEN assessment.overall_score >= 40 THEN '40-49'
-        WHEN assessment.overall_score IS NOT NULL THEN '0-39'
-        ELSE 'Unscored' END AS band, count(*)::int AS count
-      FROM crm.leads lead
-      LEFT JOIN crm.lead_ai_assessments assessment ON assessment.lead_id = lead.id
-      WHERE ${scope('lead')} AND lead.reviewed_at >= now() - interval '24 hours'
-      GROUP BY 1 ORDER BY CASE band
+      WITH reviewed AS (
+        SELECT CASE
+          WHEN assessment.overall_score >= 80 THEN '80-100'
+          WHEN assessment.overall_score >= 70 THEN '70-79'
+          WHEN assessment.overall_score >= 60 THEN '60-69'
+          WHEN assessment.overall_score >= 50 THEN '50-59'
+          WHEN assessment.overall_score >= 40 THEN '40-49'
+          WHEN assessment.overall_score IS NOT NULL THEN '0-39'
+          ELSE 'Unscored' END AS band
+        FROM crm.leads lead
+        LEFT JOIN crm.lead_ai_assessments assessment ON assessment.lead_id = lead.id
+        WHERE ${scope('lead')} AND lead.reviewed_at >= now() - interval '24 hours'
+      )
+      SELECT band, count(*)::int AS count
+      FROM reviewed
+      GROUP BY band ORDER BY CASE band
         WHEN '80-100' THEN 1 WHEN '70-79' THEN 2 WHEN '60-69' THEN 3
         WHEN '50-59' THEN 4 WHEN '40-49' THEN 5 WHEN '0-39' THEN 6 ELSE 7 END
     `),
