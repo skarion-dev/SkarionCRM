@@ -11,6 +11,7 @@ import {
   type Opportunity,
   type Task,
   type DashboardData,
+  type DashboardProspectOperations,
   type Activity,
   type LeadAttachment,
   type ImportBatch,
@@ -76,6 +77,24 @@ export function useDashboard() {
       }
     },
     refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
+  });
+}
+
+export function useDashboardProspectOperations() {
+  return useQuery({
+    queryKey: ['dashboard', 'prospect-operations'],
+    queryFn: async () => {
+      try {
+        return await crmFetch<DashboardProspectOperations>('/api/dashboard/prospect-operations');
+      } catch (err) {
+        if (err instanceof Error && 'status' in err && err.status === 401) {
+          redirectToLogin();
+        }
+        throw err;
+      }
+    },
+    refetchInterval: 60_000,
     refetchIntervalInBackground: false,
   });
 }

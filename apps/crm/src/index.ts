@@ -9474,6 +9474,130 @@ app.get('/api/dashboard/summary', async (c) => {
 
 // ─── CHAT ────────────────────────────────────────────────────────────────
 
+app.get('/api/dashboard/prospect-operations', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const userId = (c.get('userId') as string | undefined) ?? '';
+  const role = getRole(c);
+  if (!role) return c.json({ error: 'Forbidden.' }, 403);
+  const isTeamScope = Boolean(c.get('isSuperadmin')) || role === 'manager';
+  const scope = (alias: string) => sql`
+    ${sql.raw(alias)}.workspace_id = ${DEFAULT_WORKSPACE_ID}::uuid
+    AND ${sql.raw(alias)}.deleted_at IS NULL
+    AND (${isTeamScope}::boolean OR ${sql.raw(alias)}.owner_id = ${userId}::uuid)
+  `;
+  const [windowsResult, scoreResult, ingestionResult, importsResult, queueResult] =
+    await Promise.all([
+      db.execute(sql`
+      WITH windows(label, duration) AS (VALUES
+        ('24h', '24 hours'::interval), ('12h', '12 hours'::interval),
+        ('3d', '3 days'::interval), ('7d', '7 days'::interval)
+      )
+      SELECT windows.label,
+        count(*) FILTER (WHERE lead.created_at >= now() - windows.duration)::int AS ingested,
+        count(*) FILTER (WHERE lead.reviewed_at >= now() - windows.duration)::int AS reviewed,
+        count(*) FILTER (WHERE lead.reviewed_at >= now() - windows.duration AND lead.review_state = 'accepted')::int AS accepted,
+        count(*) FILTER (WHERE lead.reviewed_at >= now() - windows.duration AND lead.review_disposition = 'disqualified')::int AS disqualified,
+        count(*) FILTER (WHERE lead.created_at >= now() - windows.duration AND lead.review_state = 'pending')::int AS pending
+      FROM windows LEFT JOIN crm.leads lead ON ${scope('lead')}
+      GROUP BY windows.label, windows.duration ORDER BY windows.duration
+    `),
+      db.execute(sql`
+      SELECT CASE
+        WHEN assessment.overall_score >= 80 THEN '80-100'
+        WHEN assessment.overall_score >= 70 THEN '70-79'
+        WHEN assessment.overall_score >= 60 THEN '60-69'
+        WHEN assessment.overall_score >= 50 THEN '50-59'
+        WHEN assessment.overall_score >= 40 THEN '40-49'
+        WHEN assessment.overall_score IS NOT NULL THEN '0-39'
+        ELSE 'Unscored' END AS band, count(*)::int AS count
+      FROM crm.leads lead
+      LEFT JOIN crm.lead_ai_assessments assessment ON assessment.lead_id = lead.id
+      WHERE ${scope('lead')} AND lead.reviewed_at >= now() - interval '24 hours'
+      GROUP BY 1 ORDER BY CASE band
+        WHEN '80-100' THEN 1 WHEN '70-79' THEN 2 WHEN '60-69' THEN 3
+        WHEN '50-59' THEN 4 WHEN '40-49' THEN 5 WHEN '0-39' THEN 6 ELSE 7 END
+    `),
+      db.execute(sql`
+      SELECT date_trunc('hour', lead.created_at) AS hour,
+        coalesce(user_row.display_name, lead.captured_by_api_key_label, 'Unknown operator') AS actor,
+        count(*)::int AS count, min(lead.created_at) AS first_at, max(lead.created_at) AS last_at
+      FROM crm.leads lead
+      LEFT JOIN identity.users user_row ON user_row.id = lead.owner_id
+      WHERE ${scope('lead')} AND lead.created_at >= now() - interval '24 hours'
+      GROUP BY 1, 2 ORDER BY hour DESC, count DESC LIMIT 100
+    `),
+      db.execute(sql`
+      SELECT job.id, job.name, job.status, job.total_rows, job.processed_rows,
+        job.created_count, job.duplicate_count, job.invalid_count, job.created_at,
+        job.completed_at, coalesce(user_row.display_name, 'Unknown operator') AS actor
+      FROM crm.prospect_import_jobs job
+      LEFT JOIN identity.users user_row ON user_row.id = job.created_by
+      WHERE job.workspace_id = ${DEFAULT_WORKSPACE_ID}::uuid
+        AND (${isTeamScope}::boolean OR job.created_by = ${userId}::uuid)
+      ORDER BY job.created_at DESC LIMIT 20
+    `),
+      db.execute(sql`
+      SELECT
+        count(*) FILTER (WHERE lead.review_state = 'pending')::int AS pending_review,
+        count(*) FILTER (WHERE lead.review_state = 'pending' AND lead.profile_normalization_status IN ('pending', 'processing', 'failed'))::int AS cleanup_active,
+        count(*) FILTER (WHERE lead.review_state = 'pending' AND lead.profile_normalization_status = 'completed')::int AS cleanup_completed,
+        count(*) FILTER (WHERE lead.review_state = 'accepted')::int AS accepted,
+        count(*) FILTER (WHERE lead.review_state = 'accepted' AND assessment.lead_id IS NULL)::int AS accepted_unscored
+      FROM crm.leads lead
+      LEFT JOIN crm.lead_ai_assessments assessment ON assessment.lead_id = lead.id
+      WHERE ${scope('lead')}
+    `),
+    ]);
+  const rows = <T>(result: unknown): T[] => (result as { rows?: T[] }).rows ?? [];
+  const iso = (value: Date | string | null | undefined) => dashboardIsoString(value) ?? '';
+  return c.json({
+    generatedAt: new Date().toISOString(),
+    scope: isTeamScope ? 'team' : 'mine',
+    windows: rows<Record<string, unknown>>(windowsResult).map((row) => ({
+      label: row.label,
+      ingested: Number(row.ingested) || 0,
+      reviewed: Number(row.reviewed) || 0,
+      accepted: Number(row.accepted) || 0,
+      disqualified: Number(row.disqualified) || 0,
+      pending: Number(row.pending) || 0,
+    })),
+    scoreBands: rows<Record<string, unknown>>(scoreResult).map((row) => ({
+      band: row.band,
+      count: Number(row.count) || 0,
+    })),
+    ingestion: rows<Record<string, unknown>>(ingestionResult).map((row) => ({
+      hour: iso(row.hour as Date | string),
+      actor: row.actor,
+      count: Number(row.count) || 0,
+      firstAt: iso(row.first_at as Date | string),
+      lastAt: iso(row.last_at as Date | string),
+    })),
+    imports: rows<Record<string, unknown>>(importsResult).map((row) => ({
+      id: row.id,
+      name: row.name,
+      status: row.status,
+      actor: row.actor,
+      totalRows: Number(row.total_rows) || 0,
+      processedRows: Number(row.processed_rows) || 0,
+      createdCount: Number(row.created_count) || 0,
+      duplicateCount: Number(row.duplicate_count) || 0,
+      invalidCount: Number(row.invalid_count) || 0,
+      createdAt: iso(row.created_at as Date | string),
+      completedAt: row.completed_at ? iso(row.completed_at as Date | string) : null,
+    })),
+    queue: (() => {
+      const [row] = rows<Record<string, unknown>>(queueResult);
+      return {
+        pendingReview: Number(row?.pending_review) || 0,
+        cleanupActive: Number(row?.cleanup_active) || 0,
+        cleanupCompleted: Number(row?.cleanup_completed) || 0,
+        accepted: Number(row?.accepted) || 0,
+        acceptedUnscored: Number(row?.accepted_unscored) || 0,
+      };
+    })(),
+  });
+});
+
 app.get('/api/chat/history', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const userId = c.get('userId');

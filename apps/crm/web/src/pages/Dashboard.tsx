@@ -11,7 +11,11 @@ import {
   Users,
 } from 'lucide-react';
 import type { DashboardData, DashboardSummary } from '../api.js';
-import { useDashboard, useDashboardSummary } from '../hooks/use-api.js';
+import {
+  useDashboard,
+  useDashboardProspectOperations,
+  useDashboardSummary,
+} from '../hooks/use-api.js';
 import { useAuthStore } from '../stores/auth.js';
 import { DashboardSkeleton } from '../components/dashboard/DashboardSkeleton.js';
 import { StatCard } from '../components/dashboard/StatCard.js';
@@ -28,6 +32,7 @@ import { MyOutreachDueCard } from '../components/dashboard/MyOutreachDueCard.js'
 import { MyRecentLeadsCard } from '../components/dashboard/MyRecentLeadsCard.js';
 import { ProspectsPendingTile } from '../components/dashboard/ProspectsPendingTile.js';
 import { OperationsHealth, PriorityLeads } from '../components/dashboard/OperationsHealth.js';
+import { ProspectOperations } from '../components/dashboard/ProspectOperations.js';
 
 function pipelineValue(summary: DashboardSummary): string {
   const totals = new Map<string, number>();
@@ -71,6 +76,7 @@ export default function Dashboard() {
   const user = useAuthStore((state) => state.user);
   const summaryQuery = useDashboardSummary();
   const liveQuery = useDashboard();
+  const prospectOperationsQuery = useDashboardProspectOperations();
   const isManagerView = Boolean(user?.isSuperadmin) || user?.role === 'manager';
 
   if (!summaryQuery.data && liveQuery.data) {
@@ -156,9 +162,19 @@ export default function Dashboard() {
       </header>
 
       {isManagerView ? (
-        <ManagerDashboard summary={summary} live={liveQuery.data} liveError={liveQuery.isError} />
+        <ManagerDashboard
+          summary={summary}
+          live={liveQuery.data}
+          liveError={liveQuery.isError}
+          prospectOperations={prospectOperationsQuery.data}
+          prospectOperationsError={prospectOperationsQuery.isError}
+        />
       ) : (
-        <MemberDashboard summary={summary} />
+        <MemberDashboard
+          summary={summary}
+          prospectOperations={prospectOperationsQuery.data}
+          prospectOperationsError={prospectOperationsQuery.isError}
+        />
       )}
     </div>
   );
@@ -239,10 +255,14 @@ function ManagerDashboard({
   summary,
   live,
   liveError,
+  prospectOperations,
+  prospectOperationsError,
 }: {
   summary: DashboardSummary;
   live: ReturnType<typeof useDashboard>['data'];
   liveError: boolean;
+  prospectOperations: ReturnType<typeof useDashboardProspectOperations>['data'];
+  prospectOperationsError: boolean;
 }) {
   const totals = summary.totals;
   const isSuperadmin = useAuthStore((state) => state.user?.isSuperadmin ?? false);
@@ -275,6 +295,17 @@ function ManagerDashboard({
         </div>
       ) : (
         <div className="h-48 animate-pulse rounded-xl bg-slate-100" />
+      )}
+
+      {prospectOperations ? (
+        <ProspectOperations data={prospectOperations} />
+      ) : prospectOperationsError ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+          Prospect operations detail is temporarily unavailable; the core dashboard metrics are
+          still live.
+        </div>
+      ) : (
+        <div className="h-96 animate-pulse rounded-xl bg-slate-100" />
       )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -318,7 +349,15 @@ function ManagerDashboard({
   );
 }
 
-function MemberDashboard({ summary }: { summary: DashboardSummary }) {
+function MemberDashboard({
+  summary,
+  prospectOperations,
+  prospectOperationsError,
+}: {
+  summary: DashboardSummary;
+  prospectOperations: ReturnType<typeof useDashboardProspectOperations>['data'];
+  prospectOperationsError: boolean;
+}) {
   const mine = summary.mine;
   const totals = summary.totals;
   return (
@@ -352,6 +391,14 @@ function MemberDashboard({ summary }: { summary: DashboardSummary }) {
         <JourneyFunnel summary={summary} />
         <AiFunnelHealth summary={summary} />
       </div>
+
+      {prospectOperations ? (
+        <ProspectOperations data={prospectOperations} />
+      ) : prospectOperationsError ? (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
+          Prospect operations detail is temporarily unavailable.
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <SourceMix summary={summary} />

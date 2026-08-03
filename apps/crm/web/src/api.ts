@@ -740,6 +740,47 @@ export interface DashboardSummary {
   };
 }
 
+export interface DashboardProspectOperations {
+  generatedAt: string;
+  scope: 'team' | 'mine';
+  windows: Array<{
+    label: '24h' | '12h' | '3d' | '7d';
+    ingested: number;
+    reviewed: number;
+    accepted: number;
+    disqualified: number;
+    pending: number;
+  }>;
+  scoreBands: Array<{ band: string; count: number }>;
+  ingestion: Array<{
+    hour: string;
+    actor: string;
+    count: number;
+    firstAt: string;
+    lastAt: string;
+  }>;
+  imports: Array<{
+    id: string;
+    name: string;
+    status: string;
+    actor: string;
+    totalRows: number;
+    processedRows: number;
+    createdCount: number;
+    duplicateCount: number;
+    invalidCount: number;
+    createdAt: string;
+    completedAt: string | null;
+  }>;
+  queue: {
+    pendingReview: number;
+    cleanupActive: number;
+    cleanupCompleted: number;
+    accepted: number;
+    acceptedUnscored: number;
+  };
+}
+
 export interface ProspectImportJob {
   id: string;
   batchId: string | null;
