@@ -349,9 +349,20 @@ function prospectQueryString(filters: ProspectFilters): string {
 
 export function useProspects(filters: ProspectFilters) {
   const query = prospectQueryString(filters);
-  return useCrmQuery(['prospects', query], () =>
-    crmFetch<ProspectsResponse>(`/api/prospects?${query}`)
-  );
+  return useQuery({
+    queryKey: ['prospects', query],
+    queryFn: async () => {
+      try {
+        return await crmFetch<ProspectsResponse>(`/api/prospects?${query}`);
+      } catch (err) {
+        if (err instanceof Error && 'status' in err && err.status === 401) {
+          redirectToLogin();
+        }
+        throw err;
+      }
+    },
+    placeholderData: (previous) => previous,
+  });
 }
 
 export function useProfileCleanupStatus() {
