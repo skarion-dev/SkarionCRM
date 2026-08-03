@@ -4473,8 +4473,8 @@ app.get('/api/prospects', async (c) => {
   const sortColumn = sortColumns[sortBy] ?? schema.leads.leadSequence;
   const ordering =
     sortOrder === 'desc'
-      ? sql`${sortColumn as never} desc nulls last`
-      : sql`${sortColumn as never} asc nulls last`;
+      ? sql`${sortColumn as never} desc nulls last, ${schema.leads.id} desc`
+      : sql`${sortColumn as never} asc nulls last, ${schema.leads.id} asc`;
 
   const availableConditions = [
     ...commonConditions,
@@ -5160,7 +5160,9 @@ app.get('/api/leads', async (c) => {
 
   const sortColumn = resolveLeadSortColumn(sortBy);
   const orderByClause =
-    sortOrder === 'asc' ? sql`${sortColumn} asc nulls last` : sql`${sortColumn} desc nulls last`;
+    sortOrder === 'asc'
+      ? sql`${sortColumn} asc nulls last, ${schema.leads.id} asc`
+      : sql`${sortColumn} desc nulls last, ${schema.leads.id} desc`;
 
   // Get total count
   const countResult = await db
