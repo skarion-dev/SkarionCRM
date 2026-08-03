@@ -9485,9 +9485,18 @@ app.get('/api/dashboard/prospect-operations', async (c) => {
     AND ${sql.raw(alias)}.deleted_at IS NULL
     AND (${isTeamScope}::boolean OR ${sql.raw(alias)}.owner_id = ${userId}::uuid)
   `;
-  const [windowsResult, scoreResult, ingestionResult, importsResult, queueResult] =
-    await Promise.all([
-      db.execute(sql`
+  const [
+    windowsResult,
+    scoreResult,
+    ingestionResult,
+    importsResult,
+    queueResult,
+    captureWindowsResult,
+    captureTrendResult,
+    recentCapturesResult,
+    captureActorsResult,
+  ] = await Promise.all([
+    db.execute(sql`
       WITH windows(label, duration) AS (VALUES
         ('24h', '24 hours'::interval), ('12h', '12 hours'::interval),
         ('3d', '3 days'::interval), ('7d', '7 days'::interval)
@@ -9501,7 +9510,7 @@ app.get('/api/dashboard/prospect-operations', async (c) => {
       FROM windows LEFT JOIN crm.leads lead ON ${scope('lead')}
       GROUP BY windows.label, windows.duration ORDER BY windows.duration
     `),
-      db.execute(sql`
+    db.execute(sql`
       WITH reviewed AS (
         SELECT CASE
           WHEN assessment.overall_score >= 80 THEN '80-100'
@@ -9521,7 +9530,7 @@ app.get('/api/dashboard/prospect-operations', async (c) => {
         WHEN '80-100' THEN 1 WHEN '70-79' THEN 2 WHEN '60-69' THEN 3
         WHEN '50-59' THEN 4 WHEN '40-49' THEN 5 WHEN '0-39' THEN 6 ELSE 7 END
     `),
-      db.execute(sql`
+    db.execute(sql`
       SELECT date_trunc('hour', lead.created_at) AS hour,
         coalesce(user_row.display_name, lead.captured_by_api_key_label, 'Unknown operator') AS actor,
         count(*)::int AS count, min(lead.created_at) AS first_at, max(lead.created_at) AS last_at
@@ -9530,7 +9539,7 @@ app.get('/api/dashboard/prospect-operations', async (c) => {
       WHERE ${scope('lead')} AND lead.created_at >= now() - interval '24 hours'
       GROUP BY 1, 2 ORDER BY hour DESC, count DESC LIMIT 100
     `),
-      db.execute(sql`
+    db.execute(sql`
       SELECT job.id, job.name, job.status, job.total_rows, job.processed_rows,
         job.created_count, job.duplicate_count, job.invalid_count, job.created_at,
         job.completed_at, coalesce(user_row.display_name, 'Unknown operator') AS actor
@@ -9540,7 +9549,7 @@ app.get('/api/dashboard/prospect-operations', async (c) => {
         AND (${isTeamScope}::boolean OR job.created_by = ${userId}::uuid)
       ORDER BY job.created_at DESC LIMIT 20
     `),
-      db.execute(sql`
+    db.execute(sql`
       SELECT
         count(*) FILTER (WHERE lead.review_state = 'pending')::int AS pending_review,
         count(*) FILTER (WHERE lead.review_state = 'pending' AND lead.profile_normalization_status IN ('pending', 'processing', 'failed'))::int AS cleanup_active,
@@ -9551,7 +9560,75 @@ app.get('/api/dashboard/prospect-operations', async (c) => {
       LEFT JOIN crm.lead_ai_assessments assessment ON assessment.lead_id = lead.id
       WHERE ${scope('lead')}
     `),
-    ]);
+    db.execute(sql`
+      WITH windows(label, duration) AS (VALUES
+        ('24h', '24 hours'::interval), ('7d', '7 days'::interval), ('30d', '30 days'::interval)
+      ), captures AS (
+        SELECT capture.created_at, capture.lead_id, lead.created_at AS lead_created_at,
+          (NOT EXISTS (SELECT 1 FROM crm.lead_profile_captures prior
+            WHERE prior.workspace_id = capture.workspace_id AND prior.lead_id = capture.lead_id
+              AND prior.created_at < capture.created_at)) AS is_fresh
+        FROM crm.lead_profile_captures capture
+        JOIN crm.leads lead ON lead.id = capture.lead_id
+        WHERE capture.workspace_id = ${DEFAULT_WORKSPACE_ID}::uuid AND ${scope('lead')}
+      )
+      SELECT windows.label,
+        count(captures.lead_id)::int AS captures,
+        count(*) FILTER (WHERE captures.is_fresh)::int AS fresh,
+        count(*) FILTER (WHERE NOT captures.is_fresh)::int AS recaptures,
+        count(DISTINCT captures.lead_id)::int AS unique_leads,
+        round(coalesce(avg(EXTRACT(EPOCH FROM (captures.created_at - captures.lead_created_at)) / 60.0), 0)::numeric, 1) AS avg_latency_minutes
+      FROM windows LEFT JOIN captures ON captures.created_at >= now() - windows.duration
+      GROUP BY windows.label, windows.duration ORDER BY windows.duration
+    `),
+    db.execute(sql`
+      WITH days AS (
+        SELECT generate_series(date_trunc('day', now()) - interval '6 days', date_trunc('day', now()), interval '1 day') AS day
+      ), captures AS (
+        SELECT capture.created_at, capture.lead_id,
+          NOT EXISTS (SELECT 1 FROM crm.lead_profile_captures prior
+            WHERE prior.workspace_id = capture.workspace_id AND prior.lead_id = capture.lead_id
+              AND prior.created_at < capture.created_at) AS is_fresh
+        FROM crm.lead_profile_captures capture JOIN crm.leads lead ON lead.id = capture.lead_id
+        WHERE capture.workspace_id = ${DEFAULT_WORKSPACE_ID}::uuid AND ${scope('lead')}
+          AND capture.created_at >= date_trunc('day', now()) - interval '6 days'
+      )
+      SELECT days.day, count(captures.lead_id)::int AS captures,
+        count(*) FILTER (WHERE captures.is_fresh)::int AS fresh,
+        count(*) FILTER (WHERE NOT captures.is_fresh)::int AS recaptures
+      FROM days LEFT JOIN captures ON date_trunc('day', captures.created_at) = days.day
+      GROUP BY days.day ORDER BY days.day
+    `),
+    db.execute(sql`
+      WITH ordered AS (
+        SELECT capture.id, capture.lead_id, capture.created_at, capture.source,
+          coalesce(user_row.display_name, capture.captured_by_api_key_label, 'Unknown operator') AS actor,
+          lead.first_name, lead.last_name, lead.company_name, lead.profile_capture_status,
+          lead.data_completeness, lead.created_at AS lead_created_at,
+          row_number() OVER (PARTITION BY capture.lead_id ORDER BY capture.created_at) = 1 AS is_fresh
+        FROM crm.lead_profile_captures capture
+        JOIN crm.leads lead ON lead.id = capture.lead_id
+        LEFT JOIN identity.users user_row ON user_row.id = capture.captured_by
+        WHERE capture.workspace_id = ${DEFAULT_WORKSPACE_ID}::uuid AND ${scope('lead')}
+      )
+      SELECT * FROM ordered ORDER BY created_at DESC LIMIT 50
+    `),
+    db.execute(sql`
+      SELECT date_trunc('hour', capture.created_at) AS hour,
+        coalesce(user_row.display_name, capture.captured_by_api_key_label, 'Unknown operator') AS actor,
+        count(*)::int AS captures,
+        count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM crm.lead_profile_captures prior
+          WHERE prior.workspace_id = capture.workspace_id AND prior.lead_id = capture.lead_id
+            AND prior.created_at < capture.created_at))::int AS fresh,
+        min(capture.created_at) AS first_at, max(capture.created_at) AS last_at
+      FROM crm.lead_profile_captures capture
+      JOIN crm.leads lead ON lead.id = capture.lead_id
+      LEFT JOIN identity.users user_row ON user_row.id = capture.captured_by
+      WHERE capture.workspace_id = ${DEFAULT_WORKSPACE_ID}::uuid AND ${scope('lead')}
+        AND capture.created_at >= now() - interval '24 hours'
+      GROUP BY 1, 2 ORDER BY hour DESC, captures DESC LIMIT 100
+    `),
+  ]);
   const rows = <T>(result: unknown): T[] => (result as { rows?: T[] }).rows ?? [];
   const iso = (value: Date | string | null | undefined) => dashboardIsoString(value) ?? '';
   return c.json({
@@ -9599,6 +9676,41 @@ app.get('/api/dashboard/prospect-operations', async (c) => {
         acceptedUnscored: Number(row?.accepted_unscored) || 0,
       };
     })(),
+    captureWindows: rows<Record<string, unknown>>(captureWindowsResult).map((row) => ({
+      label: row.label,
+      captures: Number(row.captures) || 0,
+      fresh: Number(row.fresh) || 0,
+      recaptures: Number(row.recaptures) || 0,
+      uniqueLeads: Number(row.unique_leads) || 0,
+      avgLatencyMinutes: Number(row.avg_latency_minutes) || 0,
+    })),
+    captureTrend: rows<Record<string, unknown>>(captureTrendResult).map((row) => ({
+      day: iso(row.day as Date | string),
+      captures: Number(row.captures) || 0,
+      fresh: Number(row.fresh) || 0,
+      recaptures: Number(row.recaptures) || 0,
+    })),
+    recentCaptures: rows<Record<string, unknown>>(recentCapturesResult).map((row) => ({
+      id: row.id,
+      leadId: row.lead_id,
+      name: [row.first_name, row.last_name].filter(Boolean).join(' ') || 'Unnamed prospect',
+      company: row.company_name || null,
+      actor: row.actor,
+      source: row.source,
+      capturedAt: iso(row.created_at as Date | string),
+      leadCreatedAt: iso(row.lead_created_at as Date | string),
+      isFresh: Boolean(row.is_fresh),
+      profileCaptureStatus: row.profile_capture_status,
+      dataCompleteness: Number(row.data_completeness) || 0,
+    })),
+    captureActivity: rows<Record<string, unknown>>(captureActorsResult).map((row) => ({
+      hour: iso(row.hour as Date | string),
+      actor: row.actor,
+      captures: Number(row.captures) || 0,
+      fresh: Number(row.fresh) || 0,
+      firstAt: iso(row.first_at as Date | string),
+      lastAt: iso(row.last_at as Date | string),
+    })),
   });
 });
 

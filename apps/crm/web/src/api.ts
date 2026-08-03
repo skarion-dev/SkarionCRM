@@ -779,6 +779,36 @@ export interface DashboardProspectOperations {
     accepted: number;
     acceptedUnscored: number;
   };
+  captureWindows: Array<{
+    label: '24h' | '7d' | '30d';
+    captures: number;
+    fresh: number;
+    recaptures: number;
+    uniqueLeads: number;
+    avgLatencyMinutes: number;
+  }>;
+  captureTrend: Array<{ day: string; captures: number; fresh: number; recaptures: number }>;
+  recentCaptures: Array<{
+    id: string;
+    leadId: string;
+    name: string;
+    company: string | null;
+    actor: string;
+    source: string;
+    capturedAt: string;
+    leadCreatedAt: string;
+    isFresh: boolean;
+    profileCaptureStatus: string;
+    dataCompleteness: number;
+  }>;
+  captureActivity: Array<{
+    hour: string;
+    actor: string;
+    captures: number;
+    fresh: number;
+    firstAt: string;
+    lastAt: string;
+  }>;
 }
 
 export interface ProspectImportJob {

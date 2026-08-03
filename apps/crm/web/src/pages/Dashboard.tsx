@@ -33,6 +33,7 @@ import { MyRecentLeadsCard } from '../components/dashboard/MyRecentLeadsCard.js'
 import { ProspectsPendingTile } from '../components/dashboard/ProspectsPendingTile.js';
 import { OperationsHealth, PriorityLeads } from '../components/dashboard/OperationsHealth.js';
 import { ProspectOperations } from '../components/dashboard/ProspectOperations.js';
+import { CaptureIntelligence } from '../components/dashboard/CaptureIntelligence.js';
 
 function pipelineValue(summary: DashboardSummary): string {
   const totals = new Map<string, number>();
@@ -298,7 +299,10 @@ function ManagerDashboard({
       )}
 
       {prospectOperations ? (
-        <ProspectOperations data={prospectOperations} />
+        <>
+          <CaptureIntelligence data={prospectOperations} />
+          <ProspectOperations data={prospectOperations} />
+        </>
       ) : prospectOperationsError ? (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
           Prospect operations detail is temporarily unavailable; the core dashboard metrics are
@@ -393,7 +397,10 @@ function MemberDashboard({
       </div>
 
       {prospectOperations ? (
-        <ProspectOperations data={prospectOperations} />
+        <>
+          <CaptureIntelligence data={prospectOperations} />
+          <ProspectOperations data={prospectOperations} />
+        </>
       ) : prospectOperationsError ? (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
           Prospect operations detail is temporarily unavailable.

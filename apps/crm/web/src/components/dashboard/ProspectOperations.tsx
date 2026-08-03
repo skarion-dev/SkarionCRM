@@ -34,17 +34,22 @@ function Panel({
   icon: Icon,
   children,
   className = '',
+  updatedAt,
 }: {
   title: string;
   icon: LucideIcon;
   children: React.ReactNode;
   className?: string;
+  updatedAt?: string;
 }) {
   return (
     <section className={`rounded-xl border border-slate-200 bg-white p-5 shadow-sm ${className}`}>
       <div className="mb-4 flex items-center gap-2">
         <Icon size={17} className="text-indigo-600" />
         <h2 className="text-sm font-semibold text-slate-900">{title}</h2>
+        {updatedAt ? (
+          <span className="ml-auto text-[10px] text-slate-400">As of {dateTime(updatedAt)}</span>
+        ) : null}
       </div>
       {children}
     </section>
@@ -96,7 +101,12 @@ export function ProspectOperations({ data }: { data: DashboardProspectOperations
       </div>
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-5">
-        <Panel title="Score bands · reviewed last 24h" icon={BarChart3} className="xl:col-span-2">
+        <Panel
+          title="Score bands · reviewed last 24h"
+          icon={BarChart3}
+          className="xl:col-span-2"
+          updatedAt={data.generatedAt}
+        >
           <div className="space-y-3">
             {data.scoreBands.length === 0 ? (
               <p className="text-sm text-slate-500">No reviews in the last 24 hours.</p>
@@ -121,7 +131,12 @@ export function ProspectOperations({ data }: { data: DashboardProspectOperations
           </div>
         </Panel>
 
-        <Panel title="Queue snapshot" icon={Database} className="xl:col-span-3">
+        <Panel
+          title="Queue snapshot"
+          icon={Database}
+          className="xl:col-span-3"
+          updatedAt={data.generatedAt}
+        >
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
             {[
               ['Pending review', data.queue.pendingReview, 'text-amber-700'],
@@ -142,7 +157,11 @@ export function ProspectOperations({ data }: { data: DashboardProspectOperations
       </div>
 
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-        <Panel title="Recent ingestion by person and hour" icon={Activity}>
+        <Panel
+          title="Recent ingestion by person and hour"
+          icon={Activity}
+          updatedAt={data.generatedAt}
+        >
           {data.ingestion.length === 0 ? (
             <p className="text-sm text-slate-500">No prospects ingested in the last 24 hours.</p>
           ) : (
@@ -180,7 +199,7 @@ export function ProspectOperations({ data }: { data: DashboardProspectOperations
           )}
         </Panel>
 
-        <Panel title="Recent import jobs" icon={FileUp}>
+        <Panel title="Recent import jobs" icon={FileUp} updatedAt={data.generatedAt}>
           {data.imports.length === 0 ? (
             <p className="text-sm text-slate-500">No import jobs found.</p>
           ) : (
