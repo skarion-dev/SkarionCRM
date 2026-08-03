@@ -132,6 +132,7 @@ const CANDIDATE_FIELD_LIMITS: Partial<Record<CandidateLeadEditableField, number>
 const JOURNEY_STAGE_ALIASES: Array<[RegExp, LeadJourneyStage]> = [
   [/\bforeign\s+national\b/i, 'foreign_national'],
   [/\bstem\b/i, 'stem'],
+  [/\b(?:ready\s+for\s+email|email[\s-]+ready)\b/i, 'ready_for_email'],
   [/\bready\s+to\s+reach\s+out\b/i, 'ready_to_reach_out'],
   [/\bconnection\s+(?:request\s+)?sent\b/i, 'connection_sent'],
   [/\bmeeting\s+booked\b/i, 'meeting_booked'],
@@ -292,7 +293,7 @@ Return exactly one JSON object:
 {"journeyStage":string|null,"updates":object,"noteToAppend":string|null}
 
 Allowed journeyStage values:
-future, foreign_national, stem, new, ready_to_reach_out, connection_sent, connected, engaged, qualified, meeting_booked, opportunity, follow_up, converted, nurture, no_response, disqualified, lost.
+future, foreign_national, stem, new, ready_to_reach_out, ready_for_email, connection_sent, connected, engaged, qualified, meeting_booked, opportunity, follow_up, converted, nurture, no_response, disqualified, lost.
 
 Allowed update fields:
 firstName, lastName, email, phone, headline, location, about, experience, education, skills, currentRole, currentRoleDates, openToWork, yearsExperience, connectionDegree, companyName, companyDomain.

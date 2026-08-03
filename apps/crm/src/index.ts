@@ -2815,7 +2815,8 @@ app.get('/api/dashboard', async (c) => {
         '[]'::jsonb
       ) AS value
       FROM unnest(ARRAY[
-        'future', 'foreign_national', 'stem', 'new', 'ready_to_reach_out', 'connection_sent',
+        'future', 'foreign_national', 'stem', 'new', 'ready_to_reach_out', 'ready_for_email',
+        'connection_sent',
         'connected', 'engaged', 'qualified', 'meeting_booked', 'opportunity',
         'follow_up', 'converted', 'nurture', 'no_response', 'disqualified', 'lost'
       ]::text[]) WITH ORDINALITY AS stages(stage, position)
@@ -2866,7 +2867,9 @@ app.get('/api/dashboard', async (c) => {
         FROM accepted_leads lead
         INNER JOIN crm.lead_ai_assessments assessment ON assessment.lead_id = lead.id
         WHERE assessment.hard_disqualifier = false
-          AND lead.journey_stage in ('new', 'ready_to_reach_out', 'connection_sent', 'connected')
+          AND lead.journey_stage in (
+            'new', 'ready_to_reach_out', 'ready_for_email', 'connection_sent', 'connected'
+          )
         ORDER BY assessment.overall_score DESC, lead.updated_at DESC
         LIMIT 6
       ) priority_row
@@ -4953,7 +4956,11 @@ app.get('/api/leads/scoring-status', async (c) => {
     eq(schema.leads.reviewState, 'accepted'),
     isNull(schema.leads.deletedAt)
   );
-  const beforeApproach = inArray(schema.leads.journeyStage, ['new', 'ready_to_reach_out']);
+  const beforeApproach = inArray(schema.leads.journeyStage, [
+    'new',
+    'ready_to_reach_out',
+    'ready_for_email',
+  ]);
   const eligibleForScoring = and(
     visibleLead,
     beforeApproach,

@@ -295,6 +295,13 @@
       "when": 1785520800000,
       "tag": "0041_enforce_profile_capture_tags",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1785700000000,
+      "tag": "0042_ready_for_email_stage",
+      "breakpoints": true
     }
   ]
 }

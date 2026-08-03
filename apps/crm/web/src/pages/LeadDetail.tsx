@@ -71,17 +71,19 @@ const STATUS_PIPELINE: {
     color: key === 'converted' ? 'text-emerald-700' : 'text-blue-700',
     bg: key === 'converted' ? 'bg-emerald-100' : 'bg-blue-100',
     icon:
-      key === 'future' ||
-      key === 'foreign_national' ||
-      key === 'stem' ||
-      key === 'new' ||
-      key === 'ready_to_reach_out'
-        ? Sparkles
-        : key === 'qualified'
-          ? UserCheck
-          : key === 'meeting_booked' || key === 'converted'
-            ? CalendarCheck
-            : MessageSquare,
+      key === 'ready_for_email'
+        ? Mail
+        : key === 'future' ||
+            key === 'foreign_national' ||
+            key === 'stem' ||
+            key === 'new' ||
+            key === 'ready_to_reach_out'
+          ? Sparkles
+          : key === 'qualified'
+            ? UserCheck
+            : key === 'meeting_booked' || key === 'converted'
+              ? CalendarCheck
+              : MessageSquare,
   })),
 ];
 

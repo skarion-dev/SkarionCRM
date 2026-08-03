@@ -48,6 +48,7 @@ export const leadJourneyStageEnum = crmSchema.enum('lead_journey_stage', [
   'stem',
   'new',
   'ready_to_reach_out',
+  'ready_for_email',
   'connection_sent',
   'connected',
   'engaged',

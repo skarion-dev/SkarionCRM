@@ -148,6 +148,11 @@ describe('Candidate conversation agent', () => {
       updates: {},
       noteToAppend: null,
     });
+    expect(parseDirectCandidateJourneyAction('Move this candidate to Ready for Email')).toEqual({
+      journeyStage: 'ready_for_email',
+      updates: {},
+      noteToAppend: null,
+    });
     expect(parseDirectCandidateJourneyAction('Update this lead company to New Company')).toBeNull();
     expect(detectCandidateLeadActionIntent("Don't disqualify this lead; draft a reply")).toBe(
       false
