@@ -40,6 +40,8 @@ import {
   createWorkflowRule,
   updateWorkflowRule,
   deleteWorkflowRule,
+  listActivityLogs,
+  type ActivityLogResponse,
 } from '../api.js';
 import { buildLeadsQueryString, type LeadFilters } from '../lib/leadFilters.js';
 
@@ -1535,6 +1537,21 @@ export function useImportBatches() {
     const res = await listImportBatches();
     return res.batches;
   });
+}
+
+export function useActivityLogs(filters: {
+  page: number;
+  pageSize: number;
+  action: string;
+  resourceType: string;
+  actorUserId: string;
+  search: string;
+  from: string;
+  to: string;
+}) {
+  return useCrmQuery<ActivityLogResponse>(['admin-activity-logs', JSON.stringify(filters)], () =>
+    listActivityLogs(filters)
+  );
 }
 
 export function useIdentityUsers(enabled = true) {

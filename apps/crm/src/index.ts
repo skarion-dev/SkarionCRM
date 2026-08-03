@@ -392,6 +392,92 @@ async function enqueueLeadProfileCleanup(db: CrmDb, leadId: string): Promise<voi
     .where(eq(schema.leads.id, leadId));
 }
 
+/**
+ * Imports can create the lead row before a long-lived background import task
+ * is interrupted. Reconcile those rows on every cron drain so a prospect can
+ * never remain in the UI as "waiting for cleanup" without a queue job.
+ */
+async function drainPhdProspectDisqualifications(db: CrmDb, limit = 100): Promise<void> {
+  const phdLeads = await db
+    .select()
+    .from(schema.leads)
+    .where(
+      and(
+        eq(schema.leads.reviewState, 'pending'),
+        isNull(schema.leads.deletedAt),
+        prospectHasPhdSql()
+      )
+    )
+    .orderBy(asc(schema.leads.createdAt))
+    .limit(limit);
+  await runWithConcurrency(phdLeads, AI_QUEUE_CONCURRENCY, async (lead) => {
+    await enforcePhdAutoDisqualification(db, lead, null);
+  });
+}
+
+async function recoverOrphanedLeadProfileJobs(db: CrmDb): Promise<void> {
+  await db.execute(sql`
+    INSERT INTO "crm"."lead_profile_jobs" (
+      "lead_id", "status", "attempts", "next_attempt_at", "locked_at",
+      "completed_at", "last_error", "created_at", "updated_at"
+    )
+    SELECT
+      lead."id", 'pending', 0, now(), NULL, NULL, NULL, now(), now()
+    FROM "crm"."leads" lead
+    LEFT JOIN "crm"."lead_profile_jobs" job ON job."lead_id" = lead."id"
+    WHERE lead."deleted_at" IS NULL
+      AND lead."review_state" = 'pending'
+      AND lead."profile_normalization_status" = 'pending'
+      AND job."id" IS NULL
+      AND NOT (
+        lower(concat_ws(
+          ' ', lead."first_name", lead."last_name", lead."headline", lead."about",
+          lead."experience", lead."education", lead."skills", lead."current_role",
+          lead."current_role_dates", lead."profile_summary", lead."education_entries"::text,
+          lead."experience_entries"::text, lead."notes"
+        )) ~ '(^|[^[:alpha:]])ph[.]?[[:space:]]*d[.]?([^[:alpha:]]|$)'
+        OR lower(concat_ws(
+          ' ', lead."first_name", lead."last_name", lead."headline", lead."about",
+          lead."experience", lead."education", lead."skills", lead."current_role",
+          lead."current_role_dates", lead."profile_summary", lead."education_entries"::text,
+          lead."experience_entries"::text, lead."notes"
+        )) LIKE '%doctor of philosophy%'
+      )
+      AND (
+        NULLIF(trim(lead."headline"), '') IS NOT NULL
+        OR NULLIF(trim(lead."location"), '') IS NOT NULL
+        OR NULLIF(trim(lead."about"), '') IS NOT NULL
+        OR NULLIF(trim(lead."experience"), '') IS NOT NULL
+        OR NULLIF(trim(lead."education"), '') IS NOT NULL
+        OR NULLIF(trim(lead."skills"), '') IS NOT NULL
+        OR NULLIF(trim(lead."current_role"), '') IS NOT NULL
+        OR NULLIF(trim(lead."current_role_dates"), '') IS NOT NULL
+        OR (lead."source" = 'linkedin' AND NULLIF(trim(lead."notes"), '') IS NOT NULL)
+      )
+    ON CONFLICT ("lead_id") DO NOTHING
+  `);
+
+  // Recover the other half of the same inconsistency if a worker stopped
+  // between completing the queue row and updating the lead.
+  await db.execute(sql`
+    UPDATE "crm"."lead_profile_jobs" job
+    SET
+      "status" = 'pending',
+      "attempts" = 0,
+      "next_attempt_at" = now(),
+      "locked_at" = NULL,
+      "completed_at" = NULL,
+      "last_error" = NULL,
+      "updated_at" = now()
+    FROM "crm"."leads" lead
+    WHERE job."lead_id" = lead."id"
+      AND job."status" = 'completed'
+      AND lead."deleted_at" IS NULL
+      AND lead."review_state" = 'pending'
+      AND lead."profile_normalization_status" = 'pending'
+  `);
+}
+
 function structuredLeadQualificationInput(
   lead: typeof schema.leads.$inferSelect
 ): ai.LeadQualificationInput {
@@ -3274,6 +3360,8 @@ async function generateAndSaveLeadScore(
 }
 
 async function drainLeadProfileQueue(db: CrmDb, env: Env, limit: number) {
+  await drainPhdProspectDisqualifications(db);
+  await recoverOrphanedLeadProfileJobs(db);
   const now = new Date();
   await db.update(schema.leadProfileJobs).set({
     status: 'completed',
@@ -5191,7 +5279,18 @@ app.get('/api/leads', async (c) => {
   const statusCountsRaw = await db
     .select({ status: schema.leads.journeyStage, count: sql<number>`count(*)::int` })
     .from(schema.leads)
-    .where(and(isNull(schema.leads.deletedAt), eq(schema.leads.reviewState, 'accepted')))
+    .where(
+      and(
+        isNull(schema.leads.deletedAt),
+        or(
+          eq(schema.leads.reviewState, 'accepted'),
+          and(
+            eq(schema.leads.reviewState, 'rejected'),
+            eq(schema.leads.journeyStage, 'disqualified')
+          )
+        )
+      )
+    )
     .groupBy(schema.leads.journeyStage);
 
   const statusCounts = Object.fromEntries(LEAD_JOURNEY_STAGES.map((stage) => [stage, 0])) as Record<
@@ -7933,6 +8032,84 @@ app.post('/api/import/leads', async (c) => {
 });
 
 // --- ADMIN ---
+
+app.get('/api/admin/activity-logs', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const page = Math.max(1, Number.parseInt(c.req.query('page') || '1', 10));
+  const pageSize = Math.min(
+    100,
+    Math.max(10, Number.parseInt(c.req.query('pageSize') || '50', 10))
+  );
+  const action = c.req.query('action')?.trim();
+  const resourceType = c.req.query('resourceType')?.trim();
+  const actorUserId = c.req.query('actorUserId')?.trim();
+  const search = c.req.query('search')?.trim();
+  const from = c.req.query('from')?.trim();
+  const to = c.req.query('to')?.trim();
+  const conditions = [eq(schema.auditLog.app, 'crm')];
+
+  if (action) conditions.push(eq(schema.auditLog.action, action));
+  if (resourceType) conditions.push(eq(schema.auditLog.resourceType, resourceType));
+  if (actorUserId && /^[0-9a-f-]{36}$/i.test(actorUserId)) {
+    conditions.push(eq(schema.auditLog.actorUserId, actorUserId));
+  }
+  if (search) {
+    const pattern = `%${search.toLowerCase()}%`;
+    const searchCondition = or(
+      ilike(schema.auditLog.action, pattern),
+      ilike(schema.auditLog.resourceType, pattern),
+      ilike(schema.auditLog.resourceId, pattern)
+    );
+    if (searchCondition) conditions.push(searchCondition);
+  }
+  if (from) {
+    const date = new Date(`${from}T00:00:00.000Z`);
+    if (!Number.isNaN(date.getTime())) conditions.push(gte(schema.auditLog.createdAt, date));
+  }
+  if (to) {
+    const date = new Date(`${to}T23:59:59.999Z`);
+    if (!Number.isNaN(date.getTime())) conditions.push(lte(schema.auditLog.createdAt, date));
+  }
+
+  const where = and(...conditions);
+  const [rows, countRows, actions, resourceTypes] = await Promise.all([
+    db
+      .select()
+      .from(schema.auditLog)
+      .where(where)
+      .orderBy(desc(schema.auditLog.createdAt))
+      .limit(pageSize)
+      .offset((page - 1) * pageSize),
+    db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.auditLog)
+      .where(where),
+    db
+      .select({ value: schema.auditLog.action })
+      .from(schema.auditLog)
+      .where(eq(schema.auditLog.app, 'crm'))
+      .groupBy(schema.auditLog.action)
+      .orderBy(asc(schema.auditLog.action)),
+    db
+      .select({ value: schema.auditLog.resourceType })
+      .from(schema.auditLog)
+      .where(eq(schema.auditLog.app, 'crm'))
+      .groupBy(schema.auditLog.resourceType)
+      .orderBy(asc(schema.auditLog.resourceType)),
+  ]);
+  const total = Number(countRows[0]?.count ?? 0);
+  return c.json({
+    logs: rows,
+    page,
+    pageSize,
+    total,
+    totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    filters: {
+      actions: actions.map((row) => row.value),
+      resourceTypes: resourceTypes.map((row) => row.value),
+    },
+  });
+});
 
 app.get('/api/admin/audit-log', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;

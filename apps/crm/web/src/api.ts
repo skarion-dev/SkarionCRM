@@ -1077,6 +1077,49 @@ export function listImportBatches() {
   return crmFetch<{ batches: ImportBatch[] }>('/api/import-batches');
 }
 
+export interface ActivityLogEntry {
+  id: string;
+  actorUserId: string | null;
+  app: string;
+  action: string;
+  resourceType: string;
+  resourceId: string;
+  before: unknown;
+  after: unknown;
+  ip: string | null;
+  userAgent: string | null;
+  createdAt: string;
+}
+
+export interface ActivityLogResponse {
+  logs: ActivityLogEntry[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  filters: {
+    actions: string[];
+    resourceTypes: string[];
+  };
+}
+
+export function listActivityLogs(filters: {
+  page?: number;
+  pageSize?: number;
+  action?: string;
+  resourceType?: string;
+  actorUserId?: string;
+  search?: string;
+  from?: string;
+  to?: string;
+}) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== '') query.set(key, String(value));
+  }
+  return crmFetch<ActivityLogResponse>(`/api/admin/activity-logs?${query.toString()}`);
+}
+
 // ─── Identity users (for superadmin/manager assignment) ───
 
 export interface IdentityUser {

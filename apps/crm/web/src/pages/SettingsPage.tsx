@@ -59,6 +59,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/utils.js';
 import { showToast } from '../stores/toast.js';
+import AdminActivityLogsPage from './AdminActivityLogsPage.js';
 
 const TABS = [
   { id: 'profile', label: 'Profile', icon: User },
@@ -69,6 +70,7 @@ const TABS = [
   { id: 'ai', label: 'AI & Agents', icon: Bot },
   { id: 'extension-keys', label: 'Extension Keys', icon: KeyRound },
   { id: 'integrations', label: 'Integrations', icon: Puzzle },
+  { id: 'activity-logs', label: 'Activity Logs', icon: Activity },
 ] as const;
 
 type TabId = (typeof TABS)[number]['id'];
@@ -105,7 +107,9 @@ export default function SettingsPage() {
             const disabled =
               tab.id === 'extension-keys'
                 ? !user?.isSuperadmin
-                : tab.id !== 'profile' && !canManage;
+                : tab.id === 'activity-logs'
+                  ? !user?.isSuperadmin
+                  : tab.id !== 'profile' && !canManage;
             return (
               <button
                 key={tab.id}
@@ -309,6 +313,9 @@ export default function SettingsPage() {
           </div>
         </div>
       )}
+
+      {/* Activity Logs Tab */}
+      {activeTab === 'activity-logs' && user?.isSuperadmin && <AdminActivityLogsPage embedded />}
     </div>
   );
 }

@@ -16,6 +16,7 @@ import TasksPage from './pages/TasksPage.js';
 import PipelinePage from './pages/PipelinePage.js';
 import SettingsPage from './pages/SettingsPage.js';
 import ChatPage from './pages/ChatPage.js';
+import AdminActivityLogsPage from './pages/AdminActivityLogsPage.js';
 
 const ReportingCeoPage = lazy(() => import('./pages/ReportingCeoPage.js'));
 
@@ -181,6 +182,16 @@ export default function App() {
               <RequireAuth>
                 <RequireSuperadmin>
                   <ReportingCeoPage />
+                </RequireSuperadmin>
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/admin/activity-logs"
+            element={
+              <RequireAuth>
+                <RequireSuperadmin>
+                  <AdminActivityLogsPage />
                 </RequireSuperadmin>
               </RequireAuth>
             }
