@@ -1,0 +1,7 @@
+{
+  "name": "skarion-vertex-gateway",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "node server.mjs" },
+  "dependencies": { "@google-cloud/vertexai": "^1.9.0", "google-auth-library": "^9.15.1" }
+}
