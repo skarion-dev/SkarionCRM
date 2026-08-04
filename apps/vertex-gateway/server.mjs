@@ -1,5 +1,4 @@
 import http from 'node:http';
-import { VertexAI } from '@google-cloud/vertexai';
 import { GoogleAuth } from 'google-auth-library';
 
 const port = Number(process.env.PORT || 8080);
@@ -8,7 +7,6 @@ const location = process.env.VERTEX_LOCATION || 'us-central1';
 const gatewayKey = process.env.GATEWAY_API_KEY?.trim();
 if (!project || !gatewayKey) throw new Error('GOOGLE_CLOUD_PROJECT and GATEWAY_API_KEY are required');
 
-const vertex = new VertexAI({ project, location });
 const auth = new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
 const modelName = (value, fallback) => {
   const raw = String(value || fallback).replace(/^vertex_ai\//, '');
@@ -42,9 +40,15 @@ async function chat(payload) {
     role: m.role === 'assistant' ? 'model' : 'user',
     parts: [{ text: typeof m.content === 'string' ? m.content : (m.content || []).map((p) => p.text || '').join('\n') }],
   }));
-  const generative = vertex.getGenerativeModel({ model, systemInstruction: system ? { parts: [{ text: system }] } : undefined });
-  const result = await generative.generateContent({ contents, generationConfig: { temperature: payload.temperature ?? 0.3, ...(payload.max_tokens ? { maxOutputTokens: payload.max_tokens } : {}) } });
-  const response = result.response;
+  const client = await auth.getClient();
+  const host = location === 'global' ? 'aiplatform.googleapis.com' : `${location}-aiplatform.googleapis.com`;
+  const endpoint = `https://${host}/v1/projects/${project}/locations/${location}/publishers/google/models/${model}:generateContent`;
+  const result = await client.request({ url: endpoint, method: 'POST', data: {
+    ...(system ? { systemInstruction: { parts: [{ text: system }] } } : {}),
+    contents,
+    generationConfig: { temperature: payload.temperature ?? 0.3, ...(payload.max_tokens ? { maxOutputTokens: payload.max_tokens } : {}) },
+  } });
+  const response = result.data;
   const text = response.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('') || '';
   return { id: `chatcmpl-${Date.now()}`, object: 'chat.completion', created: Math.floor(Date.now() / 1000), model, choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' }], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } };
 }
