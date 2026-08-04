@@ -809,6 +809,22 @@ export interface DashboardProspectOperations {
     firstAt: string;
     lastAt: string;
   }>;
+  captureTokens: Array<{
+    id: string;
+    label: string;
+    email: string | null;
+    issuedAt: string;
+    lastUsedAt: string | null;
+    revokedAt: string | null;
+    captures: number;
+    freshCaptures: number;
+    uniqueLeads: number;
+    leadsCreated: number;
+    captures24h: number;
+    captures7d: number;
+    firstCaptureAt: string | null;
+    lastCaptureAt: string | null;
+  }>;
 }
 
 export interface ProspectImportJob {

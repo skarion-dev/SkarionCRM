@@ -1,4 +1,4 @@
-import { Activity, Clock3, Radio, Sparkles, UserRound } from 'lucide-react';
+import { Activity, Clock3, KeyRound, Radio, Sparkles, UserRound } from 'lucide-react';
 import type { DashboardProspectOperations } from '../../api.js';
 
 const dateTime = (value: string) =>
@@ -114,6 +114,75 @@ export function CaptureIntelligence({ data }: { data: DashboardProspectOperation
               </tbody>
             </table>
           </div>
+        </div>
+      </div>
+      <div className="rounded-xl border border-white bg-white p-4 shadow-sm">
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <KeyRound size={16} className="text-indigo-600" />
+          <h3 className="text-sm font-semibold text-slate-900">
+            Extension token performance - lifetime
+          </h3>
+          <span className="text-[11px] text-slate-400">
+            Counts begin when each API key was issued
+          </span>
+        </div>
+        <div className="overflow-auto">
+          <table className="w-full min-w-[1080px] text-left text-xs">
+            <thead className="text-[10px] uppercase tracking-wide text-slate-400">
+              <tr>
+                <th className="pb-2">Token name</th>
+                <th className="pb-2">Issued / status</th>
+                <th className="pb-2 text-right">All captures</th>
+                <th className="pb-2 text-right">Fresh / unique</th>
+                <th className="pb-2 text-right">New leads</th>
+                <th className="pb-2 text-right">24h / 7d</th>
+                <th className="pb-2">Last capture</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {data.captureTokens.map((token) => (
+                <tr key={token.id}>
+                  <td className="py-2">
+                    <div className="font-semibold text-slate-800">{token.label}</div>
+                    {token.email && <div className="text-[11px] text-slate-400">{token.email}</div>}
+                  </td>
+                  <td className="py-2 text-slate-500">
+                    <div>{dateTime(token.issuedAt)}</div>
+                    <span
+                      className={`mt-1 inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold ${token.revokedAt ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'}`}
+                    >
+                      {token.revokedAt ? 'Revoked' : 'Active'}
+                    </span>
+                  </td>
+                  <td className="py-2 text-right text-sm font-semibold text-slate-900">
+                    {token.captures.toLocaleString()}
+                  </td>
+                  <td className="py-2 text-right text-slate-700">
+                    <div className="font-semibold">{token.freshCaptures.toLocaleString()}</div>
+                    <div className="text-[11px] text-slate-400">
+                      {token.uniqueLeads.toLocaleString()} unique profiles
+                    </div>
+                  </td>
+                  <td className="py-2 text-right font-semibold text-indigo-700">
+                    {token.leadsCreated.toLocaleString()}
+                  </td>
+                  <td className="py-2 text-right text-slate-700">
+                    {token.captures24h.toLocaleString()} / {token.captures7d.toLocaleString()}
+                  </td>
+                  <td className="py-2 text-slate-500">
+                    {token.lastCaptureAt ? dateTime(token.lastCaptureAt) : 'No capture yet'}
+                  </td>
+                </tr>
+              ))}
+              {data.captureTokens.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="py-6 text-center text-slate-400">
+                    No extension tokens are visible in this scope.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
       <div className="rounded-xl border border-white bg-white p-4 shadow-sm">
