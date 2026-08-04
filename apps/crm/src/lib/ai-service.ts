@@ -261,12 +261,22 @@ export async function chatCompletion(
       gatewayMessages.unshift({ role: 'system', content: opts.systemInstruction });
     }
 
-    const preferredModel =
+    const configuredPreferredModel =
       opts?.model ||
       (opts?.agent
         ? selectAiAgentModel(env, opts.agent, opts?.tier || 'fast')
         : selectAiModel(env, opts?.tier || 'fast'));
-    const fallbackModel = env.AI_MODEL_FALLBACK || selectAiModel(env, 'cheap');
+    // Embedding is a vector model and cannot answer chat requests. RAG agents
+    // legitimately use it for retrieval, but any chat call routed through
+    // those agents must use a text model instead of polluting telemetry with
+    // failed "embedding" chat requests.
+    const preferredModel =
+      configuredPreferredModel === 'embedding'
+        ? selectAiModel(env, opts?.tier === 'reasoning' ? 'reasoning' : 'fast')
+        : configuredPreferredModel;
+    const configuredFallback = env.AI_MODEL_FALLBACK || selectAiModel(env, 'cheap');
+    const fallbackModel =
+      configuredFallback === 'embedding' ? selectAiModel(env, 'cheap') : configuredFallback;
     const result = await gatewayChatCompletion(gatewayMessages, env, {
       model: preferredModel,
       agent: opts?.agent,

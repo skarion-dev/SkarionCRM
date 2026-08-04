@@ -3004,6 +3004,7 @@ app.get('/api/dashboard', async (c) => {
         coalesce(sum(event.estimated_cost_usd), 0)::numeric(16, 6) AS cost_usd
       FROM crm.ai_usage_events event
       WHERE event.created_at >= now() - interval '7 days'
+        AND NOT (event.request_type = 'chat' AND event.model = 'embedding')
         AND ${canViewAiSpend}::boolean
     )
     SELECT jsonb_build_object(
@@ -8393,7 +8394,12 @@ app.get('/api/ai/usage', async (c) => {
       createdAt: schema.aiUsageEvents.createdAt,
     })
     .from(schema.aiUsageEvents)
-    .where(gte(schema.aiUsageEvents.createdAt, start))
+    .where(
+      and(
+        gte(schema.aiUsageEvents.createdAt, start),
+        sql`NOT (${schema.aiUsageEvents.requestType} = 'chat' AND ${schema.aiUsageEvents.model} = 'embedding')`
+      )
+    )
     .orderBy(asc(schema.aiUsageEvents.createdAt));
 
   type UsageAggregate = {
@@ -9212,7 +9218,8 @@ async function buildCeoOperationalContext(
       lastUsedAt: sql<Date | null>`max(${schema.aiUsageEvents.createdAt})`,
     })
     .from(schema.aiUsageEvents)
-    .where(sql`${schema.aiUsageEvents.createdAt} >= now() - interval '30 days'`)
+    .where(sql`${schema.aiUsageEvents.createdAt} >= now() - interval '30 days'
+      AND NOT (${schema.aiUsageEvents.requestType} = 'chat' AND ${schema.aiUsageEvents.model} = 'embedding')`)
     .groupBy(schema.aiUsageEvents.agentId);
   scope.push('agentOperations');
 
