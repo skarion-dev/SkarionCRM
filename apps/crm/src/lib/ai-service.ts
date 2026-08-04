@@ -519,6 +519,23 @@ export interface OutreachDraftRequest {
   channel: 'email' | 'linkedin' | 'sms';
 }
 
+export function normalizeOutreachDraft(text: string, channel: OutreachDraftRequest['channel']): string {
+  const cleaned = text
+    .replace(/```(?:text|markdown)?/gi, '')
+    .replace(/```/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const limit = channel === 'linkedin' ? 300 : channel === 'sms' ? 160 : null;
+  if (!limit || [...cleaned].length <= limit) return cleaned;
+
+  // Model instruction alone is not an enforcement mechanism. Keep channel
+  // drafts paste-ready even when a provider returns a few extra characters.
+  const clipped = [...cleaned].slice(0, limit - 3).join('');
+  const lastSpace = clipped.lastIndexOf(' ');
+  const naturalBoundary = lastSpace > limit * 0.72 ? lastSpace : clipped.length;
+  return `${clipped.slice(0, naturalBoundary).trimEnd()}...`;
+}
+
 export async function draftOutreach(
   request: OutreachDraftRequest,
   env: Env
@@ -570,11 +587,12 @@ Skarion positioning: ${position}
 
 No markdown formatting, plain text only. Include one clear call to action. ${SUPPLIED_DATA_ONLY_GUARD_SHORT}`;
 
-  return chatCompletionSingle(prompt, env, {
+  const draft = await chatCompletionSingle(prompt, env, {
     temperature: 0.4,
     tier: 'cheap',
     agent: 'outreach-writer',
   });
+  return draft ? normalizeOutreachDraft(draft, request.channel) : null;
 }
 
 export type CandidateOutreachChannel = 'inmail' | 'email';
