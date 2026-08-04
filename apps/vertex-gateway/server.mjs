@@ -12,7 +12,7 @@ const vertex = new VertexAI({ project, location });
 const auth = new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
 const modelName = (value, fallback) => {
   const raw = String(value || fallback).replace(/^vertex_ai\//, '');
-  if (raw === 'coding-cheap') return 'gemini-2.5-flash-lite';
+  if (raw === 'coding-cheap') return 'gemini-3.5-flash-lite';
   if (raw === 'coding-fast') return 'gemini-2.5-flash';
   if (raw === 'coding-best') return 'gemini-2.5-pro';
   if (raw === 'embedding') return 'text-embedding-004';
@@ -53,7 +53,8 @@ async function embeddings(payload) {
   const model = modelName(payload.model, 'text-embedding-004');
   const inputs = Array.isArray(payload.input) ? payload.input : [payload.input];
   const client = await auth.getClient();
-  const endpoint = `https://${location}-aiplatform.googleapis.com/v1/projects/${project}/locations/${location}/publishers/google/models/${model}:predict`;
+  const host = location === 'global' ? 'aiplatform.googleapis.com' : `${location}-aiplatform.googleapis.com`;
+  const endpoint = `https://${host}/v1/projects/${project}/locations/${location}/publishers/google/models/${model}:predict`;
   const response = await client.request({ url: endpoint, method: 'POST', data: { instances: inputs.map((input) => ({ content: String(input || '') })) } });
   const predictions = response.data?.predictions || [];
   const data = [];
