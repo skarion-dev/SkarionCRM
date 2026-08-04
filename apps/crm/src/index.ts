@@ -2787,12 +2787,9 @@ async function getConfiguredAiEnv(db: CrmDb, env: Env, actorUserId?: string | nu
       Object.fromEntries(
         AI_AGENTS.map((agent) => [
           agent.id,
-          settings.agentModels[agent.id] ??
-            (agent.tier === 'embedding'
-              ? DEFAULT_AI_MODELS.embedding
-              : agent.tier === 'fast'
-                ? DEFAULT_AI_MODELS.fast
-                : DEFAULT_AI_MODELS.cheap),
+          (settings.agentModels[agent.id] ?? agent.tier === 'embedding')
+            ? settings.tierModels.embedding
+            : settings.tierModels[agent.tier],
         ])
       )
     ),
