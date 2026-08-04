@@ -10,6 +10,7 @@ if (!project || !gatewayKey) throw new Error('GOOGLE_CLOUD_PROJECT and GATEWAY_A
 const auth = new GoogleAuth({ scopes: ['https://www.googleapis.com/auth/cloud-platform'] });
 const modelName = (value, fallback) => {
   const raw = String(value || fallback).replace(/^vertex_ai\//, '');
+  if (raw === 'coding-cheapest') return 'gemini-2.5-flash-lite';
   if (raw === 'coding-cheap') return 'gemini-3.5-flash-lite';
   if (raw === 'coding-fast') return 'gemini-2.5-flash';
   if (raw === 'coding-best') return 'gemini-2.5-pro';
