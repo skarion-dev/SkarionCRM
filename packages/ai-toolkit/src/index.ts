@@ -207,6 +207,7 @@ export type AiAgentId =
   | 'next-best-action'
   | 'lead-summarizer'
   | 'company-summarizer'
+  | 'company-researcher'
   | 'contact-summarizer'
   | 'rag-search'
   | 'rag-indexer';
@@ -327,6 +328,12 @@ export const AI_AGENTS: ReadonlyArray<{
     id: 'company-summarizer',
     name: 'Company Summarizer',
     description: 'Creates short company-fit summaries.',
+    tier: 'cheap',
+  },
+  {
+    id: 'company-researcher',
+    name: 'Company Researcher',
+    description: 'Compiles public company evidence and produces a sourced research brief.',
     tier: 'cheap',
   },
   {

@@ -1268,6 +1268,9 @@ interface Env extends AiGatewayEnv {
   DOCUMENT_CONVERTER_SECRET?: string;
   /** Max chars to send to AI from converted documents. Default 50000. */
   DOCUMENT_AI_MAX_CHARS?: string;
+  /** TalentOS jobs/company feed. The CRM treats TalentOS as the source of truth. */
+  TALENTOS_API_URL?: string;
+  TALENTOS_API_KEY?: string;
   /** Git branch name, set by deploy workflow. Optional for debug endpoints. */
   GIT_BRANCH?: string;
   /** Git commit SHA, set by deploy workflow. Optional for debug endpoints. */
@@ -3936,6 +3939,90 @@ async function findOrCreateDirectoryCompany(
   return created?.id ?? null;
 }
 
+type TalentOsJob = { company?: string; title?: string; link?: string; postedAt?: string; posted_at?: string; [key: string]: unknown };
+
+async function fetchTalentOsJobs(env: Env): Promise<TalentOsJob[]> {
+  const base = (env.TALENTOS_API_URL || 'https://api.skarion.com').replace(/\/+$/, '');
+  const headers: Record<string, string> = { accept: 'application/json' };
+  if (env.TALENTOS_API_KEY) {
+    headers.authorization = `Bearer ${env.TALENTOS_API_KEY}`;
+    headers['x-api-key'] = env.TALENTOS_API_KEY;
+  }
+  const response = await fetch(`${base}/jobs`, { headers, signal: AbortSignal.timeout(8_000) });
+  if (!response.ok) throw new Error(`TalentOS jobs feed returned ${response.status}`);
+  const payload = (await response.json()) as unknown;
+  if (Array.isArray(payload)) return payload as TalentOsJob[];
+  if (payload && typeof payload === 'object') {
+    const grouped = payload as Record<string, unknown>;
+    return Object.entries(grouped).flatMap(([company, jobs]) =>
+      Array.isArray(jobs)
+        ? jobs.map((job) => ({ ...(job as Record<string, unknown>), company: String((job as Record<string, unknown>).company || company) }))
+        : []
+    ) as TalentOsJob[];
+  }
+  return [];
+}
+
+async function syncTalentOsCompanies(db: CrmDb, env: Env, ownerId: string): Promise<number> {
+  const jobs = await fetchTalentOsJobs(env);
+  const companies = new Map<string, { name: string; jobs: number; latest: string | null }>();
+  for (const job of jobs) {
+    const name = String(job.company || '').trim();
+    if (!name) continue;
+    const key = normalizeCompanyDirectoryName(name);
+    if (!key) continue;
+    const current = companies.get(key) || { name, jobs: 0, latest: null };
+    current.jobs += 1;
+    const posted = String(job.postedAt || job.posted_at || '').trim() || null;
+    if (posted && (!current.latest || posted > current.latest)) current.latest = posted;
+    companies.set(key, current);
+  }
+  for (const [normalizedName, summary] of companies) {
+    const talentosId = `jobs:${normalizedName}`;
+    const [existing] = await db.select({ id: schema.companies.id }).from(schema.companies).where(and(eq(schema.companies.talentsOsId, talentosId), isNull(schema.companies.deletedAt))).limit(1);
+    if (existing) {
+      await db.update(schema.companies).set({ lastTalentOsSyncAt: new Date(), updatedAt: new Date() }).where(eq(schema.companies.id, existing.id));
+    } else {
+      await db.insert(schema.companies).values({ name: summary.name, normalizedName, talentsOsId: talentosId, ownerId, lastTalentOsSyncAt: new Date(), researchStatus: 'not_started' });
+    }
+  }
+  return companies.size;
+}
+
+async function runCompanyResearch(db: CrmDb, env: Env, jobId: string, company: typeof schema.companies.$inferSelect) {
+  const urls = new Set<string>();
+  const domain = (String(company.domain || company.website || '').replace(/^https?:\/\//i, '').split('/')[0] || '').trim();
+  if (!domain) {
+    const slug = normalizeCompanyDirectoryName(company.name).replace(/\s+/g, '');
+    if (slug) {
+      for (const suffix of ['.com', '.io', '.co']) urls.add(`https://${slug}${suffix}`);
+    }
+  }
+  if (domain) {
+    for (const path of ['', '/about', '/company', '/careers', '/news', '/robots.txt', '/sitemap.xml']) urls.add(`https://${domain}${path}`);
+  }
+  if (company.linkedinUrl) urls.add(company.linkedinUrl);
+  const sources: Array<{ url: string; text: string }> = [];
+  for (const url of [...urls].slice(0, 8)) {
+    try {
+      const response = await fetch(url, { headers: { accept: 'text/html,text/plain' }, signal: AbortSignal.timeout(5_000) });
+      if (!response.ok) continue;
+      const text = (await response.text()).replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 12_000);
+      if (text) sources.push({ url, text });
+    } catch { /* public sites may block individual paths; continue with evidence we can access */ }
+  }
+  const evidence = sources.map((source) => `SOURCE: ${source.url}\n${source.text}`).join('\n\n').slice(0, 55_000);
+  const summary = await ai.chatCompletion(
+    [{ role: 'user', text: `Research this company using only the supplied public evidence. Return strict JSON with keys summary, industry, size, website, headquarters, products, hiringSignals, confidence, unknowns, sources. Never invent facts; put missing facts in unknowns.\n\nCompany: ${company.name}\n${evidence || 'No public pages were reachable.'}` }],
+    env,
+    { agent: 'company-researcher', tier: 'cheap', temperature: 0.1, systemInstruction: 'You are an evidence-first company research agent. Every factual claim must be traceable to a supplied URL.' }
+  );
+  let result: Record<string, unknown> = { summary: summary || 'No AI result', sources: sources.map((item) => item.url), fetchedAt: new Date().toISOString() };
+  try { if (summary) result = { ...result, ...(JSON.parse(summary) as Record<string, unknown>) }; } catch { result.raw = summary; }
+  await db.update(schema.companyResearchJobs).set({ status: 'completed', completedAt: new Date(), result, sourceSnapshot: sources }).where(eq(schema.companyResearchJobs.id, jobId));
+  await db.update(schema.companies).set({ researchStatus: 'completed', researchedAt: new Date(), researchSummary: String(result.summary || ''), researchSources: result.sources ?? sources.map((item) => item.url), updatedAt: new Date() }).where(eq(schema.companies.id, company.id));
+}
+
 app.get('/api/company-people', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const role = getRole(c);
@@ -3995,18 +4082,36 @@ app.post('/api/companies/:id/research', async (c) => {
   const role = getRole(c);
   if (!role) return c.json({ error: 'Forbidden.' }, 403);
   const companyId = c.req.param('id');
-  const [company] = await db.select({ id: schema.companies.id }).from(schema.companies).where(and(eq(schema.companies.id, companyId), isNull(schema.companies.deletedAt))).limit(1);
+  const [company] = await db.select().from(schema.companies).where(and(eq(schema.companies.id, companyId), isNull(schema.companies.deletedAt))).limit(1);
   if (!company) return c.json({ error: 'Company not found.' }, 404);
   const [job] = await db.insert(schema.companyResearchJobs).values({ companyId, requestedBy: c.get('userId'), status: 'queued' }).returning();
-  return c.json({ job, message: 'Research queued. The research worker is staged but not enabled yet.' }, 202);
+  if (!job) return c.json({ error: 'Unable to queue research.' }, 500);
+  c.executionCtx.waitUntil((async () => {
+    await db.update(schema.companyResearchJobs).set({ status: 'researching', startedAt: new Date(), updatedAt: new Date() }).where(eq(schema.companyResearchJobs.id, job.id));
+    try {
+      await runCompanyResearch(db, c.env, job.id, company);
+    } catch (error) {
+      await db.update(schema.companyResearchJobs).set({ status: 'failed', completedAt: new Date(), error: error instanceof Error ? error.message : 'Research failed', updatedAt: new Date() }).where(eq(schema.companyResearchJobs.id, job.id));
+      await db.update(schema.companies).set({ researchStatus: 'failed', updatedAt: new Date() }).where(eq(schema.companies.id, company.id));
+    }
+  })());
+  return c.json({ job, message: 'Evidence-first public company research queued.' }, 202);
 });
 
 app.post('/api/integrations/talentos/companies/sync', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const role = getRole(c);
   if (!role) return c.json({ error: 'Forbidden.' }, 403);
-  const [run] = await db.insert(schema.talentosCompanySyncRuns).values({ requestedBy: c.get('userId'), status: 'pending_configuration', error: 'TalentOS API credentials and endpoint are not configured.' }).returning();
-  return c.json({ run, message: 'TalentOS company sync is staged. Provide the API contract and credentials to enable it.' }, 202);
+  const [run] = await db.insert(schema.talentosCompanySyncRuns).values({ requestedBy: c.get('userId'), status: 'running', startedAt: new Date() }).returning();
+  if (!run) return c.json({ error: 'Unable to create sync run.' }, 500);
+  try {
+    const count = await syncTalentOsCompanies(db, c.env, c.get('userId'));
+    const [completed] = await db.update(schema.talentosCompanySyncRuns).set({ status: 'completed', recordsSeen: count, recordsCreated: count, completedAt: new Date(), updatedAt: new Date() }).where(eq(schema.talentosCompanySyncRuns.id, run.id)).returning();
+    return c.json({ run: completed, companiesSynced: count });
+  } catch (error) {
+    const [failed] = await db.update(schema.talentosCompanySyncRuns).set({ status: 'failed', error: error instanceof Error ? error.message : 'TalentOS sync failed', completedAt: new Date(), updatedAt: new Date() }).where(eq(schema.talentosCompanySyncRuns.id, run.id)).returning();
+    return c.json({ run: failed, error: 'TalentOS company feed is unavailable.' }, 502);
+  }
 });
 
 app.post('/extension/company-people/capture', async (c) => {
@@ -4049,6 +4154,15 @@ app.get('/api/companies', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const role = getRole(c);
   if (!role) return c.json({ error: 'Forbidden.' }, 403);
+
+  try {
+    const [recentSync] = await db.select({ syncedAt: schema.companies.lastTalentOsSyncAt }).from(schema.companies).where(isNotNull(schema.companies.lastTalentOsSyncAt)).orderBy(desc(schema.companies.lastTalentOsSyncAt)).limit(1);
+    if (!recentSync?.syncedAt || Date.now() - recentSync.syncedAt.getTime() > 5 * 60_000) {
+      await syncTalentOsCompanies(db, c.env, c.get('userId'));
+    }
+  } catch (error) {
+    console.warn('[TalentOS] company feed unavailable; serving CRM cache', error);
+  }
 
   const { search, industry, owner } = c.req.query();
   const conditions = [isNull(schema.companies.deletedAt)];
