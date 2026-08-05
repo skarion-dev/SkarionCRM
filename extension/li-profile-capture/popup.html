@@ -113,6 +113,13 @@
         opacity: 0.45;
         cursor: wait;
       }
+      .decision:not(:disabled):hover {
+        filter: brightness(0.94);
+      }
+      .decision:focus-visible {
+        outline: 3px solid #93c5fd;
+        outline-offset: 2px;
+      }
       .excellent {
         background: #059669;
       }
@@ -132,6 +139,21 @@
         background: white;
         color: #b91c1c;
         border: 1px solid #fca5a5;
+      }
+      .section-title {
+        color: #334155;
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+      }
+      .company-decisions .recruiter {
+        background: #0f766e;
+      }
+      .company-decisions .manager {
+        background: #1e40af;
+      }
+      .company-decisions .leadership {
+        background: #7e22ce;
       }
       .settings {
         display: none;
@@ -211,7 +233,7 @@
       </section>
 
       <section class="card">
-        <div class="muted">Capture as a company contact</div>
+        <div class="section-title">Capture as a company contact</div>
         <div class="decisions company-decisions">
           <button class="decision recruiter" data-company-category="recruiter">Recruiter</button>
           <button class="decision manager" data-company-category="hiring_manager">Engineering / Hiring Manager</button>
