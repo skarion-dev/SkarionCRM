@@ -75,7 +75,11 @@ export default {
         return Response.json({ error: 'Unauthorized.' }, { status: 401 });
       }
       try {
-        return Response.json({ ok: true, ...(await drainAiQueues(env)) });
+        const result: Record<string, unknown> = { ok: true, ...(await drainAiQueues(env)) };
+        if (url.searchParams.get('syncCompanies') === '1') {
+          result.talentOsCompanySync = await syncTalentOsCompanies(env);
+        }
+        return Response.json(result);
       } catch (error) {
         return Response.json(
           {
