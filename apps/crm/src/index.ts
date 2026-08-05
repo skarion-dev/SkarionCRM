@@ -1248,6 +1248,7 @@ interface Env extends AiGatewayEnv {
   RESEND_API_KEY?: string;
   WORKFLOW_RUNNER_URL?: string;
   WORKFLOW_RUNNER_SECRET?: string;
+  COMPANY_SYNC_OWNER_ID?: string;
   AI_PROVIDER?: string;
   AI_GATEWAY_BASE_URL?: string;
   AI_GATEWAY_API_KEY?: string;
@@ -3975,6 +3976,23 @@ async function syncTalentOsCompanies(db: CrmDb, env: Env, ownerId: string): Prom
   }
   return companies.length;
 }
+
+app.post('/internal/talentos/companies/sync', async (c) => {
+  const configuredSecret = c.env.WORKFLOW_RUNNER_SECRET;
+  if (!configuredSecret || c.req.header('Authorization') !== `Bearer ${configuredSecret}`) {
+    return c.json({ error: 'Unauthorized.' }, 401);
+  }
+  const ownerId = c.env.COMPANY_SYNC_OWNER_ID;
+  if (!ownerId) return c.json({ error: 'Company sync owner is not configured.' }, 503);
+  const db = getDb(c.env, schema) as CrmDb;
+  try {
+    const companiesSynced = await syncTalentOsCompanies(db, c.env, ownerId);
+    return c.json({ ok: true, companiesSynced });
+  } catch (error) {
+    console.error('[TalentOS] scheduled company sync failed', error);
+    return c.json({ ok: false, error: 'TalentOS company sync failed.' }, 502);
+  }
+});
 
 async function runCompanyResearch(db: CrmDb, env: Env, jobId: string, company: typeof schema.companies.$inferSelect) {
   const urls = new Set<string>();

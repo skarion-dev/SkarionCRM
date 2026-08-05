@@ -47,6 +47,18 @@ async function drainAiQueues(env: Env): Promise<QueueDrainResult> {
   return { profileCleanup, leadScoring, linkedinSync };
 }
 
+async function syncTalentOsCompanies(env: Env): Promise<unknown> {
+  const response = await env.CRM_SERVICE.fetch(
+    new Request('https://crm.internal/internal/talentos/companies/sync', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.WORKFLOW_RUNNER_SECRET}` },
+    })
+  );
+  const body = await response.text();
+  if (!response.ok) throw new Error(`/internal/talentos/companies/sync failed: ${response.status} ${body}`);
+  return body ? JSON.parse(body) : {};
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -78,6 +90,14 @@ export default {
   },
 
   async scheduled(event: ScheduledEvent, env: Env): Promise<void> {
+    if (event.cron === '0 3 * * *') {
+      try {
+        console.log('TalentOS company sync:', JSON.stringify(await syncTalentOsCompanies(env)));
+      } catch (error) {
+        console.error('Error syncing TalentOS companies:', error);
+      }
+    }
+
     if (event.cron === '0 * * * *') {
       const triggers = ['opportunity_stale', 'task_due_soon', 'outreach_stale'] as const;
       for (const trigger of triggers) {
