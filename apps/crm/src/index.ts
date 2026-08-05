@@ -1271,6 +1271,7 @@ interface Env extends AiGatewayEnv {
   /** TalentOS jobs/company feed. The CRM treats TalentOS as the source of truth. */
   TALENTOS_API_URL?: string;
   TALENTOS_API_KEY?: string;
+  CRM_INTEGRATION_SECRET?: string;
   /** Git branch name, set by deploy workflow. Optional for debug endpoints. */
   GIT_BRANCH?: string;
   /** Git commit SHA, set by deploy workflow. Optional for debug endpoints. */
@@ -3944,13 +3945,10 @@ type TalentOsCompany = { id?: string; name?: string; website?: string; linkedin_
 async function fetchTalentOsCompanies(env: Env): Promise<TalentOsCompany[]> {
   const base = (env.TALENTOS_API_URL || 'https://skarion-talent-os.skarion-talentos.workers.dev').replace(/\/+$/, '');
   const headers: Record<string, string> = { accept: 'application/json' };
-  if (env.TALENTOS_API_KEY) {
-    headers.authorization = `Bearer ${env.TALENTOS_API_KEY}`;
-    headers['x-api-key'] = env.TALENTOS_API_KEY;
-  }
+  if (env.CRM_INTEGRATION_SECRET) headers.authorization = `Bearer ${env.CRM_INTEGRATION_SECRET}`;
   const companies: TalentOsCompany[] = [];
   for (let page = 1; page <= 100; page += 1) {
-    const response = await fetch(`${base}/api/public/companies?page=${page}&pageSize=100`, { headers, signal: AbortSignal.timeout(8_000) });
+    const response = await fetch(`${base}/api/integrations/crm/companies?page=${page}&pageSize=100`, { headers, signal: AbortSignal.timeout(8_000) });
     if (!response.ok) throw new Error(`TalentOS companies feed returned ${response.status}`);
     const payload = (await response.json()) as { data?: TalentOsCompany[]; total?: number };
     const pageData = Array.isArray(payload.data) ? payload.data : [];
