@@ -818,6 +818,8 @@ async function processProspectImport(
       {
         id: string;
         workspaceId: string;
+        linkedinProfileKey: string | null;
+        linkedinUrl: string | null;
         headline: string | null;
         location: string | null;
         about: string | null;
@@ -831,17 +833,23 @@ async function processProspectImport(
         connectionDegree: string | null;
         prospectSourceContext: unknown;
         journeyStage: string;
+        reviewState: string;
       }
     >();
     for (const keyChunk of chunksOf(
       candidates.map((candidate) => candidate.linkedinProfileKey),
       400
     )) {
+      const urlChunk = candidates
+        .filter((candidate) => keyChunk.includes(candidate.linkedinProfileKey))
+        .map((candidate) => candidate.linkedinUrl?.toLowerCase())
+        .filter((url): url is string => Boolean(url));
       const rows = await db
         .select({
           id: schema.leads.id,
           workspaceId: schema.leads.workspaceId,
           linkedinProfileKey: schema.leads.linkedinProfileKey,
+          linkedinUrl: schema.leads.linkedinUrl,
           headline: schema.leads.headline,
           location: schema.leads.location,
           about: schema.leads.about,
@@ -855,17 +863,26 @@ async function processProspectImport(
           connectionDegree: schema.leads.connectionDegree,
           prospectSourceContext: schema.leads.prospectSourceContext,
           journeyStage: schema.leads.journeyStage,
+          reviewState: schema.leads.reviewState,
         })
         .from(schema.leads)
         .where(
           and(
             eq(schema.leads.workspaceId, batch.workspaceId),
-            inArray(schema.leads.linkedinProfileKey, keyChunk),
+            or(
+              inArray(schema.leads.linkedinProfileKey, keyChunk),
+              ...(urlChunk.length > 0
+                ? [inArray(sql`lower(${schema.leads.linkedinUrl})`, urlChunk)]
+                : [])
+            ),
             isNull(schema.leads.deletedAt)
           )
         );
       for (const row of rows) {
-        if (row.linkedinProfileKey) existingByKey.set(row.linkedinProfileKey, row);
+        // Older rows may have a URL but no profile key. Normalize them in
+        // memory so a re-import cannot create a second prospect.
+        const key = row.linkedinProfileKey ?? linkedinProfileKey(row.linkedinUrl);
+        if (key) existingByKey.set(key, { ...row, linkedinProfileKey: key });
       }
     }
 
@@ -1030,6 +1047,7 @@ async function processProspectImport(
           id: schema.leads.id,
           workspaceId: schema.leads.workspaceId,
           linkedinProfileKey: schema.leads.linkedinProfileKey,
+          linkedinUrl: schema.leads.linkedinUrl,
           headline: schema.leads.headline,
           location: schema.leads.location,
           about: schema.leads.about,
@@ -1043,6 +1061,7 @@ async function processProspectImport(
           connectionDegree: schema.leads.connectionDegree,
           prospectSourceContext: schema.leads.prospectSourceContext,
           journeyStage: schema.leads.journeyStage,
+          reviewState: schema.leads.reviewState,
         })
         .from(schema.leads)
         .where(
@@ -1062,6 +1081,7 @@ async function processProspectImport(
     );
     const cleanupLeadIds = new Set<string>();
     const provisionalScoreLeadIds = new Set<string>();
+    const promotedProspectIds = new Set<string>();
     for (const [profileKey, existing] of existingByKey) {
       if (discardedActiveDuplicateKeys.has(profileKey)) continue;
       const candidate = candidateByKey.get(profileKey);
@@ -1087,11 +1107,27 @@ async function processProspectImport(
           prospectSourceContext: existing.prospectSourceContext ?? candidate.sourceContext,
           profileCaptureStatus: 'partial',
           profileNormalizationStatus: 'pending',
+          ...(existing.reviewState === 'pending'
+            ? {
+                reviewState: 'accepted' as const,
+                reviewedAt: new Date(),
+                reviewedBy: actorUserId,
+                rowVersion: sql`${schema.leads.rowVersion} + 1`,
+              }
+            : {}),
           updatedAt: new Date(),
         })
         .where(eq(schema.leads.id, existing.id))
         .returning({ id: schema.leads.id });
-      if (enriched) cleanupLeadIds.add(enriched.id);
+      if (enriched) {
+        cleanupLeadIds.add(enriched.id);
+        if (existing.reviewState === 'pending') {
+          promotedProspectIds.add(enriched.id);
+          await db
+            .delete(schema.prospectReviewClaims)
+            .where(eq(schema.prospectReviewClaims.leadId, enriched.id));
+        }
+      }
     }
     for (const candidate of newCandidates) {
       const leadId = createdByKey.get(candidate.linkedinProfileKey);
@@ -1107,6 +1143,15 @@ async function processProspectImport(
     }
     for (const leadId of provisionalScoreLeadIds) {
       await enqueueLeadScoring(db, leadId);
+    }
+    for (const leadId of promotedProspectIds) {
+      await db.insert(schema.leadEventOutbox).values({
+        workspaceId: batch.workspaceId,
+        leadId,
+        eventType: 'prospect.reviewed',
+        actorUserId,
+        payload: { leadId, reviewState: 'accepted', source: 'prospect-recapture' },
+      });
     }
     const memberships = candidates
       .map((candidate) => {
