@@ -18,6 +18,7 @@ const dayLabel = (value: string) =>
 
 export function CaptureIntelligence({ data }: { data: DashboardProspectOperations }) {
   const [selectedTokenId, setSelectedTokenId] = useState<string | null>(null);
+  const [hoveredCaptureDay, setHoveredCaptureDay] = useState<string | null>(null);
   const windows = ['24h', '7d', '30d']
     .map((label) => data.captureWindows.find((row) => row.label === label))
     .filter(Boolean) as DashboardProspectOperations['captureWindows'];
@@ -225,7 +226,23 @@ export function CaptureIntelligence({ data }: { data: DashboardProspectOperation
             {selectedTokenTrend.map((row) => {
               const height = row.captures ? Math.max(6, (row.captures / selectedTokenMax) * 100) : 0;
               return (
-                <div key={row.day} className="group flex min-w-0 flex-col justify-end" title={`${dayLabel(row.day)}: ${row.fresh} fresh / ${row.captures} total`}>
+                <div
+                  key={row.day}
+                  className="group relative flex min-w-0 flex-col justify-end"
+                  onMouseEnter={() => setHoveredCaptureDay(row.day)}
+                  onMouseLeave={() => setHoveredCaptureDay(null)}
+                  onFocus={() => setHoveredCaptureDay(row.day)}
+                  onBlur={() => setHoveredCaptureDay(null)}
+                  tabIndex={0}
+                  aria-label={`${dayLabel(row.day)}: ${row.captures} total captures, ${row.fresh} fresh captures`}
+                >
+                  {hoveredCaptureDay === row.day && (
+                    <div className="pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-10 w-max -translate-x-1/2 rounded-md bg-slate-950 px-2 py-1.5 text-center text-[11px] text-white shadow-lg">
+                      <div className="font-semibold">{dayLabel(row.day)}</div>
+                      <div>{row.captures.toLocaleString()} total</div>
+                      <div className="text-indigo-200">{row.fresh.toLocaleString()} fresh</div>
+                    </div>
+                  )}
                   <div className="flex h-28 items-end rounded-sm bg-slate-50 px-0.5">
                     <div className="w-full rounded-t-sm bg-indigo-500 transition-colors group-hover:bg-indigo-700" style={{ height: `${height}%` }} />
                   </div>
