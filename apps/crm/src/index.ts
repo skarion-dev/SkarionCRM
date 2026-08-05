@@ -3994,6 +3994,60 @@ app.post('/internal/talentos/companies/sync', async (c) => {
   }
 });
 
+app.post('/internal/talentos/companies/research/enqueue', async (c) => {
+  const configuredSecret = c.env.WORKFLOW_RUNNER_SECRET;
+  if (!configuredSecret || c.req.header('Authorization') !== `Bearer ${configuredSecret}`) {
+    return c.json({ error: 'Unauthorized.' }, 401);
+  }
+  const ownerId = c.env.COMPANY_SYNC_OWNER_ID;
+  if (!ownerId) return c.json({ error: 'Company sync owner is not configured.' }, 503);
+  const db = getDb(c.env, schema) as CrmDb;
+  const result = await db.execute(sql`
+    INSERT INTO crm.company_research_jobs (company_id, requested_by, status, created_at, updated_at)
+    SELECT company.id, ${ownerId}::uuid, 'queued', now(), now()
+    FROM crm.companies company
+    WHERE company.deleted_at IS NULL
+      AND company.research_status <> 'completed'
+      AND NOT EXISTS (
+        SELECT 1 FROM crm.company_research_jobs job
+        WHERE job.company_id = company.id AND job.status IN ('queued', 'researching')
+      )
+  `);
+  return c.json({ ok: true, queued: Number((result as unknown as { rowCount?: number }).rowCount ?? 0) });
+});
+
+app.post('/internal/company-research/drain', async (c) => {
+  const configuredSecret = c.env.WORKFLOW_RUNNER_SECRET;
+  if (!configuredSecret || c.req.header('Authorization') !== `Bearer ${configuredSecret}`) {
+    return c.json({ error: 'Unauthorized.' }, 401);
+  }
+  const db = getDb(c.env, schema) as CrmDb;
+  const [job] = await db.select().from(schema.companyResearchJobs)
+    .where(eq(schema.companyResearchJobs.status, 'queued'))
+    .orderBy(asc(schema.companyResearchJobs.createdAt))
+    .limit(1);
+  if (!job) return c.json({ ok: true, processed: 0, remaining: 0 });
+  const [claimed] = await db.update(schema.companyResearchJobs)
+    .set({ status: 'researching', startedAt: new Date(), updatedAt: new Date() })
+    .where(and(eq(schema.companyResearchJobs.id, job.id), eq(schema.companyResearchJobs.status, 'queued')))
+    .returning();
+  if (!claimed) return c.json({ ok: true, processed: 0, claimed: false });
+  const [company] = await db.select().from(schema.companies)
+    .where(and(eq(schema.companies.id, job.companyId), isNull(schema.companies.deletedAt))).limit(1);
+  if (!company) {
+    await db.update(schema.companyResearchJobs).set({ status: 'failed', completedAt: new Date(), error: 'Company not found.', updatedAt: new Date() }).where(eq(schema.companyResearchJobs.id, job.id));
+    return c.json({ ok: false, processed: 1, status: 'failed', jobId: job.id });
+  }
+  try {
+    await runCompanyResearch(db, c.env, job.id, company);
+    return c.json({ ok: true, processed: 1, status: 'completed', jobId: job.id, companyId: company.id, companyName: company.name });
+  } catch (error) {
+    await db.update(schema.companyResearchJobs).set({ status: 'failed', completedAt: new Date(), error: error instanceof Error ? error.message : 'Research failed', updatedAt: new Date() }).where(eq(schema.companyResearchJobs.id, job.id));
+    await db.update(schema.companies).set({ researchStatus: 'failed', updatedAt: new Date() }).where(eq(schema.companies.id, company.id));
+    return c.json({ ok: false, processed: 1, status: 'failed', jobId: job.id, companyId: company.id, companyName: company.name }, 502);
+  }
+});
+
 async function runCompanyResearch(db: CrmDb, env: Env, jobId: string, company: typeof schema.companies.$inferSelect) {
   const urls = new Set<string>();
   const domain = (String(company.domain || company.website || '').replace(/^https?:\/\//i, '').split('/')[0] || '').trim();

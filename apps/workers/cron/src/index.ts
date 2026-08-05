@@ -56,7 +56,9 @@ async function syncTalentOsCompanies(env: Env): Promise<unknown> {
   );
   const body = await response.text();
   if (!response.ok) throw new Error(`/internal/talentos/companies/sync failed: ${response.status} ${body}`);
-  return body ? JSON.parse(body) : {};
+  const syncResult = body ? JSON.parse(body) : {};
+  const enqueue = await drainEndpoint(env, '/internal/talentos/companies/research/enqueue?limit=1');
+  return { sync: syncResult, researchQueue: enqueue };
 }
 
 export default {
@@ -124,6 +126,14 @@ export default {
         } catch (err) {
           console.error(`Error evaluating ${trigger}:`, err);
         }
+      }
+    }
+
+    if (event.cron === '* * * * *') {
+      try {
+        console.log('Company research queue:', JSON.stringify(await drainEndpoint(env, '/internal/company-research/drain?limit=1')));
+      } catch (error) {
+        console.error('Error draining company research queue:', error);
       }
     }
 
