@@ -494,9 +494,11 @@ export interface CompanyPerson {
   last_name?: string;
   display_name: string;
   headline: string | null;
+  about?: string | null;
   location: string | null;
   email: string | null;
   linkedin_url: string | null;
+  linkedin_profile_key?: string | null;
   current_title: string | null;
   current_company_id: string | null;
   current_company_name: string | null;

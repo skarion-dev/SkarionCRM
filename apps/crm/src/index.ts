@@ -4102,9 +4102,9 @@ app.get('/api/company-people', async (c) => {
   }
   const result = await db.execute(sql`
     SELECT person.id, person.first_name, person.last_name, person.display_name, person.headline,
-      person.location, person.email, person.linkedin_url, person.linkedin_profile_key,
+      person.location, person.about, person.email, person.linkedin_url, person.linkedin_profile_key,
       person.current_title, person.current_company_id, company.name AS current_company_name,
-      person.owner_id, person.last_captured_at, person.created_at, person.updated_at,
+      person.raw_profile, person.owner_id, person.last_captured_at, person.created_at, person.updated_at,
       coalesce(array_agg(DISTINCT category.category::text) FILTER (WHERE category.category IS NOT NULL), ARRAY[]::text[]) AS categories
     FROM crm.company_people person
     LEFT JOIN crm.companies company ON company.id = person.current_company_id AND company.deleted_at IS NULL
@@ -4134,6 +4134,35 @@ app.get('/api/companies/:id/people', async (c) => {
     ORDER BY person.display_name
   `);
   return c.json({ people: (result as unknown as { rows?: unknown[] }).rows ?? [] });
+});
+
+app.patch('/api/company-people/:id', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const role = getRole(c);
+  if (!role) return c.json({ error: 'Forbidden.' }, 403);
+  const id = c.req.param('id');
+  const body = await c.req.json() as Record<string, unknown>;
+  const [existing] = await db.select().from(schema.companyPeople)
+    .where(and(eq(schema.companyPeople.id, id), isNull(schema.companyPeople.deletedAt))).limit(1);
+  if (!existing) return c.json({ error: 'Company person not found.' }, 404);
+  const update: Record<string, unknown> = { updatedAt: new Date() };
+  for (const field of ['firstName', 'lastName', 'displayName', 'headline', 'location', 'about', 'email', 'currentTitle'] as const) {
+    if (body[field] !== undefined) update[field] = body[field] === null ? null : String(body[field]);
+  }
+  if (body.linkedinUrl !== undefined) {
+    const normalized = body.linkedinUrl ? canonicalizeLinkedinUrl(String(body.linkedinUrl)) : null;
+    update.linkedinUrl = normalized;
+    update.linkedinProfileKey = normalized ? linkedinProfileKey(normalized) : null;
+  }
+  if (body.currentCompanyId !== undefined) update.currentCompanyId = body.currentCompanyId || null;
+  const [person] = await db.update(schema.companyPeople).set(update).where(eq(schema.companyPeople.id, id)).returning();
+  if (!person) return c.json({ error: 'Unable to update company person.' }, 500);
+  if (body.category !== undefined) {
+    if (!isCompanyPersonType(String(body.category))) return c.json({ error: 'Choose a valid company-person category.' }, 400);
+    await db.delete(schema.companyPersonCategories).where(eq(schema.companyPersonCategories.personId, id));
+    await db.insert(schema.companyPersonCategories).values({ personId: id, category: String(body.category) as CompanyPersonType, isPrimary: true, updatedAt: new Date() });
+  }
+  return c.json({ person });
 });
 
 app.post('/api/companies/:id/research', async (c) => {
@@ -4178,13 +4207,16 @@ app.post('/extension/company-people/capture', async (c) => {
   const resolved = await resolveExtensionKeyOwner(db, readExtensionKey(c));
   if (!resolved) return c.json({ error: 'Invalid or missing API key.' }, 401);
   const body = (await c.req.json()) as Record<string, unknown>;
-  if (!isCompanyPersonType(body.category)) return c.json({ error: 'Choose a valid company-person category.' }, 400);
+  const requestedCategory = String(body.category ?? body.type ?? body.personType ?? '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+  const category = requestedCategory === 'leadership' ? 'company_leadership' : requestedCategory;
+  if (!isCompanyPersonType(category)) return c.json({ error: 'Choose a valid company-person category.' }, 400);
   const profile = body.profile && typeof body.profile === 'object' ? body.profile as Record<string, unknown> : {};
   const displayName = String(profile.name ?? '').trim();
   const linkedinUrl = canonicalizeLinkedinUrl(typeof body.linkedinUrl === 'string' ? body.linkedinUrl : String(profile.profileUrl ?? ''));
   if (!displayName || !linkedinUrl) return c.json({ error: 'A profile name and LinkedIn URL are required.' }, 400);
   const { firstName, lastName } = splitProfileDisplayName(displayName);
-  const companyName = String(profile.currentCompanies ?? '').split(',')[0]?.trim() || '';
+  const companyValue = profile.currentCompanies ?? profile.currentCompany ?? profile.currentCompanyName ?? profile.companyName ?? profile.company ?? '';
+  const companyName = (Array.isArray(companyValue) ? String(companyValue[0] ?? '') : String(companyValue)).split(',')[0]?.trim() || '';
   const companyId = companyName ? await findOrCreateDirectoryCompany(db, companyName, resolved.userId) : null;
   const profileKey = linkedinProfileKey(linkedinUrl);
   if (!profileKey) return c.json({ error: 'Unable to normalize the LinkedIn profile URL.' }, 400);
@@ -4198,13 +4230,13 @@ app.post('/extension/company-people/capture', async (c) => {
     ? (await db.update(schema.companyPeople).set({ firstName, lastName, displayName, headline: typeof profile.headline === 'string' ? profile.headline : existing.headline, location: typeof profile.location === 'string' ? profile.location : existing.location, about: typeof profile.about === 'string' ? profile.about : existing.about, currentTitle: typeof profile.headline === 'string' ? profile.headline : existing.currentTitle, currentCompanyId: companyId ?? existing.currentCompanyId, rawProfile: profile, ownerId: resolved.userId, capturedByApiKeyId: resolved.keyId, capturedByApiKeyLabel: resolved.label, lastCapturedAt: now, updatedAt: now }).where(eq(schema.companyPeople.id, existing.id)).returning())[0]
     : (await db.insert(schema.companyPeople).values({ workspaceId: DEFAULT_WORKSPACE_ID, firstName, lastName, displayName, headline: typeof profile.headline === 'string' ? profile.headline : null, location: typeof profile.location === 'string' ? profile.location : null, about: typeof profile.about === 'string' ? profile.about : null, linkedinUrl, linkedinProfileKey: profileKey, currentTitle: typeof profile.headline === 'string' ? profile.headline : null, currentCompanyId: companyId, rawProfile: profile, ownerId: resolved.userId, capturedByApiKeyId: resolved.keyId, capturedByApiKeyLabel: resolved.label, lastCapturedAt: now }).returning())[0];
   if (!person) return c.json({ error: 'Unable to save company person.' }, 500);
-  await db.insert(schema.companyPersonCategories).values({ personId: person.id, category: body.category as CompanyPersonType, isPrimary: true, updatedAt: now }).onConflictDoUpdate({ target: [schema.companyPersonCategories.personId, schema.companyPersonCategories.category], set: { isPrimary: true, updatedAt: now } });
+  await db.insert(schema.companyPersonCategories).values({ personId: person.id, category: category as CompanyPersonType, isPrimary: true, updatedAt: now }).onConflictDoUpdate({ target: [schema.companyPersonCategories.personId, schema.companyPersonCategories.category], set: { isPrimary: true, updatedAt: now } });
   if (companyId && companyName) {
     const [employment] = await db.select({ id: schema.companyPersonEmployments.id }).from(schema.companyPersonEmployments).where(and(eq(schema.companyPersonEmployments.personId, person.id), eq(schema.companyPersonEmployments.companyId, companyId), eq(schema.companyPersonEmployments.isCurrent, true))).limit(1);
     if (!employment) await db.insert(schema.companyPersonEmployments).values({ personId: person.id, companyId, companyNameSnapshot: companyName, title: typeof profile.headline === 'string' ? profile.headline : null, isCurrent: true, source: 'linkedin_extension', rawEvidence: profile });
   }
-  await withAudit(db, schema.auditLog, { actorUserId: resolved.userId, action: 'capture_company_person', resourceType: 'company_person', resourceId: person.id, after: { category: body.category, companyId, displayName }, app: 'crm' });
-  return c.json({ person, category: body.category, companyId, duplicate: Boolean(existing) }, existing ? 200 : 201);
+  await withAudit(db, schema.auditLog, { actorUserId: resolved.userId, action: 'capture_company_person', resourceType: 'company_person', resourceId: person.id, after: { category, companyId, displayName }, app: 'crm' });
+  return c.json({ person, category, companyId, duplicate: Boolean(existing) }, existing ? 200 : 201);
 });
 
 // --- COMPANIES ---

@@ -152,6 +152,21 @@ export function useCompanyPeopleByCompany(companyId: string) {
   );
 }
 
+export function useUpdateCompanyPerson() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { id: string; category?: CompanyPersonCategory; currentCompanyId?: string | null; linkedinUrl?: string | null }) =>
+      crmFetch<{ person: CompanyPerson }>(`/api/company-people/${input.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['company-people'] });
+      qc.invalidateQueries({ queryKey: ['company-people-by-company'] });
+    },
+  });
+}
+
 export function useContacts() {
   return useCrmQuery(['contacts'], () => crmFetch<{ contacts: Contact[] }>('/api/contacts'));
 }
