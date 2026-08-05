@@ -179,10 +179,20 @@ export const companies = crmSchema.table(
   {
     id: uuid('id').defaultRandom().primaryKey(),
     name: text('name').notNull(),
+    normalizedName: text('normalized_name'),
     domain: text('domain'),
+    website: text('website'),
+    linkedinUrl: text('linkedin_url'),
+    linkedinExternalId: text('linkedin_external_id'),
+    talentsOsId: text('talentos_id'),
     industry: text('industry'),
     size: text('size'),
     address: jsonb('address'),
+    researchStatus: text('research_status').default('not_started').notNull(),
+    researchedAt: timestamp('researched_at', { withTimezone: true }),
+    researchSummary: text('research_summary'),
+    researchSources: jsonb('research_sources'),
+    lastTalentOsSyncAt: timestamp('last_talentos_sync_at', { withTimezone: true }),
     ownerId: uuid('owner_id').notNull(),
     ...timestamps(),
     ...softDelete(),
@@ -191,8 +201,138 @@ export const companies = crmSchema.table(
     index('idx_companies_name').on(table.name),
     index('idx_companies_owner').on(table.ownerId),
     index('idx_companies_industry').on(table.industry),
+    index('idx_companies_normalized_name').on(table.normalizedName),
+    uniqueIndex('idx_companies_linkedin_external_unique')
+      .on(table.linkedinExternalId)
+      .where(sql`${table.linkedinExternalId} IS NOT NULL AND ${table.deletedAt} IS NULL`),
+    uniqueIndex('idx_companies_talentos_unique')
+      .on(table.talentsOsId)
+      .where(sql`${table.talentsOsId} IS NOT NULL AND ${table.deletedAt} IS NULL`),
     uniqueIndex('idx_companies_domain_lower').on(sql`lower(${table.domain})`),
   ]
+);
+
+export const companyPersonTypeEnum = crmSchema.enum('company_person_type', [
+  'recruiter',
+  'hiring_manager',
+  'company_leadership',
+]);
+
+export const companyPeople = crmSchema.table(
+  'company_people',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    workspaceId: uuid('workspace_id')
+      .default(sql`'${sql.raw(DEFAULT_WORKSPACE_ID)}'::uuid`)
+      .notNull()
+      .references(() => workspaces.id),
+    firstName: text('first_name').notNull(),
+    lastName: text('last_name').notNull(),
+    displayName: text('display_name').notNull(),
+    headline: text('headline'),
+    location: text('location'),
+    about: text('about'),
+    email: text('email'),
+    linkedinUrl: text('linkedin_url'),
+    linkedinProfileKey: text('linkedin_profile_key'),
+    currentTitle: text('current_title'),
+    currentCompanyId: uuid('current_company_id').references(() => companies.id, { onDelete: 'set null' }),
+    rawProfile: jsonb('raw_profile'),
+    ownerId: uuid('owner_id').notNull(),
+    capturedByApiKeyId: uuid('captured_by_api_key_id'),
+    capturedByApiKeyLabel: text('captured_by_api_key_label'),
+    lastCapturedAt: timestamp('last_captured_at', { withTimezone: true }),
+    ...timestamps(),
+    ...softDelete(),
+  },
+  (table) => [
+    index('idx_company_people_workspace').on(table.workspaceId),
+    index('idx_company_people_current_company').on(table.currentCompanyId),
+    index('idx_company_people_name').on(table.lastName, table.firstName),
+    uniqueIndex('idx_company_people_linkedin_unique')
+      .on(table.workspaceId, table.linkedinProfileKey)
+      .where(sql`${table.linkedinProfileKey} IS NOT NULL AND ${table.deletedAt} IS NULL`),
+    uniqueIndex('idx_company_people_email_unique')
+      .on(table.workspaceId, sql`lower(${table.email})`)
+      .where(sql`${table.email} IS NOT NULL AND ${table.deletedAt} IS NULL`),
+  ]
+);
+
+export const companyPersonCategories = crmSchema.table(
+  'company_person_categories',
+  {
+    personId: uuid('person_id')
+      .notNull()
+      .references(() => companyPeople.id, { onDelete: 'cascade' }),
+    category: companyPersonTypeEnum('category').notNull(),
+    isPrimary: boolean('is_primary').default(false).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.personId, table.category] }),
+    index('idx_company_person_categories_category').on(table.category),
+  ]
+);
+
+export const companyPersonEmployments = crmSchema.table(
+  'company_person_employments',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    personId: uuid('person_id')
+      .notNull()
+      .references(() => companyPeople.id, { onDelete: 'cascade' }),
+    companyId: uuid('company_id').references(() => companies.id, { onDelete: 'set null' }),
+    companyNameSnapshot: text('company_name_snapshot').notNull(),
+    title: text('title'),
+    startDate: text('start_date'),
+    endDate: text('end_date'),
+    isCurrent: boolean('is_current').default(false).notNull(),
+    source: text('source').default('linkedin_extension').notNull(),
+    rawEvidence: jsonb('raw_evidence'),
+    ...timestamps(),
+  },
+  (table) => [
+    index('idx_company_person_employments_person').on(table.personId),
+    index('idx_company_person_employments_company').on(table.companyId),
+    index('idx_company_person_employments_current').on(table.isCurrent),
+  ]
+);
+
+export const companyResearchJobs = crmSchema.table(
+  'company_research_jobs',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    companyId: uuid('company_id').notNull().references(() => companies.id, { onDelete: 'cascade' }),
+    status: text('status').default('queued').notNull(),
+    requestedBy: uuid('requested_by').notNull(),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    error: text('error'),
+    sourceSnapshot: jsonb('source_snapshot'),
+    result: jsonb('result'),
+    ...timestamps(),
+  },
+  (table) => [index('idx_company_research_jobs_company').on(table.companyId), index('idx_company_research_jobs_status').on(table.status)]
+);
+
+export const talentosCompanySyncRuns = crmSchema.table(
+  'talentos_company_sync_runs',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    status: text('status').default('pending_configuration').notNull(),
+    requestedBy: uuid('requested_by').notNull(),
+    cursor: text('cursor'),
+    recordsSeen: integer('records_seen').default(0).notNull(),
+    recordsMatched: integer('records_matched').default(0).notNull(),
+    recordsCreated: integer('records_created').default(0).notNull(),
+    recordsNeedingReview: integer('records_needing_review').default(0).notNull(),
+    error: text('error'),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    ...timestamps(),
+  },
+  (table) => [index('idx_talentos_company_sync_runs_status').on(table.status), index('idx_talentos_company_sync_runs_created').on(table.createdAt)]
 );
 
 export const importBatches = crmSchema.table(

@@ -1,5 +1,5 @@
 import { useNavigate, useParams } from 'react-router-dom';
-import { useCompany, useDeleteEntity } from '../hooks/use-api.js';
+import { useCompany, useCompanyPeopleByCompany, useDeleteEntity } from '../hooks/use-api.js';
 import { ArrowLeft, Building2, Globe, Users, FileText, Pencil, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import ActivityTimeline from '../components/ActivityTimeline.js';
@@ -11,6 +11,7 @@ export default function CompanyDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { data, isLoading } = useCompany(id ?? '');
+  const { data: peopleData } = useCompanyPeopleByCompany(id ?? '');
   const deleteMutation = useDeleteEntity();
   const [editOpen, setEditOpen] = useState(false);
   const [activityType, setActivityType] = useState<ActivityType | null>(null);
@@ -68,6 +69,30 @@ export default function CompanyDetail() {
             <FileText size={16} className="text-slate-400" />
             <span>{company.industry ?? '—'}</span>
           </div>
+        </div>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-lg p-6">
+        <div className="mb-4 flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-semibold">Current captured people</h2>
+            <p className="mt-1 text-xs text-slate-500">Recruiters, hiring managers, and leadership linked to this company.</p>
+          </div>
+          <span className="rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-700">{peopleData?.people.length ?? 0}</span>
+        </div>
+        <div className="divide-y divide-slate-100">
+          {(peopleData?.people ?? []).map((person) => (
+            <div key={person.id} className="flex items-center justify-between py-3">
+              <div>
+                <div className="font-medium text-slate-900">{person.display_name}</div>
+                <div className="text-xs text-slate-500">{person.current_title ?? person.headline ?? '—'}</div>
+              </div>
+              <div className="flex gap-1 text-[11px] text-indigo-600">
+                {person.categories.map((category) => <span key={category} className="rounded bg-indigo-50 px-2 py-1">{category.replace('_', ' ')}</span>)}
+              </div>
+            </div>
+          ))}
+          {peopleData?.people.length === 0 && <div className="py-8 text-center text-sm text-slate-400">No captured people linked yet.</div>}
         </div>
       </div>
 

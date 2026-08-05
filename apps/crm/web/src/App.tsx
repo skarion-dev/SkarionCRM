@@ -17,6 +17,7 @@ import PipelinePage from './pages/PipelinePage.js';
 import SettingsPage from './pages/SettingsPage.js';
 import ChatPage from './pages/ChatPage.js';
 import AdminActivityLogsPage from './pages/AdminActivityLogsPage.js';
+import CompanyPeoplePage from './pages/CompanyPeoplePage.js';
 
 const ReportingCeoPage = lazy(() => import('./pages/ReportingCeoPage.js'));
 
@@ -118,6 +119,9 @@ export default function App() {
               </RequireAuth>
             }
           />
+          <Route path="/recruiters" element={<RequireAuth><CompanyPeoplePage category="recruiter" /></RequireAuth>} />
+          <Route path="/hiring-managers" element={<RequireAuth><CompanyPeoplePage category="hiring_manager" /></RequireAuth>} />
+          <Route path="/company-leadership" element={<RequireAuth><CompanyPeoplePage category="company_leadership" /></RequireAuth>} />
           <Route
             path="/contacts/:id"
             element={

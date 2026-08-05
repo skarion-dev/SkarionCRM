@@ -4,6 +4,8 @@ import {
   crmFetch,
   redirectToLogin,
   type Company,
+  type CompanyPerson,
+  type CompanyPersonCategory,
   type Contact,
   type Lead,
   type LeadAiAssessment,
@@ -134,6 +136,20 @@ export function useCreateActivity() {
 
 export function useCompanies() {
   return useCrmQuery(['companies'], () => crmFetch<{ companies: Company[] }>('/api/companies'));
+}
+
+export function useCompanyPeople(category: CompanyPersonCategory, search = '') {
+  const qs = new URLSearchParams({ category });
+  if (search) qs.set('search', search);
+  return useCrmQuery(['company-people', category, search], () =>
+    crmFetch<{ people: CompanyPerson[] }>(`/api/company-people?${qs.toString()}`)
+  );
+}
+
+export function useCompanyPeopleByCompany(companyId: string) {
+  return useCrmQuery(['company-people-by-company', companyId], () =>
+    crmFetch<{ people: CompanyPerson[] }>(`/api/companies/${companyId}/people`)
+  );
 }
 
 export function useContacts() {

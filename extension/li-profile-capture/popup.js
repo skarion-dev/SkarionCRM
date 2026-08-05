@@ -9,6 +9,8 @@ const settings = document.getElementById('settings');
 const crmUrlInput = document.getElementById('crmUrl');
 const apiKeyInput = document.getElementById('apiKey');
 const decisionButtons = [...document.querySelectorAll('[data-disposition]')];
+const companyButtons = [...document.querySelectorAll('[data-company-category]')];
+const allCaptureButtons = [...decisionButtons, ...companyButtons];
 
 let activeTab = null;
 let resolvedLead = null;
@@ -32,7 +34,7 @@ function setStatus(message, kind = '', percent = null) {
 
 function setBusy(value) {
   busy = value;
-  decisionButtons.forEach((button) => {
+  allCaptureButtons.forEach((button) => {
     button.disabled = value;
   });
 }
@@ -55,14 +57,14 @@ async function api(path, options = {}) {
 async function resolveCurrentProfile() {
   if (busy) return;
   resolvedLead = null;
-  decisionButtons.forEach((button) => {
+  allCaptureButtons.forEach((button) => {
     button.disabled = true;
   });
   [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!activeTab?.url?.includes('linkedin.com/in/')) {
     profileName.textContent = 'Open a LinkedIn profile';
     profileMeta.textContent = 'This extension only reviews linkedin.com/in/ pages.';
-    decisionButtons.forEach((button) => {
+    allCaptureButtons.forEach((button) => {
       button.disabled = true;
     });
     return;
@@ -88,7 +90,7 @@ async function resolveCurrentProfile() {
     profileMeta.textContent = resolvedLead
       ? `${resolvedLead.leadNumber} · ${resolvedLead.reviewState === 'pending' ? 'Awaiting review' : `Already ${resolvedLead.reviewDisposition || resolvedLead.reviewState}`}`
       : 'Not imported yet — a lead number will be created when you decide.';
-    decisionButtons.forEach((button) => {
+    allCaptureButtons.forEach((button) => {
       button.disabled = false;
     });
   } catch (error) {
@@ -166,6 +168,27 @@ async function captureAndReview(disposition) {
   }
 }
 
+async function captureCompanyPerson(category) {
+  if (busy || !activeTab) return;
+  setBusy(true);
+  setStatus('Capturing company contact profile…', '', 5);
+  try {
+    const profile = await captureProfile();
+    setStatus('Saving company relationship…', '', 82);
+    const result = await api('/extension/company-people/capture', {
+      method: 'POST',
+      headers: { 'X-Idempotency-Key': profile.idempotencyKey },
+      body: JSON.stringify({ category, linkedinUrl: activeTab.url, profile }),
+    });
+    setStatus(`${result.person.displayName} saved to ${category.replaceAll('_', ' ')}.`, 'success', 100);
+    profileMeta.textContent = result.companyId ? 'Current company linked.' : 'Saved without a company link.';
+  } catch (error) {
+    setStatus(error.message || 'Company contact capture failed.', 'error', 0);
+  } finally {
+    setBusy(false);
+  }
+}
+
 chrome.runtime.onMessage.addListener((message) => {
   if (message.action === 'scrapeProgress') {
     setStatus(
@@ -200,6 +223,9 @@ document.getElementById('saveSettings').addEventListener('click', async () => {
 });
 decisionButtons.forEach((button) => {
   button.addEventListener('click', () => void captureAndReview(button.dataset.disposition));
+});
+companyButtons.forEach((button) => {
+  button.addEventListener('click', () => void captureCompanyPerson(button.dataset.companyCategory));
 });
 
 void chrome.storage.local.get(['crmSettings']).then(async (stored) => {

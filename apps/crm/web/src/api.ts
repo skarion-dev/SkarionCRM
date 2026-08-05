@@ -486,6 +486,27 @@ export interface Company {
   deletedAt: string | null;
 }
 
+export type CompanyPersonCategory = 'recruiter' | 'hiring_manager' | 'company_leadership';
+
+export interface CompanyPerson {
+  id: string;
+  first_name?: string;
+  last_name?: string;
+  display_name: string;
+  headline: string | null;
+  location: string | null;
+  email: string | null;
+  linkedin_url: string | null;
+  current_title: string | null;
+  current_company_id: string | null;
+  current_company_name: string | null;
+  owner_id: string;
+  last_captured_at: string | null;
+  created_at: string;
+  updated_at: string;
+  categories: string[];
+}
+
 export interface Contact {
   id: string;
   firstName: string;
