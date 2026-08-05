@@ -825,6 +825,12 @@ export interface DashboardProspectOperations {
     firstCaptureAt: string | null;
     lastCaptureAt: string | null;
   }>;
+  captureTokenTrend: Array<{
+    tokenId: string;
+    day: string;
+    captures: number;
+    fresh: number;
+  }>;
 }
 
 export interface ProspectImportJob {

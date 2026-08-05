@@ -9500,6 +9500,7 @@ app.get('/api/dashboard/prospect-operations', async (c) => {
     recentCapturesResult,
     captureActorsResult,
     captureTokensResult,
+    captureTokenTrendResult,
   ] = await Promise.all([
     db.execute(sql`
       WITH windows(label, duration) AS (VALUES
@@ -9647,24 +9648,65 @@ app.get('/api/dashboard/prospect-operations', async (c) => {
       ), scoped_leads AS (
         SELECT lead.id, lead.captured_by_api_key_id, lead.created_at
         FROM crm.leads lead WHERE ${scope('lead')}
+      ), capture_totals AS (
+        SELECT key.id,
+          count(capture.id)::int AS captures,
+          count(*) FILTER (WHERE capture.is_fresh)::int AS fresh_captures,
+          count(DISTINCT capture.lead_id)::int AS unique_leads,
+          count(*) FILTER (WHERE capture.created_at >= now() - interval '24 hours')::int AS captures_24h,
+          count(*) FILTER (WHERE capture.created_at >= now() - interval '7 days')::int AS captures_7d,
+          min(capture.created_at) AS first_capture_at,
+          max(capture.created_at) AS last_capture_at
+        FROM scoped_keys key
+        LEFT JOIN scoped_captures capture ON capture.captured_by_api_key_id = key.id
+          AND capture.created_at >= key.created_at
+        GROUP BY key.id
+      ), lead_totals AS (
+        SELECT key.id, count(lead.id)::int AS leads_created
+        FROM scoped_keys key
+        LEFT JOIN scoped_leads lead ON lead.captured_by_api_key_id = key.id
+          AND lead.created_at >= key.created_at
+        GROUP BY key.id
       )
       SELECT key.id, key.label, key.email, key.created_at AS issued_at,
         key.last_used_at, key.revoked_at,
-        count(capture.id)::int AS captures,
-        count(*) FILTER (WHERE capture.is_fresh)::int AS fresh_captures,
-        count(DISTINCT capture.lead_id)::int AS unique_leads,
-        count(DISTINCT lead.id)::int AS leads_created,
-        count(*) FILTER (WHERE capture.created_at >= now() - interval '24 hours')::int AS captures_24h,
-        count(*) FILTER (WHERE capture.created_at >= now() - interval '7 days')::int AS captures_7d,
-        min(capture.created_at) AS first_capture_at,
-        max(capture.created_at) AS last_capture_at
+        capture_totals.captures, capture_totals.fresh_captures, capture_totals.unique_leads,
+        lead_totals.leads_created, capture_totals.captures_24h, capture_totals.captures_7d,
+        capture_totals.first_capture_at, capture_totals.last_capture_at
       FROM scoped_keys key
-      LEFT JOIN scoped_captures capture ON capture.captured_by_api_key_id = key.id
+      JOIN capture_totals ON capture_totals.id = key.id
+      LEFT JOIN lead_totals ON lead_totals.id = key.id
+      WHERE key.revoked_at IS NULL AND capture_totals.captures > 0
+      ORDER BY capture_totals.captures DESC, key.created_at DESC
+    `),
+    db.execute(sql`
+      WITH scoped_keys AS (
+        SELECT key.id, key.created_at
+        FROM identity.api_keys key
+        WHERE key.revoked_at IS NULL AND (${isTeamScope}::boolean OR key.user_id = ${userId}::uuid)
+      ), days AS (
+        SELECT generate_series(
+          date_trunc('day', now()) - interval '29 days', date_trunc('day', now()), interval '1 day'
+        ) AS day
+      ), all_token_captures AS (
+        SELECT capture.captured_by_api_key_id AS token_id, capture.created_at,
+          row_number() OVER (PARTITION BY capture.lead_id ORDER BY capture.created_at) = 1 AS is_fresh
+        FROM crm.lead_profile_captures capture
+        JOIN crm.leads lead ON lead.id = capture.lead_id
+        WHERE capture.workspace_id = ${DEFAULT_WORKSPACE_ID}::uuid AND ${scope('lead')}
+      ), token_captures AS (
+        SELECT * FROM all_token_captures WHERE created_at >= now() - interval '30 days'
+      )
+      SELECT key.id AS token_id, days.day,
+        count(capture.token_id)::int AS captures,
+        count(*) FILTER (WHERE capture.is_fresh)::int AS fresh
+      FROM scoped_keys key
+      CROSS JOIN days
+      LEFT JOIN token_captures capture ON capture.token_id = key.id
         AND capture.created_at >= key.created_at
-      LEFT JOIN scoped_leads lead ON lead.captured_by_api_key_id = key.id
-        AND lead.created_at >= key.created_at
-      GROUP BY key.id, key.label, key.email, key.created_at, key.last_used_at, key.revoked_at
-      ORDER BY captures DESC, key.created_at DESC
+        AND date_trunc('day', capture.created_at) = days.day
+      GROUP BY key.id, days.day
+      ORDER BY key.id, days.day
     `),
   ]);
   const rows = <T>(result: unknown): T[] => (result as { rows?: T[] }).rows ?? [];
@@ -9764,6 +9806,12 @@ app.get('/api/dashboard/prospect-operations', async (c) => {
       captures7d: Number(row.captures_7d) || 0,
       firstCaptureAt: row.first_capture_at ? iso(row.first_capture_at as Date | string) : null,
       lastCaptureAt: row.last_capture_at ? iso(row.last_capture_at as Date | string) : null,
+    })),
+    captureTokenTrend: rows<Record<string, unknown>>(captureTokenTrendResult).map((row) => ({
+      tokenId: row.token_id,
+      day: iso(row.day as Date | string),
+      captures: Number(row.captures) || 0,
+      fresh: Number(row.fresh) || 0,
     })),
   });
 });

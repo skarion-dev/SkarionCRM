@@ -1,4 +1,5 @@
-import { Activity, Clock3, KeyRound, Radio, Sparkles, UserRound } from 'lucide-react';
+import { Activity, BarChart3, Clock3, KeyRound, Radio, Sparkles, UserRound } from 'lucide-react';
+import { useState } from 'react';
 import type { DashboardProspectOperations } from '../../api.js';
 
 const dateTime = (value: string) =>
@@ -16,10 +17,16 @@ const dayLabel = (value: string) =>
     : '—';
 
 export function CaptureIntelligence({ data }: { data: DashboardProspectOperations }) {
+  const [selectedTokenId, setSelectedTokenId] = useState<string | null>(null);
   const windows = ['24h', '7d', '30d']
     .map((label) => data.captureWindows.find((row) => row.label === label))
     .filter(Boolean) as DashboardProspectOperations['captureWindows'];
   const maxTrend = Math.max(1, ...data.captureTrend.map((row) => row.captures));
+  const selectedToken = data.captureTokens.find((token) => token.id === selectedTokenId) ?? null;
+  const selectedTokenTrend = selectedToken
+    ? data.captureTokenTrend.filter((row) => row.tokenId === selectedToken.id)
+    : [];
+  const selectedTokenMax = Math.max(1, ...selectedTokenTrend.map((row) => row.captures));
   return (
     <section className="space-y-5 rounded-2xl border border-indigo-100 bg-indigo-50/40 p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -122,12 +129,10 @@ export function CaptureIntelligence({ data }: { data: DashboardProspectOperation
           <h3 className="text-sm font-semibold text-slate-900">
             Extension token performance - lifetime
           </h3>
-          <span className="text-[11px] text-slate-400">
-            Counts begin when each API key was issued
-          </span>
+          <span className="text-[11px] text-slate-400">Active tokens with captured profiles only</span>
         </div>
         <div className="overflow-auto">
-          <table className="w-full min-w-[1080px] text-left text-xs">
+          <table className="w-full min-w-[1180px] text-left text-xs">
             <thead className="text-[10px] uppercase tracking-wide text-slate-400">
               <tr>
                 <th className="pb-2">Token name</th>
@@ -141,18 +146,22 @@ export function CaptureIntelligence({ data }: { data: DashboardProspectOperation
             </thead>
             <tbody className="divide-y divide-slate-100">
               {data.captureTokens.map((token) => (
-                <tr key={token.id}>
+                <tr
+                  key={token.id}
+                  onClick={() => setSelectedTokenId(token.id)}
+                  className={`cursor-pointer transition-colors hover:bg-indigo-50 ${selectedToken?.id === token.id ? 'bg-indigo-50' : ''}`}
+                  title={`Show ${token.label}'s last 30 days of capture activity`}
+                >
                   <td className="py-2">
-                    <div className="font-semibold text-slate-800">{token.label}</div>
+                    <div className="flex items-center gap-2 font-semibold text-slate-800">
+                      {token.label}
+                      <BarChart3 size={13} className="text-indigo-500" />
+                    </div>
                     {token.email && <div className="text-[11px] text-slate-400">{token.email}</div>}
                   </td>
                   <td className="py-2 text-slate-500">
                     <div>{dateTime(token.issuedAt)}</div>
-                    <span
-                      className={`mt-1 inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold ${token.revokedAt ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'}`}
-                    >
-                      {token.revokedAt ? 'Revoked' : 'Active'}
-                    </span>
+                    <span className="mt-1 inline-block rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">Active</span>
                   </td>
                   <td className="py-2 text-right text-sm font-semibold text-slate-900">
                     {token.captures.toLocaleString()}
@@ -185,6 +194,48 @@ export function CaptureIntelligence({ data }: { data: DashboardProspectOperation
           </table>
         </div>
       </div>
+      {selectedToken && (
+        <div className="rounded-xl border border-indigo-100 bg-white p-4 shadow-sm">
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <div className="flex items-center gap-2">
+                <BarChart3 size={16} className="text-indigo-600" />
+                <h3 className="text-sm font-semibold text-slate-900">
+                  {selectedToken.label} · capture history
+                </h3>
+              </div>
+              <p className="mt-1 text-xs text-slate-500">Last 30 days · fresh / total captures</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setSelectedTokenId(null)}
+              className="text-xs font-medium text-indigo-600 hover:text-indigo-800"
+            >
+              Close
+            </button>
+          </div>
+          <div
+            className="grid gap-x-1 gap-y-3"
+            style={{ gridTemplateColumns: 'repeat(30, minmax(0, 1fr))' }}
+          >
+            {selectedTokenTrend.map((row) => {
+              const height = row.captures ? Math.max(6, (row.captures / selectedTokenMax) * 100) : 0;
+              return (
+                <div key={row.day} className="group flex min-w-0 flex-col justify-end" title={`${dayLabel(row.day)}: ${row.fresh} fresh / ${row.captures} total`}>
+                  <div className="flex h-28 items-end rounded-sm bg-slate-50 px-0.5">
+                    <div className="w-full rounded-t-sm bg-indigo-500 transition-colors group-hover:bg-indigo-700" style={{ height: `${height}%` }} />
+                  </div>
+                  <span className="mt-1 truncate text-center text-[9px] text-slate-400">{new Date(row.day).getDate()}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="mt-3 flex justify-between text-[11px] text-slate-500">
+            <span>Hover a day for fresh and total counts.</span>
+            <strong className="text-slate-700">{selectedTokenTrend.reduce((sum, row) => sum + row.captures, 0).toLocaleString()} captures</strong>
+          </div>
+        </div>
+      )}
       <div className="rounded-xl border border-white bg-white p-4 shadow-sm">
         <div className="mb-3 flex items-center gap-2">
           <Sparkles size={16} className="text-indigo-600" />
