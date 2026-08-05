@@ -3939,54 +3939,43 @@ async function findOrCreateDirectoryCompany(
   return created?.id ?? null;
 }
 
-type TalentOsJob = { company?: string; title?: string; link?: string; postedAt?: string; posted_at?: string; [key: string]: unknown };
+type TalentOsCompany = { id?: string; name?: string; website?: string; linkedin_url?: string; description?: string; industry?: string; employees_count?: number; address?: unknown; last_seen_at?: string; [key: string]: unknown };
 
-async function fetchTalentOsJobs(env: Env): Promise<TalentOsJob[]> {
-  const base = (env.TALENTOS_API_URL || 'https://api.skarion.com').replace(/\/+$/, '');
+async function fetchTalentOsCompanies(env: Env): Promise<TalentOsCompany[]> {
+  const base = (env.TALENTOS_API_URL || 'https://skarion-talent-os.skarion-talentos.workers.dev').replace(/\/+$/, '');
   const headers: Record<string, string> = { accept: 'application/json' };
   if (env.TALENTOS_API_KEY) {
     headers.authorization = `Bearer ${env.TALENTOS_API_KEY}`;
     headers['x-api-key'] = env.TALENTOS_API_KEY;
   }
-  const response = await fetch(`${base}/jobs`, { headers, signal: AbortSignal.timeout(8_000) });
-  if (!response.ok) throw new Error(`TalentOS jobs feed returned ${response.status}`);
-  const payload = (await response.json()) as unknown;
-  if (Array.isArray(payload)) return payload as TalentOsJob[];
-  if (payload && typeof payload === 'object') {
-    const grouped = payload as Record<string, unknown>;
-    return Object.entries(grouped).flatMap(([company, jobs]) =>
-      Array.isArray(jobs)
-        ? jobs.map((job) => ({ ...(job as Record<string, unknown>), company: String((job as Record<string, unknown>).company || company) }))
-        : []
-    ) as TalentOsJob[];
+  const companies: TalentOsCompany[] = [];
+  for (let page = 1; page <= 100; page += 1) {
+    const response = await fetch(`${base}/api/public/companies?page=${page}&pageSize=100`, { headers, signal: AbortSignal.timeout(8_000) });
+    if (!response.ok) throw new Error(`TalentOS companies feed returned ${response.status}`);
+    const payload = (await response.json()) as { data?: TalentOsCompany[]; total?: number };
+    const pageData = Array.isArray(payload.data) ? payload.data : [];
+    companies.push(...pageData);
+    if (companies.length >= Number(payload.total || pageData.length) || pageData.length < 100) break;
   }
-  return [];
+  return companies;
 }
 
 async function syncTalentOsCompanies(db: CrmDb, env: Env, ownerId: string): Promise<number> {
-  const jobs = await fetchTalentOsJobs(env);
-  const companies = new Map<string, { name: string; jobs: number; latest: string | null }>();
-  for (const job of jobs) {
-    const name = String(job.company || '').trim();
+  const companies = await fetchTalentOsCompanies(env);
+  for (const company of companies) {
+    const name = String(company.name || '').trim();
     if (!name) continue;
     const key = normalizeCompanyDirectoryName(name);
     if (!key) continue;
-    const current = companies.get(key) || { name, jobs: 0, latest: null };
-    current.jobs += 1;
-    const posted = String(job.postedAt || job.posted_at || '').trim() || null;
-    if (posted && (!current.latest || posted > current.latest)) current.latest = posted;
-    companies.set(key, current);
-  }
-  for (const [normalizedName, summary] of companies) {
-    const talentosId = `jobs:${normalizedName}`;
+    const talentosId = String(company.id || `name:${key}`);
     const [existing] = await db.select({ id: schema.companies.id }).from(schema.companies).where(and(eq(schema.companies.talentsOsId, talentosId), isNull(schema.companies.deletedAt))).limit(1);
     if (existing) {
-      await db.update(schema.companies).set({ lastTalentOsSyncAt: new Date(), updatedAt: new Date() }).where(eq(schema.companies.id, existing.id));
+      await db.update(schema.companies).set({ name, normalizedName: key, website: company.website ?? null, linkedinUrl: company.linkedin_url ?? null, industry: company.industry ?? null, size: company.employees_count == null ? null : String(company.employees_count), address: company.address ?? null, lastTalentOsSyncAt: new Date(), updatedAt: new Date() }).where(eq(schema.companies.id, existing.id));
     } else {
-      await db.insert(schema.companies).values({ name: summary.name, normalizedName, talentsOsId: talentosId, ownerId, lastTalentOsSyncAt: new Date(), researchStatus: 'not_started' });
+      await db.insert(schema.companies).values({ name, normalizedName: key, talentsOsId: talentosId, website: company.website ?? null, linkedinUrl: company.linkedin_url ?? null, industry: company.industry ?? null, size: company.employees_count == null ? null : String(company.employees_count), address: company.address ?? null, ownerId, lastTalentOsSyncAt: new Date(), researchStatus: 'not_started' });
     }
   }
-  return companies.size;
+  return companies.length;
 }
 
 async function runCompanyResearch(db: CrmDb, env: Env, jobId: string, company: typeof schema.companies.$inferSelect) {
