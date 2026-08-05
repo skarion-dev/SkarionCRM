@@ -132,11 +132,12 @@ export function CaptureIntelligence({ data }: { data: DashboardProspectOperation
           <span className="text-[11px] text-slate-400">Active tokens with captured profiles only</span>
         </div>
         <div className="overflow-auto">
-          <table className="w-full min-w-[1180px] text-left text-xs">
+          <table className="w-full min-w-[1290px] text-left text-xs">
             <thead className="text-[10px] uppercase tracking-wide text-slate-400">
               <tr>
                 <th className="pb-2">Token name</th>
                 <th className="pb-2">Issued / status</th>
+                <th className="pb-2">Last used</th>
                 <th className="pb-2 text-right">All captures</th>
                 <th className="pb-2 text-right">Fresh / unique</th>
                 <th className="pb-2 text-right">New leads</th>
@@ -163,6 +164,9 @@ export function CaptureIntelligence({ data }: { data: DashboardProspectOperation
                     <div>{dateTime(token.issuedAt)}</div>
                     <span className="mt-1 inline-block rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">Active</span>
                   </td>
+                  <td className="py-2 text-slate-500">
+                    {token.lastUsedAt ? dateTime(token.lastUsedAt) : 'Never used'}
+                  </td>
                   <td className="py-2 text-right text-sm font-semibold text-slate-900">
                     {token.captures.toLocaleString()}
                   </td>
@@ -185,7 +189,7 @@ export function CaptureIntelligence({ data }: { data: DashboardProspectOperation
               ))}
               {data.captureTokens.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="py-6 text-center text-slate-400">
+                  <td colSpan={8} className="py-6 text-center text-slate-400">
                     No extension tokens are visible in this scope.
                   </td>
                 </tr>
