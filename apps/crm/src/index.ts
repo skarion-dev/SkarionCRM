@@ -1538,6 +1538,13 @@ async function findPendingProspectForCapture(
   const name = deriveProspectName(input.profileName, input.linkedinUrl ?? '');
   if (name.generated) return null;
 
+  // Older extension builds sometimes return a different LinkedIn URL shape
+  // (opaque member id vs. public slug). Match the captured name using both
+  // the split fields and a punctuation-insensitive full-name key so the
+  // pending prospect is still promoted instead of receiving a second row.
+  const fullName = input.profileName.trim().replace(/\s+/g, ' ').split(',')[0] ?? '';
+  const compactName = fullName.toLowerCase().replace(/[^a-z0-9]/g, '');
+
   const matches = await db
     .select()
     .from(schema.leads)
@@ -1545,8 +1552,11 @@ async function findPendingProspectForCapture(
       and(
         eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
         eq(schema.leads.reviewState, 'pending'),
-        eq(sql`lower(trim(${schema.leads.firstName}))`, name.firstName.trim().toLowerCase()),
-        eq(sql`lower(trim(${schema.leads.lastName}))`, name.lastName.trim().toLowerCase()),
+        sql`(
+          (lower(trim(${schema.leads.firstName})) = ${name.firstName.trim().toLowerCase()}
+            AND lower(trim(${schema.leads.lastName})) = ${name.lastName.trim().toLowerCase()})
+          OR regexp_replace(lower(concat_ws('', ${schema.leads.firstName}, ${schema.leads.lastName})), '[^a-z0-9]', '', 'g') = ${compactName}
+        )`,
         isNull(schema.leads.deletedAt)
       )
     )
@@ -1680,6 +1690,23 @@ app.post('/extension/leads/check', async (c) => {
   }
 
   const body = await c.req.json();
+  // Compatibility shim for older extension builds that sent the captured
+  // profile under `profile` instead of flattening first/last name and URL.
+  const legacyProfile = body.profile && typeof body.profile === 'object'
+    ? (body.profile as Record<string, unknown>)
+    : null;
+  if (legacyProfile) {
+    const legacyName =
+      profileString(legacyProfile, 'name') ??
+      profileString(legacyProfile, 'fullName') ??
+      profileString(legacyProfile, 'displayName');
+    const parts = legacyName?.split(/\s+/).filter(Boolean) ?? [];
+    if (!body.firstName && parts.length > 0) body.firstName = parts.shift();
+    if (!body.lastName && parts.length > 0) body.lastName = parts.join(' ');
+    if (!body.linkedinUrl) body.linkedinUrl = profileString(legacyProfile, 'profileUrl') ?? profileString(legacyProfile, 'linkedinUrl');
+    if (!body.companyName) body.companyName = profileString(legacyProfile, 'companyName') ?? profileString(legacyProfile, 'currentCompany');
+    if (!body.notes) body.notes = profileString(legacyProfile, 'about');
+  }
   const linkedinUrl = canonicalizeLinkedinUrl(body.linkedinUrl);
   const email = isRealEmail(body.email) ? body.email.trim().toLowerCase() : null;
   const phone = normalizePhoneKey(body.phone);
@@ -1805,6 +1832,18 @@ app.post('/extension/leads', async (c) => {
   const ownerId = resolved.userId;
 
   const body = await c.req.json();
+  const legacyProfile = body.profile && typeof body.profile === 'object'
+    ? (body.profile as Record<string, unknown>)
+    : null;
+  if (legacyProfile) {
+    const legacyName = profileString(legacyProfile, 'name') ?? profileString(legacyProfile, 'fullName') ?? profileString(legacyProfile, 'displayName');
+    const parts = legacyName?.split(/\s+/).filter(Boolean) ?? [];
+    if (!body.firstName && parts.length > 0) body.firstName = parts.shift();
+    if (!body.lastName && parts.length > 0) body.lastName = parts.join(' ');
+    if (!body.linkedinUrl) body.linkedinUrl = profileString(legacyProfile, 'profileUrl') ?? profileString(legacyProfile, 'linkedinUrl');
+    if (!body.companyName) body.companyName = profileString(legacyProfile, 'companyName') ?? profileString(legacyProfile, 'currentCompany');
+    if (!body.notes) body.notes = profileString(legacyProfile, 'about');
+  }
   const displayName = `${body.firstName ?? ''} ${body.lastName ?? ''}`.trim();
   const linkedinUrl = canonicalizeLinkedinUrl(body.linkedinUrl);
   if (!displayName || (!linkedinUrl && !isRealEmail(body.email))) {
@@ -2124,11 +2163,19 @@ app.post('/extension/prospects/review', async (c) => {
   if (!isProspectDisposition(body.disposition)) {
     return c.json({ error: 'Choose a valid review decision.' }, 400);
   }
-  const profile =
+  let profile =
     body.profile && typeof body.profile === 'object'
       ? (body.profile as Record<string, unknown>)
       : null;
-  const capturedProfileName = profileString(profile ?? {}, 'name');
+  const capturedProfileName =
+    profileString(profile ?? {}, 'name') ??
+    profileString(profile ?? {}, 'fullName') ??
+    profileString(profile ?? {}, 'displayName') ??
+    profileString(body, 'profileName') ??
+    profileString(body, 'name');
+  if (profile && capturedProfileName && !profileString(profile, 'name')) {
+    profile = { ...profile, name: capturedProfileName };
+  }
   if (profile && !isPlausibleProspectName(capturedProfileName)) {
     return c.json(
       {
@@ -2139,7 +2186,9 @@ app.post('/extension/prospects/review', async (c) => {
     );
   }
   const linkedinUrl = canonicalizeLinkedinUrl(
-    profileString(profile ?? {}, 'profileUrl') ?? body.linkedinUrl
+    profileString(profile ?? {}, 'profileUrl') ??
+    profileString(profile ?? {}, 'linkedinUrl') ??
+    body.linkedinUrl
   );
   const profileKey = linkedinProfileKey(linkedinUrl);
   if (!linkedinUrl || !profileKey) {
