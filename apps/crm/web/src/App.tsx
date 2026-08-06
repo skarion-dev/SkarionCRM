@@ -18,6 +18,7 @@ import SettingsPage from './pages/SettingsPage.js';
 import ChatPage from './pages/ChatPage.js';
 import AdminActivityLogsPage from './pages/AdminActivityLogsPage.js';
 import CompanyPeoplePage from './pages/CompanyPeoplePage.js';
+import CompanyPersonDetailPage from './pages/CompanyPersonDetailPage.js';
 
 const ReportingCeoPage = lazy(() => import('./pages/ReportingCeoPage.js'));
 
@@ -122,6 +123,7 @@ export default function App() {
           <Route path="/recruiters" element={<RequireAuth><CompanyPeoplePage category="recruiter" /></RequireAuth>} />
           <Route path="/hiring-managers" element={<RequireAuth><CompanyPeoplePage category="hiring_manager" /></RequireAuth>} />
           <Route path="/company-leadership" element={<RequireAuth><CompanyPeoplePage category="company_leadership" /></RequireAuth>} />
+          <Route path="/company-people/:id" element={<RequireAuth><CompanyPersonDetailPage /></RequireAuth>} />
           <Route
             path="/contacts/:id"
             element={

@@ -6,6 +6,7 @@ import {
   type Company,
   type CompanyPerson,
   type CompanyPersonCategory,
+  type CompanyPersonCapture,
   type Contact,
   type Lead,
   type LeadAiAssessment,
@@ -150,6 +151,10 @@ export function useCompanyPeopleByCompany(companyId: string) {
   return useCrmQuery(['company-people-by-company', companyId], () =>
     crmFetch<{ people: CompanyPerson[] }>(`/api/companies/${companyId}/people`)
   );
+}
+
+export function useCompanyPerson(id: string, enabled = true) {
+  return useCrmQuery(['company-person', id], () => crmFetch<{ person: CompanyPerson; employments: Record<string, unknown>[]; captures: CompanyPersonCapture[] }>(`/api/company-people/${id}`), enabled);
 }
 
 export function useUpdateCompanyPerson() {

@@ -484,6 +484,12 @@ export interface Company {
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+  website?: string | null;
+  linkedinUrl?: string | null;
+  researchStatus?: string | null;
+  researchedAt?: string | null;
+  researchSummary?: string | null;
+  researchSources?: unknown;
 }
 
 export type CompanyPersonCategory = 'recruiter' | 'hiring_manager' | 'company_leadership';
@@ -497,17 +503,37 @@ export interface CompanyPerson {
   about?: string | null;
   location: string | null;
   email: string | null;
+  phone?: string | null;
   linkedin_url: string | null;
   linkedin_profile_key?: string | null;
   current_title: string | null;
   current_company_id: string | null;
   current_company_name: string | null;
+  experience?: unknown;
+  education?: unknown;
+  skills?: unknown;
+  current_role_dates?: unknown;
+  open_to_work?: boolean | null;
+  years_experience?: number | null;
+  connection_degree?: string | null;
+  notes?: string | null;
+  tags?: unknown;
+  source?: string;
+  status?: string;
+  outreach_status?: string;
+  journey_stage?: string;
+  profile_capture_status?: string;
+  profile_normalization_status?: string;
+  data_completeness?: number;
+  captured_by_api_key_label?: string | null;
   owner_id: string;
   last_captured_at: string | null;
   created_at: string;
   updated_at: string;
   categories: string[];
 }
+
+export interface CompanyPersonCapture { id: string; captured_by?: string; captured_by_api_key_label?: string | null; payload_hash?: string | null; created_at: string; }
 
 export interface Contact {
   id: string;

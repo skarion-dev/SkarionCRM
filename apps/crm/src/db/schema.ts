@@ -233,10 +233,27 @@ export const companyPeople = crmSchema.table(
     location: text('location'),
     about: text('about'),
     email: text('email'),
+    phone: text('phone'),
+    experience: text('experience'),
+    education: text('education'),
+    skills: text('skills'),
     linkedinUrl: text('linkedin_url'),
     linkedinProfileKey: text('linkedin_profile_key'),
     currentTitle: text('current_title'),
+    currentRoleDates: text('current_role_dates'),
+    openToWork: boolean('open_to_work'),
+    yearsExperience: text('years_experience'),
+    connectionDegree: text('connection_degree'),
     currentCompanyId: uuid('current_company_id').references(() => companies.id, { onDelete: 'set null' }),
+    notes: text('notes'),
+    tags: jsonb('tags'),
+    source: text('source').default('linkedin-extension').notNull(),
+    status: text('status').default('new').notNull(),
+    outreachStatus: text('outreach_status').default('not_approached').notNull(),
+    journeyStage: text('journey_stage').default('new').notNull(),
+    profileCaptureStatus: profileCaptureStatusEnum('profile_capture_status').default('captured').notNull(),
+    profileNormalizationStatus: text('profile_normalization_status').default('not_queued').notNull(),
+    dataCompleteness: integer('data_completeness').default(0).notNull(),
     rawProfile: jsonb('raw_profile'),
     ownerId: uuid('owner_id').notNull(),
     capturedByApiKeyId: uuid('captured_by_api_key_id'),
@@ -255,6 +272,25 @@ export const companyPeople = crmSchema.table(
     uniqueIndex('idx_company_people_email_unique')
       .on(table.workspaceId, sql`lower(${table.email})`)
       .where(sql`${table.email} IS NOT NULL AND ${table.deletedAt} IS NULL`),
+  ]
+);
+
+export const companyPersonCaptures = crmSchema.table(
+  'company_person_captures',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id),
+    personId: uuid('person_id').notNull().references(() => companyPeople.id, { onDelete: 'cascade' }),
+    capturedBy: uuid('captured_by').notNull(),
+    capturedByApiKeyId: uuid('captured_by_api_key_id'),
+    capturedByApiKeyLabel: text('captured_by_api_key_label'),
+    payload: jsonb('payload').notNull(),
+    payloadHash: text('payload_hash').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index('idx_company_person_captures_person').on(table.personId, table.createdAt),
+    index('idx_company_person_captures_workspace').on(table.workspaceId, table.createdAt),
   ]
 );
 
