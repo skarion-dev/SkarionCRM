@@ -2083,10 +2083,24 @@ app.post('/extension/prospects/resolve', async (c) => {
       and(
         eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
         eq(schema.leads.linkedinProfileKey, profileKey),
+        eq(schema.leads.reviewState, 'pending'),
         isNull(schema.leads.deletedAt)
       )
     )
     .limit(1);
+  if (!lead) {
+    [lead] = await db
+      .select()
+      .from(schema.leads)
+      .where(
+        and(
+          eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
+          eq(schema.leads.linkedinProfileKey, profileKey),
+          isNull(schema.leads.deletedAt)
+        )
+      )
+      .limit(1);
+  }
   if (!lead) {
     lead =
       (await findPendingProspectForCapture(db, {
@@ -2139,10 +2153,24 @@ app.post('/extension/prospects/review', async (c) => {
       and(
         eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
         eq(schema.leads.linkedinProfileKey, profileKey),
+        eq(schema.leads.reviewState, 'pending'),
         isNull(schema.leads.deletedAt)
       )
     )
     .limit(1);
+  if (!lead) {
+    [lead] = await db
+      .select()
+      .from(schema.leads)
+      .where(
+        and(
+          eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
+          eq(schema.leads.linkedinProfileKey, profileKey),
+          isNull(schema.leads.deletedAt)
+        )
+      )
+      .limit(1);
+  }
   if (!lead) {
     lead =
       (await findPendingProspectForCapture(db, {
