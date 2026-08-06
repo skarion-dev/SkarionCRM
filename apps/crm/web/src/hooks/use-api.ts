@@ -157,6 +157,11 @@ export function useCompanyPerson(id: string, enabled = true) {
   return useCrmQuery(['company-person', id], () => crmFetch<{ person: CompanyPerson; employments: Record<string, unknown>[]; captures: CompanyPersonCapture[] }>(`/api/company-people/${id}`), enabled);
 }
 
+export function useResearchCompany() {
+  const qc = useQueryClient();
+  return useMutation({ mutationFn: (id: string) => crmFetch(`/api/companies/${id}/research`, { method: 'POST' }), onSuccess: (_data, id) => qc.invalidateQueries({ queryKey: ['companies', id] }) });
+}
+
 export function useUpdateCompanyPerson() {
   const qc = useQueryClient();
   return useMutation({

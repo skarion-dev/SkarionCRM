@@ -1,5 +1,5 @@
 import { useNavigate, useParams } from 'react-router-dom';
-import { useCompany, useCompanyPeopleByCompany, useDeleteEntity } from '../hooks/use-api.js';
+import { useCompany, useCompanyPeopleByCompany, useDeleteEntity, useResearchCompany } from '../hooks/use-api.js';
 import { ArrowLeft, Building2, Globe, Users, FileText, Pencil, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import ActivityTimeline from '../components/ActivityTimeline.js';
@@ -13,6 +13,7 @@ export default function CompanyDetail() {
   const { data, isLoading } = useCompany(id ?? '');
   const { data: peopleData } = useCompanyPeopleByCompany(id ?? '');
   const deleteMutation = useDeleteEntity();
+  const researchCompany = useResearchCompany();
   const [editOpen, setEditOpen] = useState(false);
   const [activityType, setActivityType] = useState<ActivityType | null>(null);
 
@@ -73,6 +74,11 @@ export default function CompanyDetail() {
       </div>
 
       <div className="bg-white border border-slate-200 rounded-lg p-6">
+        <div className="flex items-start justify-between gap-4"><div><h2 className="text-base font-semibold">Company intelligence</h2><p className="mt-1 text-xs text-slate-500">Evidence-backed research is stored for future AI agents and refreshes.</p></div><button onClick={() => researchCompany.mutate(company.id)} disabled={researchCompany.isPending} className="rounded bg-indigo-600 px-3 py-2 text-xs font-medium text-white disabled:opacity-50">{researchCompany.isPending ? 'Queued…' : 'Research company'}</button></div>
+        <div className="mt-4 grid gap-4 md:grid-cols-3 text-sm"><div><div className="text-xs uppercase text-slate-400">Research status</div><div className="mt-1 font-medium">{company.researchStatus ?? 'Not researched'}</div></div><div><div className="text-xs uppercase text-slate-400">Last researched</div><div className="mt-1">{company.researchedAt ? new Date(company.researchedAt).toLocaleString() : '—'}</div></div><div><div className="text-xs uppercase text-slate-400">Summary</div><div className="mt-1 text-slate-600">{company.researchSummary ?? 'No evidence summary yet.'}</div></div></div>
+      </div>
+
+      <div className="bg-white border border-slate-200 rounded-lg p-6">
         <div className="mb-4 flex items-center justify-between">
           <div>
             <h2 className="text-base font-semibold">Current captured people</h2>
@@ -84,7 +90,7 @@ export default function CompanyDetail() {
           {(peopleData?.people ?? []).map((person) => (
             <div key={person.id} className="flex items-center justify-between py-3">
               <div>
-                <div className="font-medium text-slate-900">{person.display_name}</div>
+                <button onClick={() => navigate(`/company-people/${person.id}`)} className="font-medium text-indigo-700 hover:underline">{person.display_name}</button>
                 <div className="text-xs text-slate-500">{person.current_title ?? person.headline ?? '—'}</div>
               </div>
               <div className="flex gap-1 text-[11px] text-indigo-600">
