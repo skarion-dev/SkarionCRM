@@ -77,11 +77,19 @@ export function UserDetail() {
 
   async function handleForceReset() {
     if (!id) return;
+    const temporaryPassword = window.prompt(
+      'Enter a temporary password (at least 8 characters). The user must replace it at first login.'
+    );
+    if (!temporaryPassword) return;
+    if (temporaryPassword.length < 8) {
+      setMessage('Temporary password must be at least 8 characters.');
+      return;
+    }
     setBusy(true);
     setMessage('');
     try {
-      await forcePasswordReset(id);
-      setMessage('Password reset email sent.');
+      const result = await forcePasswordReset(id, temporaryPassword);
+      setMessage(`Temporary password set for ${result.email}. They must change it at first login.`);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Failed to send reset email.');
     } finally {

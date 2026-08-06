@@ -38,7 +38,7 @@ export function login(email: string, password: string) {
     expires_at?: string;
     access_token?: string;
     refresh_token?: string;
-    user?: { id: string; email: string; displayName: string };
+    user?: { id: string; email: string; displayName: string; mustChangePassword?: boolean };
   }>('/auth/login', {
     method: 'POST',
     body: JSON.stringify({ email, password }),
@@ -49,10 +49,21 @@ export function loginVerify(pendingToken: string, code: string) {
   return apiFetch<{
     access_token: string;
     refresh_token: string;
-    user: { id: string; email: string; displayName: string };
+    user: { id: string; email: string; displayName: string; mustChangePassword?: boolean };
   }>('/auth/login/verify', {
     method: 'POST',
     body: JSON.stringify({ pending_token: pendingToken, code }),
+  });
+}
+
+export function changeTemporaryPassword(
+  email: string,
+  currentPassword: string,
+  newPassword: string
+) {
+  return apiFetch<{ ok: true }>('/auth/change-temporary-password', {
+    method: 'POST',
+    body: JSON.stringify({ email, current_password: currentPassword, new_password: newPassword }),
   });
 }
 

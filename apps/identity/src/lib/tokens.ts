@@ -21,6 +21,7 @@ export async function signAccessToken(
     email: string;
     apps: AppMembershipsMap;
     isSuperadmin: boolean;
+    mustChangePassword: boolean;
     tokenVersion: number;
   },
   secret: string
@@ -31,6 +32,7 @@ export async function signAccessToken(
     email: params.email,
     apps: params.apps,
     isSuperadmin: params.isSuperadmin,
+    mustChangePassword: params.mustChangePassword,
     ver: params.tokenVersion,
     iat: now,
     exp: now + ACCESS_TOKEN_TTL_SECONDS,

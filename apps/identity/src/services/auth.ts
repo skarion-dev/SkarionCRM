@@ -67,6 +67,7 @@ export interface LoginResult {
     email: string;
     displayName: string;
     isSuperadmin: boolean;
+    mustChangePassword: boolean;
     apps: AppMembershipsMap;
   };
 }
@@ -169,6 +170,7 @@ export async function findUserByEmail(
   email: string;
   displayName: string;
   isSuperadmin: boolean;
+  mustChangePassword: boolean;
   tokenVersion: number;
   disabledAt: Date | null;
 } | null> {
@@ -191,6 +193,7 @@ export async function authenticateSuperadmin(
   email: string;
   displayName: string;
   isSuperadmin: boolean;
+  mustChangePassword: boolean;
   tokenVersion: number;
 } | null> {
   const found = await db.query.users.findFirst({
@@ -213,6 +216,7 @@ export async function issueSession(
     email: string;
     displayName: string;
     isSuperadmin: boolean;
+    mustChangePassword: boolean;
     tokenVersion: number;
   },
   jwtSecret: string,
@@ -226,6 +230,7 @@ export async function issueSession(
       email: found.email,
       apps,
       isSuperadmin: found.isSuperadmin,
+      mustChangePassword: found.mustChangePassword,
       tokenVersion: found.tokenVersion,
     },
     jwtSecret
@@ -253,6 +258,7 @@ export async function issueSession(
       email: found.email,
       displayName: found.displayName,
       isSuperadmin: found.isSuperadmin,
+      mustChangePassword: found.mustChangePassword,
       apps,
     },
   };
@@ -312,6 +318,7 @@ export async function refresh(db: IdentityDb, params: RefreshParams): Promise<Lo
       email: user.email,
       apps,
       isSuperadmin: user.isSuperadmin,
+      mustChangePassword: user.mustChangePassword,
       tokenVersion: user.tokenVersion,
     },
     params.jwtSecret
@@ -337,6 +344,7 @@ export async function refresh(db: IdentityDb, params: RefreshParams): Promise<Lo
       email: user.email,
       displayName: user.displayName,
       isSuperadmin: user.isSuperadmin,
+      mustChangePassword: user.mustChangePassword,
       apps,
     },
   };
@@ -389,7 +397,11 @@ export async function resetPassword(
 
   await db
     .update(schema.users)
-    .set({ passwordHash, tokenVersion: (await currentTokenVersion(db, resetToken.userId)) + 1 })
+    .set({
+      passwordHash,
+      mustChangePassword: false,
+      tokenVersion: (await currentTokenVersion(db, resetToken.userId)) + 1,
+    })
     .where(eq(schema.users.id, resetToken.userId));
 
   await db
@@ -408,6 +420,36 @@ export async function resetPassword(
     action: 'auth.password_reset',
     resourceType: 'user',
     resourceId: resetToken.userId,
+  });
+}
+
+export async function changeTemporaryPassword(
+  db: IdentityDb,
+  params: { email: string; currentPassword: string; newPassword: string }
+): Promise<void> {
+  const user = await db.query.users.findFirst({
+    where: (t, { sql }) => sql`lower(${t.email}) = lower(${params.email})`,
+  });
+  if (!user || !user.passwordHash || !user.mustChangePassword || user.disabledAt) {
+    throw new AuthError('Temporary password is invalid or no longer required.', 401);
+  }
+  if (!(await verifyPassword(params.currentPassword, user.passwordHash))) {
+    throw new AuthError('Temporary password is invalid or no longer required.', 401);
+  }
+  const passwordHash = await hashPassword(params.newPassword);
+  await db
+    .update(schema.users)
+    .set({ passwordHash, mustChangePassword: false, tokenVersion: user.tokenVersion + 1 })
+    .where(eq(schema.users.id, user.id));
+  await db
+    .update(schema.sessions)
+    .set({ revokedAt: new Date() })
+    .where(eq(schema.sessions.userId, user.id));
+  await withAudit(db, schema.auditLog, {
+    actorUserId: user.id,
+    action: 'auth.temporary_password_changed',
+    resourceType: 'user',
+    resourceId: user.id,
   });
 }
 
@@ -482,6 +524,7 @@ export async function getMe(
   avatarUrl: string | null;
   apps: AppMembershipsMap;
   isSuperadmin: boolean;
+  mustChangePassword: boolean;
   mfaEnrolled: boolean;
 }> {
   const user = await db.query.users.findFirst({ where: eq(schema.users.id, userId) });
@@ -497,6 +540,7 @@ export async function getMe(
     avatarUrl: user.avatarUrl,
     apps,
     isSuperadmin: user.isSuperadmin,
+    mustChangePassword: user.mustChangePassword,
     mfaEnrolled: !!mfa?.enrolledAt,
   };
 }

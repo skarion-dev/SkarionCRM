@@ -56,6 +56,7 @@ export const users = identitySchema.table(
     email: text('email').notNull(),
     emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
     passwordHash: text('password_hash'),
+    mustChangePassword: boolean('must_change_password').notNull().default(false),
     displayName: text('display_name').notNull(),
     avatarUrl: text('avatar_url'),
     // Bumped on password change / forced logout to invalidate already-issued

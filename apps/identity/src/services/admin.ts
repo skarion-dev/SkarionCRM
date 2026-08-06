@@ -4,9 +4,9 @@ import { and, desc, eq, isNull } from 'drizzle-orm';
 import { withAudit } from '@skarion/db-kit';
 import * as schema from '../db/schema.js';
 import type { IdentityDb } from '../db/types.js';
-import { generateOpaqueToken, sha256Hex } from '../lib/tokens.js';
 import type { AppName } from '../lib/types.js';
-import { AuthError, PASSWORD_RESET_TTL_MS } from './auth.js';
+import { AuthError } from './auth.js';
+import { hashPassword } from '../lib/password.js';
 
 export async function listUsers(db: IdentityDb) {
   const users = await db.query.users.findMany({
@@ -134,23 +134,30 @@ export async function enableUser(
   });
 }
 
-/** Admin-triggered password reset: mints a token (same path as self-serve forgot-password) and returns it for the route to email. */
+/** Set a one-time temporary password. The plaintext is returned only to the
+ * superadmin who initiated the reset; it is never stored or audited. */
 export async function forcePasswordReset(
   db: IdentityDb,
-  params: { targetUserId: string; actorUserId: string }
-): Promise<{ token: string; email: string; displayName: string }> {
+  params: { targetUserId: string; actorUserId: string; temporaryPassword: string }
+): Promise<{ email: string; displayName: string; temporaryPassword: string }> {
   const target = await db.query.users.findFirst({
     where: eq(schema.users.id, params.targetUserId),
   });
   if (!target) throw new AuthError('User not found.', 404);
 
-  const token = generateOpaqueToken();
-  const tokenHash = await sha256Hex(token);
-  await db.insert(schema.passwordResetTokens).values({
-    userId: target.id,
-    tokenHash,
-    expiresAt: new Date(Date.now() + PASSWORD_RESET_TTL_MS),
-  });
+  const passwordHash = await hashPassword(params.temporaryPassword);
+  await db
+    .update(schema.users)
+    .set({
+      passwordHash,
+      mustChangePassword: true,
+      tokenVersion: target.tokenVersion + 1,
+    })
+    .where(eq(schema.users.id, target.id));
+  await db
+    .update(schema.sessions)
+    .set({ revokedAt: new Date() })
+    .where(eq(schema.sessions.userId, target.id));
 
   await withAudit(db, schema.auditLog, {
     actorUserId: params.actorUserId,
@@ -159,7 +166,11 @@ export async function forcePasswordReset(
     resourceId: params.targetUserId,
   });
 
-  return { token, email: target.email, displayName: target.displayName };
+  return {
+    email: target.email,
+    displayName: target.displayName,
+    temporaryPassword: params.temporaryPassword,
+  };
 }
 
 export async function listAuditLog(

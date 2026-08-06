@@ -8,6 +8,7 @@ export interface AccessTokenPayload {
   email: string;
   apps: AppMembershipsMap;
   isSuperadmin?: boolean;
+  mustChangePassword?: boolean;
   ver: number;
   iat: number;
   exp: number;
