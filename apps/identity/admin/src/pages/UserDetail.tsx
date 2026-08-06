@@ -141,7 +141,7 @@ export function UserDetail() {
           </button>
         )}
         <button disabled={busy} onClick={handleForceReset}>
-          Force password reset
+          Set temporary password
         </button>
       </div>
 
