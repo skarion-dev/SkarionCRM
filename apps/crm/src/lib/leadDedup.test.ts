@@ -199,6 +199,7 @@ function mockDb(resultsQueue: unknown[][]): CrmDb {
   const chain = {
     from: () => chain,
     where: () => chain,
+    orderBy: () => chain,
     limit: () => Promise.resolve(resultsQueue[i++] ?? []),
   };
   return { select: () => chain } as unknown as CrmDb;

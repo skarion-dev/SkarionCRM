@@ -227,19 +227,6 @@ export async function findExactMatch(
 ): Promise<DedupMatch | null> {
   if (input.linkedinUrl) {
     const linkedinUrlLower = input.linkedinUrl.toLowerCase();
-    const [pendingLead] = await db
-      .select()
-      .from(schema.leads)
-      .where(
-        and(
-          eq(sql`lower(${schema.leads.linkedinUrl})`, linkedinUrlLower),
-          eq(schema.leads.reviewState, 'pending'),
-          isNull(schema.leads.deletedAt)
-        )
-      )
-      .limit(1);
-    if (pendingLead) return { matchType: 'linkedin_url', entityType: 'lead', record: pendingLead };
-
     const [lead] = await db
       .select()
       .from(schema.leads)
@@ -249,6 +236,7 @@ export async function findExactMatch(
           isNull(schema.leads.deletedAt)
         )
       )
+      .orderBy(sql`CASE WHEN ${schema.leads.reviewState} = 'pending' THEN 0 ELSE 1 END`)
       .limit(1);
     if (lead) return { matchType: 'linkedin_url', entityType: 'lead', record: lead };
 
