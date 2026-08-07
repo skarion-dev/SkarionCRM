@@ -1446,6 +1446,7 @@ app.get('/health', (c) => c.json({ status: 'ok', service: 'skarion-crm-platform'
 
 // Keep the extension compatibility path in the deploy diff so production
 // rollouts cannot silently remain on a pre-compatibility worker revision.
+// The capture-history migration is idempotent for existing production rows.
 
 app.get('/api/debug/version', (c) => {
   const branch = c.env.GIT_BRANCH ?? 'cloudflare-platform-rewrite';
