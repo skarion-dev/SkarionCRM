@@ -7,6 +7,7 @@ import {
   type CompanyPerson,
   type CompanyPersonCategory,
   type CompanyPersonCapture,
+  type CompanyPersonActivity,
   type Contact,
   type Lead,
   type LeadAiAssessment,
@@ -154,7 +155,15 @@ export function useCompanyPeopleByCompany(companyId: string) {
 }
 
 export function useCompanyPerson(id: string, enabled = true) {
-  return useCrmQuery(['company-person', id], () => crmFetch<{ person: CompanyPerson; employments: Record<string, unknown>[]; captures: CompanyPersonCapture[] }>(`/api/company-people/${id}`), enabled);
+  return useCrmQuery(['company-person', id], () => crmFetch<{ person: CompanyPerson; employments: Record<string, unknown>[]; captures: CompanyPersonCapture[]; activities: CompanyPersonActivity[] }>(`/api/company-people/${id}`), enabled);
+}
+
+export function useCreateCompanyPersonActivity() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { id: string; type: string; subject?: string; notes?: string }) => crmFetch(`/api/company-people/${input.id}/activities`, { method: 'POST', body: JSON.stringify(input) }),
+    onSuccess: (_data, input) => qc.invalidateQueries({ queryKey: ['company-person', input.id] }),
+  });
 }
 
 export function useResearchCompany() {

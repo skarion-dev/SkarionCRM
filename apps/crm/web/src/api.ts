@@ -534,6 +534,7 @@ export interface CompanyPerson {
 }
 
 export interface CompanyPersonCapture { id: string; captured_by?: string; captured_by_api_key_label?: string | null; payload_hash?: string | null; created_at: string; }
+export interface CompanyPersonActivity { id: string; type: string; subject?: string | null; notes?: string | null; occurred_at: string; created_by: string; created_at: string; }
 
 export interface Contact {
   id: string;

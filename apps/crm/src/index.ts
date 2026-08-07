@@ -4263,11 +4263,26 @@ app.get('/api/company-people/:id', async (c) => {
     LIMIT 1
   `).then((r) => ((r as unknown as { rows?: unknown[] }).rows ?? []) as Record<string, unknown>[]);
   if (!person) return c.json({ error: 'Company person not found.' }, 404);
-  const [employments, captures] = await Promise.all([
+  const [employments, captures, activities] = await Promise.all([
     db.execute(sql`SELECT employment.*, company.name AS company_name FROM crm.company_person_employments employment LEFT JOIN crm.companies company ON company.id = employment.company_id WHERE employment.person_id = ${id}::uuid ORDER BY employment.is_current DESC, employment.start_date DESC NULLS LAST`),
     db.execute(sql`SELECT id, captured_by, captured_by_api_key_label, payload_hash, created_at FROM crm.company_person_captures WHERE person_id = ${id}::uuid ORDER BY created_at DESC LIMIT 100`),
+    db.execute(sql`SELECT id, type, subject, notes, occurred_at, created_by, created_at FROM crm.company_person_activities WHERE person_id = ${id}::uuid ORDER BY occurred_at DESC LIMIT 100`),
   ]);
-  return c.json({ person, employments: (employments as unknown as { rows?: unknown[] }).rows ?? [], captures: (captures as unknown as { rows?: unknown[] }).rows ?? [] });
+  return c.json({ person, employments: (employments as unknown as { rows?: unknown[] }).rows ?? [], captures: (captures as unknown as { rows?: unknown[] }).rows ?? [], activities: (activities as unknown as { rows?: unknown[] }).rows ?? [] });
+});
+
+app.post('/api/company-people/:id/activities', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  if (!getRole(c)) return c.json({ error: 'Forbidden.' }, 403);
+  const id = c.req.param('id'); const body = await c.req.json() as Record<string, unknown>;
+  const type = String(body.type ?? 'note').trim().slice(0, 40); const subject = body.subject ? String(body.subject).trim().slice(0, 240) : null; const notes = body.notes ? String(body.notes).trim().slice(0, 10_000) : null;
+  if (!notes && !subject) return c.json({ error: 'Add a note or subject.' }, 400);
+  const [person] = await db.select({ id: schema.companyPeople.id }).from(schema.companyPeople).where(and(eq(schema.companyPeople.id, id), eq(schema.companyPeople.workspaceId, DEFAULT_WORKSPACE_ID), isNull(schema.companyPeople.deletedAt))).limit(1);
+  if (!person) return c.json({ error: 'Company person not found.' }, 404);
+  const [activity] = await db.insert(schema.companyPersonActivities).values({ personId: id, workspaceId: DEFAULT_WORKSPACE_ID, type, subject, notes, occurredAt: body.occurredAt ? new Date(String(body.occurredAt)) : new Date(), createdBy: c.get('userId') }).returning();
+  if (!activity) return c.json({ error: 'Unable to create activity.' }, 500);
+  await withAudit(db, schema.auditLog, { actorUserId: c.get('userId'), action: 'create', resourceType: 'company_person_activity', resourceId: activity.id, after: activity, app: 'crm' });
+  return c.json({ activity }, 201);
 });
 
 app.get('/api/companies/:id/people', async (c) => {
@@ -4299,7 +4314,7 @@ app.patch('/api/company-people/:id', async (c) => {
     .where(and(eq(schema.companyPeople.id, id), isNull(schema.companyPeople.deletedAt))).limit(1);
   if (!existing) return c.json({ error: 'Company person not found.' }, 404);
   const update: Record<string, unknown> = { updatedAt: new Date() };
-  for (const field of ['firstName', 'lastName', 'displayName', 'headline', 'location', 'about', 'email', 'currentTitle'] as const) {
+  for (const field of ['firstName', 'lastName', 'displayName', 'headline', 'location', 'about', 'email', 'phone', 'currentTitle', 'notes', 'source', 'status', 'outreachStatus', 'journeyStage'] as const) {
     if (body[field] !== undefined) update[field] = body[field] === null ? null : String(body[field]);
   }
   if (body.linkedinUrl !== undefined) {

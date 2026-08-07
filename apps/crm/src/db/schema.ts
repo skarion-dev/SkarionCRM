@@ -294,6 +294,22 @@ export const companyPersonCaptures = crmSchema.table(
   ]
 );
 
+export const companyPersonActivities = crmSchema.table(
+  'company_person_activities',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    personId: uuid('person_id').notNull().references(() => companyPeople.id, { onDelete: 'cascade' }),
+    workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id),
+    type: text('type').notNull(),
+    subject: text('subject'),
+    notes: text('notes'),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).defaultNow().notNull(),
+    createdBy: uuid('created_by').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index('idx_company_person_activities_person').on(table.personId, table.occurredAt)]
+);
+
 export const companyPersonCategories = crmSchema.table(
   'company_person_categories',
   {
