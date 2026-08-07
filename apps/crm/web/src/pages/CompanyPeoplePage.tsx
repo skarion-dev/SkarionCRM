@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { BriefcaseBusiness, Building2, ExternalLink, Search, UsersRound } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useCompanyPeople, useUpdateCompanyPerson } from '../hooks/use-api.js';
 import type { CompanyPersonCategory } from '../api.js';
 
@@ -12,6 +12,7 @@ const PAGE_CONFIG: Record<CompanyPersonCategory, { title: string; description: s
 
 export default function CompanyPeoplePage({ category }: { category: CompanyPersonCategory }) {
   const [search, setSearch] = useState('');
+  const navigate = useNavigate();
   const config = PAGE_CONFIG[category];
   const { data, isLoading } = useCompanyPeople(category, search);
   const updatePerson = useUpdateCompanyPerson();
