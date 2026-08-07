@@ -29,8 +29,10 @@ CREATE TABLE IF NOT EXISTS crm.company_person_captures (
   payload_hash text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS idx_company_person_captures_person
   ON crm.company_person_captures (person_id, created_at);
+--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS idx_company_person_captures_workspace
   ON crm.company_person_captures (workspace_id, created_at);
 --> statement-breakpoint
