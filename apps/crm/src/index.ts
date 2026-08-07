@@ -1444,6 +1444,9 @@ app.use('*', async (c, next) => {
 
 app.get('/health', (c) => c.json({ status: 'ok', service: 'skarion-crm-platform' }));
 
+// Keep the extension compatibility path in the deploy diff so production
+// rollouts cannot silently remain on a pre-compatibility worker revision.
+
 app.get('/api/debug/version', (c) => {
   const branch = c.env.GIT_BRANCH ?? 'cloudflare-platform-rewrite';
   const commit = c.env.GIT_COMMIT_SHA ?? 'unknown';
