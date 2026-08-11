@@ -136,6 +136,23 @@ export function useCreateActivity() {
   });
 }
 
+export function useUpdateActivity() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      id,
+      ...data
+    }: Pick<Activity, 'id' | 'type' | 'subject' | 'content' | 'happenedAt'>) =>
+      crmFetch<{ activity: Activity }>(`/api/activities/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['activities'] });
+    },
+  });
+}
+
 export function useCompanies() {
   return useCrmQuery(['companies'], () => crmFetch<{ companies: Company[] }>('/api/companies'));
 }
@@ -155,26 +172,48 @@ export function useCompanyPeopleByCompany(companyId: string) {
 }
 
 export function useCompanyPerson(id: string, enabled = true) {
-  return useCrmQuery(['company-person', id], () => crmFetch<{ person: CompanyPerson; employments: Record<string, unknown>[]; captures: CompanyPersonCapture[]; activities: CompanyPersonActivity[] }>(`/api/company-people/${id}`), enabled);
+  return useCrmQuery(
+    ['company-person', id],
+    () =>
+      crmFetch<{
+        person: CompanyPerson;
+        employments: Record<string, unknown>[];
+        captures: CompanyPersonCapture[];
+        activities: CompanyPersonActivity[];
+      }>(`/api/company-people/${id}`),
+    enabled
+  );
 }
 
 export function useCreateCompanyPersonActivity() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: { id: string; type: string; subject?: string; notes?: string }) => crmFetch(`/api/company-people/${input.id}/activities`, { method: 'POST', body: JSON.stringify(input) }),
+    mutationFn: (input: { id: string; type: string; subject?: string; notes?: string }) =>
+      crmFetch(`/api/company-people/${input.id}/activities`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
     onSuccess: (_data, input) => qc.invalidateQueries({ queryKey: ['company-person', input.id] }),
   });
 }
 
 export function useResearchCompany() {
   const qc = useQueryClient();
-  return useMutation({ mutationFn: (id: string) => crmFetch(`/api/companies/${id}/research`, { method: 'POST' }), onSuccess: (_data, id) => qc.invalidateQueries({ queryKey: ['companies', id] }) });
+  return useMutation({
+    mutationFn: (id: string) => crmFetch(`/api/companies/${id}/research`, { method: 'POST' }),
+    onSuccess: (_data, id) => qc.invalidateQueries({ queryKey: ['companies', id] }),
+  });
 }
 
 export function useUpdateCompanyPerson() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { id: string; category?: CompanyPersonCategory; currentCompanyId?: string | null; linkedinUrl?: string | null }) =>
+    mutationFn: async (input: {
+      id: string;
+      category?: CompanyPersonCategory;
+      currentCompanyId?: string | null;
+      linkedinUrl?: string | null;
+    }) =>
       crmFetch<{ person: CompanyPerson }>(`/api/company-people/${input.id}`, {
         method: 'PATCH',
         body: JSON.stringify(input),

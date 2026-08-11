@@ -125,6 +125,10 @@ export function buildLeadConditions(params: LeadFilterParams): SQL[] {
     const searchLower = params.search.toLowerCase();
     const searchCondition = or(
       like(sql`lower(${schema.leads.email})`, `%${searchLower}%`),
+      like(
+        sql`lower(concat_ws(' ', ${schema.leads.firstName}, ${schema.leads.lastName}))`,
+        `%${searchLower}%`
+      ),
       like(sql`lower(${schema.leads.firstName})`, `%${searchLower}%`),
       like(sql`lower(${schema.leads.lastName})`, `%${searchLower}%`),
       like(sql`lower(${schema.leads.companyName})`, `%${searchLower}%`),
