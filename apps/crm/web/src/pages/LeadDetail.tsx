@@ -90,7 +90,7 @@ const STATUS_PIPELINE: {
 function StatusPipeline({ status }: { status: string }) {
   const currentIndex = STATUS_PIPELINE.findIndex((s) => s.key === status);
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex w-max items-center gap-1 pr-2">
       {STATUS_PIPELINE.map((s, i) => {
         const Icon = s.icon;
         const isActive = i === currentIndex;
@@ -338,13 +338,16 @@ export default function LeadDetail() {
       {/* Header Card */}
       <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
         {/* Top bar with status pipeline */}
-        <div className="px-6 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-          <StatusPipeline status={lead.journeyStage} />
-          <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-50 px-3 py-3 sm:px-6">
+          <div className="min-w-0 flex-1 overflow-x-auto">
+            <StatusPipeline status={lead.journeyStage} />
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
             <button
               onClick={() => setEditOpen(true)}
               className="p-1.5 rounded hover:bg-slate-200 text-slate-500"
               title="Edit lead"
+              aria-label="Edit lead"
             >
               <Pencil size={16} />
             </button>
