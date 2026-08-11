@@ -183,7 +183,7 @@ jobs:
         env:
           VITE_API_URL: ${{ vars.VITE_CRM_API_URL || vars.VITE_API_URL || 'https://skarion-crm-platform.skarion-talentos.workers.dev' }}
           VITE_IDENTITY_API_URL: ${{ vars.VITE_IDENTITY_API_URL || 'https://skarion-identity.skarion-talentos.workers.dev' }}
-          VITE_IDENTITY_LOGIN_URL: ${{ vars.VITE_IDENTITY_LOGIN_URL || 'https://crm-login.skarion.com' }}
+          VITE_IDENTITY_LOGIN_URL: https://skarion-identity-login-4hu.pages.dev
           VITE_CRM_URL: https://crm.skarion.com
       - name: Deploy to Cloudflare Pages
         working-directory: apps/crm/web
