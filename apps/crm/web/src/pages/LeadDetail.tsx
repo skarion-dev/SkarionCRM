@@ -8,6 +8,7 @@ import {
   useUpdateLeadConnectionNote,
   useLogOutreachAction,
   useDraftCandidateOutreach,
+  useTags,
 } from '../hooks/use-api.js';
 import { showToast } from '../stores/toast.js';
 import {
@@ -140,7 +141,10 @@ export default function LeadDetail() {
   const draftCandidateOutreach = useDraftCandidateOutreach(id ?? '');
   const deleteMutation = useDeleteEntity();
   const updateLead = useUpdateEntity('leads');
+  const { data: tagData } = useTags();
   const [editOpen, setEditOpen] = useState(false);
+  const [editingTags, setEditingTags] = useState(false);
+  const [tagDraft, setTagDraft] = useState('');
   const [activityType, setActivityType] = useState<ActivityType | null>(null);
   const [statusDropdownOpen, setStatusDropdownOpen] = useState(false);
   const [connectionNoteDraft, setConnectionNoteDraft] = useState('');
@@ -151,6 +155,32 @@ export default function LeadDetail() {
   const [draftingChannel, setDraftingChannel] = useState<'inmail' | 'email' | null>(null);
   const [outreachDraftCopied, setOutreachDraftCopied] = useState(false);
   const aiAssessment = aiAssessmentData?.assessment ?? generateAiAssessment.data?.assessment;
+  const startEditingTags = () => {
+    setTagDraft((lead?.tags ?? []).join(', '));
+    setEditingTags(true);
+  };
+  const saveTags = () => {
+    if (!lead) return;
+    const tags = Array.from(
+      new Set(
+        tagDraft
+          .split(',')
+          .map((tag) => tag.trim())
+          .filter(Boolean)
+      )
+    );
+    updateLead.mutate(
+      { id: lead.id, data: { tags } },
+      {
+        onSuccess: () => {
+          setEditingTags(false);
+          showToast('Tags updated', 'success');
+        },
+        onError: (error) =>
+          showToast(error instanceof Error ? error.message : 'Unable to update tags', 'error'),
+      }
+    );
+  };
   const returnToLeads = () => {
     navigate('/leads');
   };
@@ -1039,23 +1069,70 @@ export default function LeadDetail() {
           )}
 
           {/* Tags (inline above notes) */}
-          {lead.tags && lead.tags.length > 0 && (
-            <div className="mt-6 pt-6 border-t border-slate-100">
-              <h3 className="font-medium text-sm mb-2 flex items-center gap-2 text-slate-700">
+          <div className="mt-6 border-t border-slate-100 pt-6">
+            <div className="mb-2 flex items-center justify-between">
+              <h3 className="flex items-center gap-2 text-sm font-medium text-slate-700">
                 <Tag size={16} /> Tags
               </h3>
+              {!editingTags && (
+                <button
+                  type="button"
+                  onClick={startEditingTags}
+                  className="flex items-center gap-1 rounded px-2 py-1 text-xs text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                >
+                  <Pencil size={12} /> Edit
+                </button>
+              )}
+            </div>
+            {editingTags ? (
+              <div className="space-y-2">
+                <input
+                  autoFocus
+                  value={tagDraft}
+                  onChange={(event) => setTagDraft(event.target.value)}
+                  list="lead-tag-options"
+                  placeholder="Add tags separated by commas"
+                  className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm"
+                />
+                <datalist id="lead-tag-options">
+                  {tagData?.tags.map((tag) => (
+                    <option key={tag.id} value={tag.name} />
+                  ))}
+                </datalist>
+                <p className="text-xs text-slate-400">Separate multiple tags with commas.</p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={saveTags}
+                    disabled={updateLead.isPending}
+                    className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white disabled:opacity-50"
+                  >
+                    {updateLead.isPending ? 'Saving…' : 'Save tags'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditingTags(false)}
+                    className="rounded border border-slate-200 px-3 py-1.5 text-xs"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : lead.tags && lead.tags.length > 0 ? (
               <div className="flex flex-wrap gap-1.5">
-                {lead.tags.map((tag, i) => (
+                {lead.tags.map((tag) => (
                   <span
-                    key={i}
-                    className="px-2.5 py-1 bg-slate-100 text-slate-600 rounded-full text-xs font-medium"
+                    key={tag}
+                    className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600"
                   >
                     {tag}
                   </span>
                 ))}
               </div>
-            </div>
-          )}
+            ) : (
+              <p className="text-sm text-slate-400">No tags added.</p>
+            )}
+          </div>
 
           {/* Notes */}
           {lead.notes && (

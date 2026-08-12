@@ -2,8 +2,8 @@ import { useState, type FormEvent } from 'react';
 import { useActivities, useUpdateActivity } from '../hooks/use-api.js';
 import { Phone, Mail, Users, FileText, MessageSquare, Pencil, Plus } from 'lucide-react';
 import { cn } from '../lib/utils.js';
-import { useAuthStore } from '../stores/auth.js';
 import type { Activity } from '../api.js';
+import { formatDistanceToNowStrict } from 'date-fns';
 
 const typeIcons = {
   call: Phone,
@@ -39,7 +39,6 @@ export default function ActivityTimeline({
 }: ActivityTimelineProps) {
   const { data, isLoading } = useActivities(filters);
   const updateActivity = useUpdateActivity();
-  const currentUser = useAuthStore((state) => state.user);
   const [editing, setEditing] = useState<Activity | null>(null);
   const activities = data?.activities ?? [];
 
@@ -91,7 +90,6 @@ export default function ActivityTimeline({
           {activities.map((a) => {
             const Icon = typeIcons[a.type] ?? MessageSquare;
             const color = typeColors[a.type] ?? typeColors.note;
-            const canEdit = currentUser?.isSuperadmin || a.actorId === currentUser?.id;
             if (editing?.id === a.id) {
               return (
                 <form
@@ -169,19 +167,17 @@ export default function ActivityTimeline({
                     <div className="text-sm font-medium">{a.subject}</div>
                     <div className="flex shrink-0 items-center gap-2">
                       <div className="text-xs text-slate-400">
-                        {new Date(a.happenedAt).toLocaleDateString()}
+                        {formatDistanceToNowStrict(new Date(a.happenedAt), { addSuffix: true })}
                       </div>
-                      {canEdit && (
-                        <button
-                          type="button"
-                          onClick={() => setEditing(a)}
-                          className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-                          aria-label={`Edit ${a.subject}`}
-                          title="Edit activity"
-                        >
-                          <Pencil size={13} />
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() => setEditing(a)}
+                        className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                        aria-label={`Edit ${a.subject}`}
+                        title="Edit activity"
+                      >
+                        <Pencil size={13} />
+                      </button>
                     </div>
                   </div>
                   {a.content && <p className="text-sm text-slate-600 mt-0.5">{a.content}</p>}

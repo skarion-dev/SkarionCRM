@@ -4146,21 +4146,19 @@ async function syncTalentOsCompanies(db: CrmDb, env: Env, ownerId: string): Prom
         })
         .where(eq(schema.companies.id, existing.id));
     } else {
-      await db
-        .insert(schema.companies)
-        .values({
-          name,
-          normalizedName: key,
-          talentsOsId: talentosId,
-          website: company.website ?? null,
-          linkedinUrl: company.linkedin_url ?? null,
-          industry: company.industry ?? null,
-          size: company.employees_count == null ? null : String(company.employees_count),
-          address: company.address ?? null,
-          ownerId,
-          lastTalentOsSyncAt: new Date(),
-          researchStatus: 'not_started',
-        });
+      await db.insert(schema.companies).values({
+        name,
+        normalizedName: key,
+        talentsOsId: talentosId,
+        website: company.website ?? null,
+        linkedinUrl: company.linkedin_url ?? null,
+        industry: company.industry ?? null,
+        size: company.employees_count == null ? null : String(company.employees_count),
+        address: company.address ?? null,
+        ownerId,
+        lastTalentOsSyncAt: new Date(),
+        researchStatus: 'not_started',
+      });
     }
   }
   return companies.length;
@@ -4581,14 +4579,12 @@ app.patch('/api/company-people/:id', async (c) => {
     await db
       .delete(schema.companyPersonCategories)
       .where(eq(schema.companyPersonCategories.personId, id));
-    await db
-      .insert(schema.companyPersonCategories)
-      .values({
-        personId: id,
-        category: String(body.category) as CompanyPersonType,
-        isPrimary: true,
-        updatedAt: new Date(),
-      });
+    await db.insert(schema.companyPersonCategories).values({
+      personId: id,
+      category: String(body.category) as CompanyPersonType,
+      isPrimary: true,
+      updatedAt: new Date(),
+    });
   }
   return c.json({ person });
 });
@@ -4818,30 +4814,26 @@ app.post('/extension/company-people/capture', async (c) => {
       )
       .limit(1);
     if (!employment)
-      await db
-        .insert(schema.companyPersonEmployments)
-        .values({
-          personId: person.id,
-          companyId,
-          companyNameSnapshot: companyName,
-          title: typeof profile.headline === 'string' ? profile.headline : null,
-          isCurrent: true,
-          source: 'linkedin_extension',
-          rawEvidence: profile,
-        });
+      await db.insert(schema.companyPersonEmployments).values({
+        personId: person.id,
+        companyId,
+        companyNameSnapshot: companyName,
+        title: typeof profile.headline === 'string' ? profile.headline : null,
+        isCurrent: true,
+        source: 'linkedin_extension',
+        rawEvidence: profile,
+      });
   }
-  await db
-    .insert(schema.companyPersonCaptures)
-    .values({
-      workspaceId: DEFAULT_WORKSPACE_ID,
-      personId: person.id,
-      capturedBy: resolved.userId,
-      capturedByApiKeyId: resolved.keyId,
-      capturedByApiKeyLabel: resolved.label,
-      payload: profile,
-      payloadHash: await sha256Hex(JSON.stringify(profile)),
-      createdAt: now,
-    });
+  await db.insert(schema.companyPersonCaptures).values({
+    workspaceId: DEFAULT_WORKSPACE_ID,
+    personId: person.id,
+    capturedBy: resolved.userId,
+    capturedByApiKeyId: resolved.keyId,
+    capturedByApiKeyLabel: resolved.label,
+    payload: profile,
+    payloadHash: await sha256Hex(JSON.stringify(profile)),
+    createdAt: now,
+  });
   await withAudit(db, schema.auditLog, {
     actorUserId: resolved.userId,
     action: 'capture_company_person',
@@ -8169,14 +8161,13 @@ app.get('/api/activities/:id', async (c) => {
 app.put('/api/activities/:id', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const id = c.req.param('id');
-  const isSuperadmin = c.get('isSuperadmin');
+  const role = getRole(c);
   const caller = { userId: c.get('userId') };
+
+  if (!role) return c.json({ error: 'Forbidden.' }, 403);
 
   const [existing] = await db.select().from(schema.activities).where(eq(schema.activities.id, id));
   if (!existing) return c.json({ error: 'Not found.' }, 404);
-  if (!isSuperadmin && existing.actorId !== caller.userId) {
-    return c.json({ error: 'Forbidden.' }, 403);
-  }
 
   const body = await c.req.json();
   const update: Record<string, unknown> = {};
