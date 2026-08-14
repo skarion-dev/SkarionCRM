@@ -1696,9 +1696,10 @@ app.post('/extension/leads/check', async (c) => {
   const body = await c.req.json();
   // Compatibility shim for older extension builds that sent the captured
   // profile under `profile` instead of flattening first/last name and URL.
-  const legacyProfile = body.profile && typeof body.profile === 'object'
-    ? (body.profile as Record<string, unknown>)
-    : null;
+  const legacyProfile =
+    body.profile && typeof body.profile === 'object'
+      ? (body.profile as Record<string, unknown>)
+      : null;
   if (legacyProfile) {
     const legacyName =
       profileString(legacyProfile, 'name') ??
@@ -1707,8 +1708,13 @@ app.post('/extension/leads/check', async (c) => {
     const parts = legacyName?.split(/\s+/).filter(Boolean) ?? [];
     if (!body.firstName && parts.length > 0) body.firstName = parts.shift();
     if (!body.lastName && parts.length > 0) body.lastName = parts.join(' ');
-    if (!body.linkedinUrl) body.linkedinUrl = profileString(legacyProfile, 'profileUrl') ?? profileString(legacyProfile, 'linkedinUrl');
-    if (!body.companyName) body.companyName = profileString(legacyProfile, 'companyName') ?? profileString(legacyProfile, 'currentCompany');
+    if (!body.linkedinUrl)
+      body.linkedinUrl =
+        profileString(legacyProfile, 'profileUrl') ?? profileString(legacyProfile, 'linkedinUrl');
+    if (!body.companyName)
+      body.companyName =
+        profileString(legacyProfile, 'companyName') ??
+        profileString(legacyProfile, 'currentCompany');
     if (!body.notes) body.notes = profileString(legacyProfile, 'about');
   }
   const linkedinUrl = canonicalizeLinkedinUrl(body.linkedinUrl);
@@ -1836,16 +1842,25 @@ app.post('/extension/leads', async (c) => {
   const ownerId = resolved.userId;
 
   const body = await c.req.json();
-  const legacyProfile = body.profile && typeof body.profile === 'object'
-    ? (body.profile as Record<string, unknown>)
-    : null;
+  const legacyProfile =
+    body.profile && typeof body.profile === 'object'
+      ? (body.profile as Record<string, unknown>)
+      : null;
   if (legacyProfile) {
-    const legacyName = profileString(legacyProfile, 'name') ?? profileString(legacyProfile, 'fullName') ?? profileString(legacyProfile, 'displayName');
+    const legacyName =
+      profileString(legacyProfile, 'name') ??
+      profileString(legacyProfile, 'fullName') ??
+      profileString(legacyProfile, 'displayName');
     const parts = legacyName?.split(/\s+/).filter(Boolean) ?? [];
     if (!body.firstName && parts.length > 0) body.firstName = parts.shift();
     if (!body.lastName && parts.length > 0) body.lastName = parts.join(' ');
-    if (!body.linkedinUrl) body.linkedinUrl = profileString(legacyProfile, 'profileUrl') ?? profileString(legacyProfile, 'linkedinUrl');
-    if (!body.companyName) body.companyName = profileString(legacyProfile, 'companyName') ?? profileString(legacyProfile, 'currentCompany');
+    if (!body.linkedinUrl)
+      body.linkedinUrl =
+        profileString(legacyProfile, 'profileUrl') ?? profileString(legacyProfile, 'linkedinUrl');
+    if (!body.companyName)
+      body.companyName =
+        profileString(legacyProfile, 'companyName') ??
+        profileString(legacyProfile, 'currentCompany');
     if (!body.notes) body.notes = profileString(legacyProfile, 'about');
   }
   const displayName = `${body.firstName ?? ''} ${body.lastName ?? ''}`.trim();
@@ -2191,8 +2206,8 @@ app.post('/extension/prospects/review', async (c) => {
   }
   const linkedinUrl = canonicalizeLinkedinUrl(
     profileString(profile ?? {}, 'profileUrl') ??
-    profileString(profile ?? {}, 'linkedinUrl') ??
-    body.linkedinUrl
+      profileString(profile ?? {}, 'linkedinUrl') ??
+      body.linkedinUrl
   );
   const profileKey = linkedinProfileKey(linkedinUrl);
   if (!linkedinUrl || !profileKey) {
@@ -2914,13 +2929,18 @@ async function getConfiguredAiEnv(db: CrmDb, env: Env, actorUserId?: string | nu
     AI_MODEL_CHEAP: settings.tierModels.cheap,
     AI_MODEL_FALLBACK: settings.tierModels.cheap,
     AI_EMBEDDING_MODEL: settings.tierModels.embedding,
+    // The extension and TalentOS email-contact path share these agents. Keep
+    // both on the explicitly approved low-cost model instead of inheriting a
+    // mutable tier alias that can silently point at a different model.
     AI_AGENT_MODELS: JSON.stringify(
       Object.fromEntries(
         AI_AGENTS.map((agent) => [
           agent.id,
-          (settings.agentModels[agent.id] ?? agent.tier === 'embedding')
-            ? settings.tierModels.embedding
-            : settings.tierModels[agent.tier],
+          agent.id === 'lead-scorer' || agent.id === 'linkedin-connection-writer'
+            ? 'gemini-2.5-flash-lite'
+            : (settings.agentModels[agent.id] ?? agent.tier === 'embedding')
+              ? settings.tierModels.embedding
+              : settings.tierModels[agent.tier],
         ])
       )
     ),
@@ -4067,20 +4087,37 @@ async function findOrCreateDirectoryCompany(
   return created?.id ?? null;
 }
 
-type TalentOsCompany = { id?: string; name?: string; website?: string; linkedin_url?: string; description?: string; industry?: string; employees_count?: number; address?: unknown; last_seen_at?: string; [key: string]: unknown };
+type TalentOsCompany = {
+  id?: string;
+  name?: string;
+  website?: string;
+  linkedin_url?: string;
+  description?: string;
+  industry?: string;
+  employees_count?: number;
+  address?: unknown;
+  last_seen_at?: string;
+  [key: string]: unknown;
+};
 
 async function fetchTalentOsCompanies(env: Env): Promise<TalentOsCompany[]> {
-  const base = (env.TALENTOS_API_URL || 'https://skarion-talent-os.skarion-talentos.workers.dev').replace(/\/+$/, '');
+  const base = (
+    env.TALENTOS_API_URL || 'https://skarion-talent-os.skarion-talentos.workers.dev'
+  ).replace(/\/+$/, '');
   const headers: Record<string, string> = { accept: 'application/json' };
   if (env.CRM_INTEGRATION_SECRET) headers.authorization = `Bearer ${env.CRM_INTEGRATION_SECRET}`;
   const companies: TalentOsCompany[] = [];
   for (let page = 1; page <= 100; page += 1) {
-    const response = await fetch(`${base}/api/integrations/crm/companies?page=${page}&pageSize=100`, { headers, signal: AbortSignal.timeout(8_000) });
+    const response = await fetch(
+      `${base}/api/integrations/crm/companies?page=${page}&pageSize=100`,
+      { headers, signal: AbortSignal.timeout(8_000) }
+    );
     if (!response.ok) throw new Error(`TalentOS companies feed returned ${response.status}`);
     const payload = (await response.json()) as { data?: TalentOsCompany[]; total?: number };
     const pageData = Array.isArray(payload.data) ? payload.data : [];
     companies.push(...pageData);
-    if (companies.length >= Number(payload.total || pageData.length) || pageData.length < 100) break;
+    if (companies.length >= Number(payload.total || pageData.length) || pageData.length < 100)
+      break;
   }
   return companies;
 }
@@ -4093,11 +4130,42 @@ async function syncTalentOsCompanies(db: CrmDb, env: Env, ownerId: string): Prom
     const key = normalizeCompanyDirectoryName(name);
     if (!key) continue;
     const talentosId = String(company.id || `name:${key}`);
-    const [existing] = await db.select({ id: schema.companies.id }).from(schema.companies).where(and(eq(schema.companies.talentsOsId, talentosId), isNull(schema.companies.deletedAt))).limit(1);
+    const [existing] = await db
+      .select({ id: schema.companies.id })
+      .from(schema.companies)
+      .where(and(eq(schema.companies.talentsOsId, talentosId), isNull(schema.companies.deletedAt)))
+      .limit(1);
     if (existing) {
-      await db.update(schema.companies).set({ name, normalizedName: key, website: company.website ?? null, linkedinUrl: company.linkedin_url ?? null, industry: company.industry ?? null, size: company.employees_count == null ? null : String(company.employees_count), address: company.address ?? null, lastTalentOsSyncAt: new Date(), updatedAt: new Date() }).where(eq(schema.companies.id, existing.id));
+      await db
+        .update(schema.companies)
+        .set({
+          name,
+          normalizedName: key,
+          website: company.website ?? null,
+          linkedinUrl: company.linkedin_url ?? null,
+          industry: company.industry ?? null,
+          size: company.employees_count == null ? null : String(company.employees_count),
+          address: company.address ?? null,
+          lastTalentOsSyncAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.companies.id, existing.id));
     } else {
-      await db.insert(schema.companies).values({ name, normalizedName: key, talentsOsId: talentosId, website: company.website ?? null, linkedinUrl: company.linkedin_url ?? null, industry: company.industry ?? null, size: company.employees_count == null ? null : String(company.employees_count), address: company.address ?? null, ownerId, lastTalentOsSyncAt: new Date(), researchStatus: 'not_started' });
+      await db
+        .insert(schema.companies)
+        .values({
+          name,
+          normalizedName: key,
+          talentsOsId: talentosId,
+          website: company.website ?? null,
+          linkedinUrl: company.linkedin_url ?? null,
+          industry: company.industry ?? null,
+          size: company.employees_count == null ? null : String(company.employees_count),
+          address: company.address ?? null,
+          ownerId,
+          lastTalentOsSyncAt: new Date(),
+          researchStatus: 'not_started',
+        });
     }
   }
   return companies.length;
@@ -4139,7 +4207,10 @@ app.post('/internal/talentos/companies/research/enqueue', async (c) => {
         WHERE job.company_id = company.id AND job.status IN ('queued', 'researching')
       )
   `);
-  return c.json({ ok: true, queued: Number((result as unknown as { rowCount?: number }).rowCount ?? 0) });
+  return c.json({
+    ok: true,
+    queued: Number((result as unknown as { rowCount?: number }).rowCount ?? 0),
+  });
 });
 
 app.post('/internal/company-research/drain', async (c) => {
@@ -4148,35 +4219,91 @@ app.post('/internal/company-research/drain', async (c) => {
     return c.json({ error: 'Unauthorized.' }, 401);
   }
   const db = getDb(c.env, schema) as CrmDb;
-  const [job] = await db.select().from(schema.companyResearchJobs)
+  const [job] = await db
+    .select()
+    .from(schema.companyResearchJobs)
     .where(eq(schema.companyResearchJobs.status, 'queued'))
     .orderBy(asc(schema.companyResearchJobs.createdAt))
     .limit(1);
   if (!job) return c.json({ ok: true, processed: 0, remaining: 0 });
-  const [claimed] = await db.update(schema.companyResearchJobs)
+  const [claimed] = await db
+    .update(schema.companyResearchJobs)
     .set({ status: 'researching', startedAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(schema.companyResearchJobs.id, job.id), eq(schema.companyResearchJobs.status, 'queued')))
+    .where(
+      and(
+        eq(schema.companyResearchJobs.id, job.id),
+        eq(schema.companyResearchJobs.status, 'queued')
+      )
+    )
     .returning();
   if (!claimed) return c.json({ ok: true, processed: 0, claimed: false });
-  const [company] = await db.select().from(schema.companies)
-    .where(and(eq(schema.companies.id, job.companyId), isNull(schema.companies.deletedAt))).limit(1);
+  const [company] = await db
+    .select()
+    .from(schema.companies)
+    .where(and(eq(schema.companies.id, job.companyId), isNull(schema.companies.deletedAt)))
+    .limit(1);
   if (!company) {
-    await db.update(schema.companyResearchJobs).set({ status: 'failed', completedAt: new Date(), error: 'Company not found.', updatedAt: new Date() }).where(eq(schema.companyResearchJobs.id, job.id));
+    await db
+      .update(schema.companyResearchJobs)
+      .set({
+        status: 'failed',
+        completedAt: new Date(),
+        error: 'Company not found.',
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.companyResearchJobs.id, job.id));
     return c.json({ ok: false, processed: 1, status: 'failed', jobId: job.id });
   }
   try {
     await runCompanyResearch(db, c.env, job.id, company);
-    return c.json({ ok: true, processed: 1, status: 'completed', jobId: job.id, companyId: company.id, companyName: company.name });
+    return c.json({
+      ok: true,
+      processed: 1,
+      status: 'completed',
+      jobId: job.id,
+      companyId: company.id,
+      companyName: company.name,
+    });
   } catch (error) {
-    await db.update(schema.companyResearchJobs).set({ status: 'failed', completedAt: new Date(), error: error instanceof Error ? error.message : 'Research failed', updatedAt: new Date() }).where(eq(schema.companyResearchJobs.id, job.id));
-    await db.update(schema.companies).set({ researchStatus: 'failed', updatedAt: new Date() }).where(eq(schema.companies.id, company.id));
-    return c.json({ ok: false, processed: 1, status: 'failed', jobId: job.id, companyId: company.id, companyName: company.name }, 502);
+    await db
+      .update(schema.companyResearchJobs)
+      .set({
+        status: 'failed',
+        completedAt: new Date(),
+        error: error instanceof Error ? error.message : 'Research failed',
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.companyResearchJobs.id, job.id));
+    await db
+      .update(schema.companies)
+      .set({ researchStatus: 'failed', updatedAt: new Date() })
+      .where(eq(schema.companies.id, company.id));
+    return c.json(
+      {
+        ok: false,
+        processed: 1,
+        status: 'failed',
+        jobId: job.id,
+        companyId: company.id,
+        companyName: company.name,
+      },
+      502
+    );
   }
 });
 
-async function runCompanyResearch(db: CrmDb, env: Env, jobId: string, company: typeof schema.companies.$inferSelect) {
+async function runCompanyResearch(
+  db: CrmDb,
+  env: Env,
+  jobId: string,
+  company: typeof schema.companies.$inferSelect
+) {
   const urls = new Set<string>();
-  const domain = (String(company.domain || company.website || '').replace(/^https?:\/\//i, '').split('/')[0] || '').trim();
+  const domain = (
+    String(company.domain || company.website || '')
+      .replace(/^https?:\/\//i, '')
+      .split('/')[0] || ''
+  ).trim();
   if (!domain) {
     const slug = normalizeCompanyDirectoryName(company.name).replace(/\s+/g, '');
     if (slug) {
@@ -4184,28 +4311,82 @@ async function runCompanyResearch(db: CrmDb, env: Env, jobId: string, company: t
     }
   }
   if (domain) {
-    for (const path of ['', '/about', '/company', '/careers', '/news', '/robots.txt', '/sitemap.xml']) urls.add(`https://${domain}${path}`);
+    for (const path of [
+      '',
+      '/about',
+      '/company',
+      '/careers',
+      '/news',
+      '/robots.txt',
+      '/sitemap.xml',
+    ])
+      urls.add(`https://${domain}${path}`);
   }
   if (company.linkedinUrl) urls.add(company.linkedinUrl);
   const sources: Array<{ url: string; text: string }> = [];
   for (const url of [...urls].slice(0, 8)) {
     try {
-      const response = await fetch(url, { headers: { accept: 'text/html,text/plain' }, signal: AbortSignal.timeout(5_000) });
+      const response = await fetch(url, {
+        headers: { accept: 'text/html,text/plain' },
+        signal: AbortSignal.timeout(5_000),
+      });
       if (!response.ok) continue;
-      const text = (await response.text()).replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 12_000);
+      const text = (await response.text())
+        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 12_000);
       if (text) sources.push({ url, text });
-    } catch { /* public sites may block individual paths; continue with evidence we can access */ }
+    } catch {
+      /* public sites may block individual paths; continue with evidence we can access */
+    }
   }
-  const evidence = sources.map((source) => `SOURCE: ${source.url}\n${source.text}`).join('\n\n').slice(0, 55_000);
+  const evidence = sources
+    .map((source) => `SOURCE: ${source.url}\n${source.text}`)
+    .join('\n\n')
+    .slice(0, 55_000);
   const summary = await ai.chatCompletion(
-    [{ role: 'user', text: `Research this company using only the supplied public evidence. Return strict JSON with keys summary, industry, size, website, headquarters, products, hiringSignals, confidence, unknowns, sources. Never invent facts; put missing facts in unknowns.\n\nCompany: ${company.name}\n${evidence || 'No public pages were reachable.'}` }],
+    [
+      {
+        role: 'user',
+        text: `Research this company using only the supplied public evidence. Return strict JSON with keys summary, industry, size, website, headquarters, products, hiringSignals, confidence, unknowns, sources. Never invent facts; put missing facts in unknowns.\n\nCompany: ${company.name}\n${evidence || 'No public pages were reachable.'}`,
+      },
+    ],
     env,
-    { agent: 'company-researcher', tier: 'cheap', temperature: 0.1, systemInstruction: 'You are an evidence-first company research agent. Every factual claim must be traceable to a supplied URL.' }
+    {
+      agent: 'company-researcher',
+      tier: 'cheap',
+      temperature: 0.1,
+      systemInstruction:
+        'You are an evidence-first company research agent. Every factual claim must be traceable to a supplied URL.',
+    }
   );
-  let result: Record<string, unknown> = { summary: summary || 'No AI result', sources: sources.map((item) => item.url), fetchedAt: new Date().toISOString() };
-  try { if (summary) result = { ...result, ...(JSON.parse(summary) as Record<string, unknown>) }; } catch { result.raw = summary; }
-  await db.update(schema.companyResearchJobs).set({ status: 'completed', completedAt: new Date(), result, sourceSnapshot: sources }).where(eq(schema.companyResearchJobs.id, jobId));
-  await db.update(schema.companies).set({ researchStatus: 'completed', researchedAt: new Date(), researchSummary: String(result.summary || ''), researchSources: result.sources ?? sources.map((item) => item.url), updatedAt: new Date() }).where(eq(schema.companies.id, company.id));
+  let result: Record<string, unknown> = {
+    summary: summary || 'No AI result',
+    sources: sources.map((item) => item.url),
+    fetchedAt: new Date().toISOString(),
+  };
+  try {
+    if (summary) result = { ...result, ...(JSON.parse(summary) as Record<string, unknown>) };
+  } catch {
+    result.raw = summary;
+  }
+  await db
+    .update(schema.companyResearchJobs)
+    .set({ status: 'completed', completedAt: new Date(), result, sourceSnapshot: sources })
+    .where(eq(schema.companyResearchJobs.id, jobId));
+  await db
+    .update(schema.companies)
+    .set({
+      researchStatus: 'completed',
+      researchedAt: new Date(),
+      researchSummary: String(result.summary || ''),
+      researchSources: result.sources ?? sources.map((item) => item.url),
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.companies.id, company.id));
 }
 
 app.get('/api/company-people', async (c) => {
@@ -4220,11 +4401,14 @@ app.get('/api/company-people', async (c) => {
     sql`person.deleted_at IS NULL`,
     sql`(${isTeamScope}::boolean OR person.owner_id = ${userId}::uuid)`,
   ];
-  if (isCompanyPersonType(category)) conditions.push(sql`category.category = ${category}::crm.company_person_type`);
+  if (isCompanyPersonType(category))
+    conditions.push(sql`category.category = ${category}::crm.company_person_type`);
   if (companyId) conditions.push(sql`person.current_company_id = ${companyId}::uuid`);
   if (search) {
     const needle = `%${search.toLowerCase()}%`;
-    conditions.push(sql`(lower(person.display_name) LIKE ${needle} OR lower(coalesce(person.headline, '')) LIKE ${needle} OR lower(coalesce(company.name, '')) LIKE ${needle})`);
+    conditions.push(
+      sql`(lower(person.display_name) LIKE ${needle} OR lower(coalesce(person.headline, '')) LIKE ${needle} OR lower(coalesce(company.name, '')) LIKE ${needle})`
+    );
   }
   const result = await db.execute(sql`
     SELECT person.id, person.first_name, person.last_name, person.display_name, person.headline,
@@ -4254,34 +4438,82 @@ app.get('/api/company-people/:id', async (c) => {
   const id = c.req.param('id');
   const userId = c.get('userId');
   const teamScope = Boolean(c.get('isSuperadmin')) || role === 'manager';
-  const [person] = await db.execute(sql`
+  const [person] = await db
+    .execute(
+      sql`
     SELECT person.*, company.name AS current_company_name
     FROM crm.company_people person
     LEFT JOIN crm.companies company ON company.id = person.current_company_id
     WHERE person.id = ${id}::uuid AND person.workspace_id = ${DEFAULT_WORKSPACE_ID}::uuid
       AND person.deleted_at IS NULL AND (${teamScope}::boolean OR person.owner_id = ${userId}::uuid)
     LIMIT 1
-  `).then((r) => ((r as unknown as { rows?: unknown[] }).rows ?? []) as Record<string, unknown>[]);
+  `
+    )
+    .then((r) => ((r as unknown as { rows?: unknown[] }).rows ?? []) as Record<string, unknown>[]);
   if (!person) return c.json({ error: 'Company person not found.' }, 404);
   const [employments, captures, activities] = await Promise.all([
-    db.execute(sql`SELECT employment.*, company.name AS company_name FROM crm.company_person_employments employment LEFT JOIN crm.companies company ON company.id = employment.company_id WHERE employment.person_id = ${id}::uuid ORDER BY employment.is_current DESC, employment.start_date DESC NULLS LAST`),
-    db.execute(sql`SELECT id, captured_by, captured_by_api_key_label, payload_hash, created_at FROM crm.company_person_captures WHERE person_id = ${id}::uuid ORDER BY created_at DESC LIMIT 100`),
-    db.execute(sql`SELECT id, type, subject, notes, occurred_at, created_by, created_at FROM crm.company_person_activities WHERE person_id = ${id}::uuid ORDER BY occurred_at DESC LIMIT 100`),
+    db.execute(
+      sql`SELECT employment.*, company.name AS company_name FROM crm.company_person_employments employment LEFT JOIN crm.companies company ON company.id = employment.company_id WHERE employment.person_id = ${id}::uuid ORDER BY employment.is_current DESC, employment.start_date DESC NULLS LAST`
+    ),
+    db.execute(
+      sql`SELECT id, captured_by, captured_by_api_key_label, payload_hash, created_at FROM crm.company_person_captures WHERE person_id = ${id}::uuid ORDER BY created_at DESC LIMIT 100`
+    ),
+    db.execute(
+      sql`SELECT id, type, subject, notes, occurred_at, created_by, created_at FROM crm.company_person_activities WHERE person_id = ${id}::uuid ORDER BY occurred_at DESC LIMIT 100`
+    ),
   ]);
-  return c.json({ person, employments: (employments as unknown as { rows?: unknown[] }).rows ?? [], captures: (captures as unknown as { rows?: unknown[] }).rows ?? [], activities: (activities as unknown as { rows?: unknown[] }).rows ?? [] });
+  return c.json({
+    person,
+    employments: (employments as unknown as { rows?: unknown[] }).rows ?? [],
+    captures: (captures as unknown as { rows?: unknown[] }).rows ?? [],
+    activities: (activities as unknown as { rows?: unknown[] }).rows ?? [],
+  });
 });
 
 app.post('/api/company-people/:id/activities', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   if (!getRole(c)) return c.json({ error: 'Forbidden.' }, 403);
-  const id = c.req.param('id'); const body = await c.req.json() as Record<string, unknown>;
-  const type = String(body.type ?? 'note').trim().slice(0, 40); const subject = body.subject ? String(body.subject).trim().slice(0, 240) : null; const notes = body.notes ? String(body.notes).trim().slice(0, 10_000) : null;
+  const id = c.req.param('id');
+  const body = (await c.req.json()) as Record<string, unknown>;
+  const type = String(body.type ?? 'note')
+    .trim()
+    .slice(0, 40);
+  const subject = body.subject ? String(body.subject).trim().slice(0, 240) : null;
+  const notes = body.notes ? String(body.notes).trim().slice(0, 10_000) : null;
   if (!notes && !subject) return c.json({ error: 'Add a note or subject.' }, 400);
-  const [person] = await db.select({ id: schema.companyPeople.id }).from(schema.companyPeople).where(and(eq(schema.companyPeople.id, id), eq(schema.companyPeople.workspaceId, DEFAULT_WORKSPACE_ID), isNull(schema.companyPeople.deletedAt))).limit(1);
+  const [person] = await db
+    .select({ id: schema.companyPeople.id })
+    .from(schema.companyPeople)
+    .where(
+      and(
+        eq(schema.companyPeople.id, id),
+        eq(schema.companyPeople.workspaceId, DEFAULT_WORKSPACE_ID),
+        isNull(schema.companyPeople.deletedAt)
+      )
+    )
+    .limit(1);
   if (!person) return c.json({ error: 'Company person not found.' }, 404);
-  const [activity] = await db.insert(schema.companyPersonActivities).values({ personId: id, workspaceId: DEFAULT_WORKSPACE_ID, type, subject, notes, occurredAt: body.occurredAt ? new Date(String(body.occurredAt)) : new Date(), createdBy: c.get('userId') }).returning();
+  const [activity] = await db
+    .insert(schema.companyPersonActivities)
+    .values({
+      personId: id,
+      workspaceId: DEFAULT_WORKSPACE_ID,
+      type,
+      subject,
+      notes,
+      occurredAt: body.occurredAt ? new Date(String(body.occurredAt)) : new Date(),
+      createdBy: c.get('userId'),
+    })
+    .returning();
   if (!activity) return c.json({ error: 'Unable to create activity.' }, 500);
-  await withAudit(db, schema.auditLog, { actorUserId: c.get('userId'), action: 'create', resourceType: 'company_person_activity', resourceId: activity.id, after: activity, app: 'crm' });
+  await withAudit(db, schema.auditLog, {
+    actorUserId: c.get('userId'),
+    action: 'create',
+    resourceType: 'company_person_activity',
+    resourceId: activity.id,
+    after: activity,
+    app: 'crm',
+  });
   return c.json({ activity }, 201);
 });
 
@@ -4309,13 +4541,32 @@ app.patch('/api/company-people/:id', async (c) => {
   const role = getRole(c);
   if (!role) return c.json({ error: 'Forbidden.' }, 403);
   const id = c.req.param('id');
-  const body = await c.req.json() as Record<string, unknown>;
-  const [existing] = await db.select().from(schema.companyPeople)
-    .where(and(eq(schema.companyPeople.id, id), isNull(schema.companyPeople.deletedAt))).limit(1);
+  const body = (await c.req.json()) as Record<string, unknown>;
+  const [existing] = await db
+    .select()
+    .from(schema.companyPeople)
+    .where(and(eq(schema.companyPeople.id, id), isNull(schema.companyPeople.deletedAt)))
+    .limit(1);
   if (!existing) return c.json({ error: 'Company person not found.' }, 404);
   const update: Record<string, unknown> = { updatedAt: new Date() };
-  for (const field of ['firstName', 'lastName', 'displayName', 'headline', 'location', 'about', 'email', 'phone', 'currentTitle', 'notes', 'source', 'status', 'outreachStatus', 'journeyStage'] as const) {
-    if (body[field] !== undefined) update[field] = body[field] === null ? null : String(body[field]);
+  for (const field of [
+    'firstName',
+    'lastName',
+    'displayName',
+    'headline',
+    'location',
+    'about',
+    'email',
+    'phone',
+    'currentTitle',
+    'notes',
+    'source',
+    'status',
+    'outreachStatus',
+    'journeyStage',
+  ] as const) {
+    if (body[field] !== undefined)
+      update[field] = body[field] === null ? null : String(body[field]);
   }
   if (body.linkedinUrl !== undefined) {
     const normalized = body.linkedinUrl ? canonicalizeLinkedinUrl(String(body.linkedinUrl)) : null;
@@ -4323,12 +4574,26 @@ app.patch('/api/company-people/:id', async (c) => {
     update.linkedinProfileKey = normalized ? linkedinProfileKey(normalized) : null;
   }
   if (body.currentCompanyId !== undefined) update.currentCompanyId = body.currentCompanyId || null;
-  const [person] = await db.update(schema.companyPeople).set(update).where(eq(schema.companyPeople.id, id)).returning();
+  const [person] = await db
+    .update(schema.companyPeople)
+    .set(update)
+    .where(eq(schema.companyPeople.id, id))
+    .returning();
   if (!person) return c.json({ error: 'Unable to update company person.' }, 500);
   if (body.category !== undefined) {
-    if (!isCompanyPersonType(String(body.category))) return c.json({ error: 'Choose a valid company-person category.' }, 400);
-    await db.delete(schema.companyPersonCategories).where(eq(schema.companyPersonCategories.personId, id));
-    await db.insert(schema.companyPersonCategories).values({ personId: id, category: String(body.category) as CompanyPersonType, isPrimary: true, updatedAt: new Date() });
+    if (!isCompanyPersonType(String(body.category)))
+      return c.json({ error: 'Choose a valid company-person category.' }, 400);
+    await db
+      .delete(schema.companyPersonCategories)
+      .where(eq(schema.companyPersonCategories.personId, id));
+    await db
+      .insert(schema.companyPersonCategories)
+      .values({
+        personId: id,
+        category: String(body.category) as CompanyPersonType,
+        isPrimary: true,
+        updatedAt: new Date(),
+      });
   }
   return c.json({ person });
 });
@@ -4338,19 +4603,42 @@ app.post('/api/companies/:id/research', async (c) => {
   const role = getRole(c);
   if (!role) return c.json({ error: 'Forbidden.' }, 403);
   const companyId = c.req.param('id');
-  const [company] = await db.select().from(schema.companies).where(and(eq(schema.companies.id, companyId), isNull(schema.companies.deletedAt))).limit(1);
+  const [company] = await db
+    .select()
+    .from(schema.companies)
+    .where(and(eq(schema.companies.id, companyId), isNull(schema.companies.deletedAt)))
+    .limit(1);
   if (!company) return c.json({ error: 'Company not found.' }, 404);
-  const [job] = await db.insert(schema.companyResearchJobs).values({ companyId, requestedBy: c.get('userId'), status: 'queued' }).returning();
+  const [job] = await db
+    .insert(schema.companyResearchJobs)
+    .values({ companyId, requestedBy: c.get('userId'), status: 'queued' })
+    .returning();
   if (!job) return c.json({ error: 'Unable to queue research.' }, 500);
-  c.executionCtx.waitUntil((async () => {
-    await db.update(schema.companyResearchJobs).set({ status: 'researching', startedAt: new Date(), updatedAt: new Date() }).where(eq(schema.companyResearchJobs.id, job.id));
-    try {
-      await runCompanyResearch(db, c.env, job.id, company);
-    } catch (error) {
-      await db.update(schema.companyResearchJobs).set({ status: 'failed', completedAt: new Date(), error: error instanceof Error ? error.message : 'Research failed', updatedAt: new Date() }).where(eq(schema.companyResearchJobs.id, job.id));
-      await db.update(schema.companies).set({ researchStatus: 'failed', updatedAt: new Date() }).where(eq(schema.companies.id, company.id));
-    }
-  })());
+  c.executionCtx.waitUntil(
+    (async () => {
+      await db
+        .update(schema.companyResearchJobs)
+        .set({ status: 'researching', startedAt: new Date(), updatedAt: new Date() })
+        .where(eq(schema.companyResearchJobs.id, job.id));
+      try {
+        await runCompanyResearch(db, c.env, job.id, company);
+      } catch (error) {
+        await db
+          .update(schema.companyResearchJobs)
+          .set({
+            status: 'failed',
+            completedAt: new Date(),
+            error: error instanceof Error ? error.message : 'Research failed',
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.companyResearchJobs.id, job.id));
+        await db
+          .update(schema.companies)
+          .set({ researchStatus: 'failed', updatedAt: new Date() })
+          .where(eq(schema.companies.id, company.id));
+      }
+    })()
+  );
   return c.json({ job, message: 'Evidence-first public company research queued.' }, 202);
 });
 
@@ -4358,14 +4646,36 @@ app.post('/api/integrations/talentos/companies/sync', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const role = getRole(c);
   if (!role) return c.json({ error: 'Forbidden.' }, 403);
-  const [run] = await db.insert(schema.talentosCompanySyncRuns).values({ requestedBy: c.get('userId'), status: 'running', startedAt: new Date() }).returning();
+  const [run] = await db
+    .insert(schema.talentosCompanySyncRuns)
+    .values({ requestedBy: c.get('userId'), status: 'running', startedAt: new Date() })
+    .returning();
   if (!run) return c.json({ error: 'Unable to create sync run.' }, 500);
   try {
     const count = await syncTalentOsCompanies(db, c.env, c.get('userId'));
-    const [completed] = await db.update(schema.talentosCompanySyncRuns).set({ status: 'completed', recordsSeen: count, recordsCreated: count, completedAt: new Date(), updatedAt: new Date() }).where(eq(schema.talentosCompanySyncRuns.id, run.id)).returning();
+    const [completed] = await db
+      .update(schema.talentosCompanySyncRuns)
+      .set({
+        status: 'completed',
+        recordsSeen: count,
+        recordsCreated: count,
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.talentosCompanySyncRuns.id, run.id))
+      .returning();
     return c.json({ run: completed, companiesSynced: count });
   } catch (error) {
-    const [failed] = await db.update(schema.talentosCompanySyncRuns).set({ status: 'failed', error: error instanceof Error ? error.message : 'TalentOS sync failed', completedAt: new Date(), updatedAt: new Date() }).where(eq(schema.talentosCompanySyncRuns.id, run.id)).returning();
+    const [failed] = await db
+      .update(schema.talentosCompanySyncRuns)
+      .set({
+        status: 'failed',
+        error: error instanceof Error ? error.message : 'TalentOS sync failed',
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.talentosCompanySyncRuns.id, run.id))
+      .returning();
     return c.json({ run: failed, error: 'TalentOS company feed is unavailable.' }, 502);
   }
 });
@@ -4375,40 +4685,180 @@ app.post('/extension/company-people/capture', async (c) => {
   const resolved = await resolveExtensionKeyOwner(db, readExtensionKey(c));
   if (!resolved) return c.json({ error: 'Invalid or missing API key.' }, 401);
   const body = (await c.req.json()) as Record<string, unknown>;
-  const requestedCategory = String(body.category ?? body.type ?? body.personType ?? '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+  const requestedCategory = String(body.category ?? body.type ?? body.personType ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[-\s]+/g, '_');
   const category = requestedCategory === 'leadership' ? 'company_leadership' : requestedCategory;
-  if (!isCompanyPersonType(category)) return c.json({ error: 'Choose a valid company-person category.' }, 400);
-  const profile = body.profile && typeof body.profile === 'object' ? body.profile as Record<string, unknown> : {};
+  if (!isCompanyPersonType(category))
+    return c.json({ error: 'Choose a valid company-person category.' }, 400);
+  const profile =
+    body.profile && typeof body.profile === 'object'
+      ? (body.profile as Record<string, unknown>)
+      : {};
   const displayName = String(profile.name ?? '').trim();
-  const linkedinUrl = canonicalizeLinkedinUrl(typeof body.linkedinUrl === 'string' ? body.linkedinUrl : String(profile.profileUrl ?? ''));
-  if (!displayName || !linkedinUrl) return c.json({ error: 'A profile name and LinkedIn URL are required.' }, 400);
+  const linkedinUrl = canonicalizeLinkedinUrl(
+    typeof body.linkedinUrl === 'string' ? body.linkedinUrl : String(profile.profileUrl ?? '')
+  );
+  if (!displayName || !linkedinUrl)
+    return c.json({ error: 'A profile name and LinkedIn URL are required.' }, 400);
   const { firstName, lastName } = splitProfileDisplayName(displayName);
-  const companyValue = profile.currentCompanies ?? profile.currentCompany ?? profile.currentCompanyName ?? profile.companyName ?? profile.company ?? '';
-  const companyName = (Array.isArray(companyValue) ? String(companyValue[0] ?? '') : String(companyValue)).split(',')[0]?.trim() || '';
-  const companyId = companyName ? await findOrCreateDirectoryCompany(db, companyName, resolved.userId) : null;
+  const companyValue =
+    profile.currentCompanies ??
+    profile.currentCompany ??
+    profile.currentCompanyName ??
+    profile.companyName ??
+    profile.company ??
+    '';
+  const companyName =
+    (Array.isArray(companyValue) ? String(companyValue[0] ?? '') : String(companyValue))
+      .split(',')[0]
+      ?.trim() || '';
+  const companyId = companyName
+    ? await findOrCreateDirectoryCompany(db, companyName, resolved.userId)
+    : null;
   const profileKey = linkedinProfileKey(linkedinUrl);
   if (!profileKey) return c.json({ error: 'Unable to normalize the LinkedIn profile URL.' }, 400);
   const [existing] = await db
     .select()
     .from(schema.companyPeople)
-    .where(and(eq(schema.companyPeople.workspaceId, DEFAULT_WORKSPACE_ID), eq(schema.companyPeople.linkedinProfileKey, profileKey), isNull(schema.companyPeople.deletedAt)))
+    .where(
+      and(
+        eq(schema.companyPeople.workspaceId, DEFAULT_WORKSPACE_ID),
+        eq(schema.companyPeople.linkedinProfileKey, profileKey),
+        isNull(schema.companyPeople.deletedAt)
+      )
+    )
     .limit(1);
   const now = new Date();
-  const value = (key: string) => typeof profile[key] === 'string' ? String(profile[key]) : null;
-  const completeness = [displayName, linkedinUrl, value('headline'), value('location'), value('about'), profile.experience, profile.education, profile.skills].filter(Boolean).length * 12;
-  const common = { firstName, lastName, displayName, headline: value('headline'), location: value('location'), about: value('about'), currentTitle: value('headline'), phone: value('phone'), experience: profile.experience ? JSON.stringify(profile.experience) : null, education: profile.education ? JSON.stringify(profile.education) : null, skills: profile.skills ? JSON.stringify(profile.skills) : null, currentRoleDates: profile.currentRoleDates ? JSON.stringify(profile.currentRoleDates) : null, openToWork: typeof profile.openToWork === 'boolean' ? profile.openToWork : null, yearsExperience: profile.yearsExperience == null ? null : String(profile.yearsExperience), connectionDegree: value('connectionDegree'), notes: value('notes'), tags: Array.isArray(profile.tags) ? profile.tags : [], currentCompanyId: companyId ?? undefined, rawProfile: profile, ownerId: resolved.userId, capturedByApiKeyId: resolved.keyId, capturedByApiKeyLabel: resolved.label, lastCapturedAt: now, dataCompleteness: Math.min(100, completeness), profileNormalizationStatus: profile.experience || profile.education || profile.skills ? 'pending' : 'not_queued', updatedAt: now };
+  const value = (key: string) => (typeof profile[key] === 'string' ? String(profile[key]) : null);
+  const completeness =
+    [
+      displayName,
+      linkedinUrl,
+      value('headline'),
+      value('location'),
+      value('about'),
+      profile.experience,
+      profile.education,
+      profile.skills,
+    ].filter(Boolean).length * 12;
+  const common = {
+    firstName,
+    lastName,
+    displayName,
+    headline: value('headline'),
+    location: value('location'),
+    about: value('about'),
+    currentTitle: value('headline'),
+    phone: value('phone'),
+    experience: profile.experience ? JSON.stringify(profile.experience) : null,
+    education: profile.education ? JSON.stringify(profile.education) : null,
+    skills: profile.skills ? JSON.stringify(profile.skills) : null,
+    currentRoleDates: profile.currentRoleDates ? JSON.stringify(profile.currentRoleDates) : null,
+    openToWork: typeof profile.openToWork === 'boolean' ? profile.openToWork : null,
+    yearsExperience: profile.yearsExperience == null ? null : String(profile.yearsExperience),
+    connectionDegree: value('connectionDegree'),
+    notes: value('notes'),
+    tags: Array.isArray(profile.tags) ? profile.tags : [],
+    currentCompanyId: companyId ?? undefined,
+    rawProfile: profile,
+    ownerId: resolved.userId,
+    capturedByApiKeyId: resolved.keyId,
+    capturedByApiKeyLabel: resolved.label,
+    lastCapturedAt: now,
+    dataCompleteness: Math.min(100, completeness),
+    profileNormalizationStatus:
+      profile.experience || profile.education || profile.skills ? 'pending' : 'not_queued',
+    updatedAt: now,
+  };
   const person = existing
-    ? (await db.update(schema.companyPeople).set(common).where(eq(schema.companyPeople.id, existing.id)).returning())[0]
-    : (await db.insert(schema.companyPeople).values({ workspaceId: DEFAULT_WORKSPACE_ID, ...common, linkedinUrl, linkedinProfileKey: profileKey, currentCompanyId: companyId, source: 'linkedin-extension', status: 'new', outreachStatus: 'not_approached', journeyStage: 'new', profileCaptureStatus: 'captured' }).returning())[0];
+    ? (
+        await db
+          .update(schema.companyPeople)
+          .set(common)
+          .where(eq(schema.companyPeople.id, existing.id))
+          .returning()
+      )[0]
+    : (
+        await db
+          .insert(schema.companyPeople)
+          .values({
+            workspaceId: DEFAULT_WORKSPACE_ID,
+            ...common,
+            linkedinUrl,
+            linkedinProfileKey: profileKey,
+            currentCompanyId: companyId,
+            source: 'linkedin-extension',
+            status: 'new',
+            outreachStatus: 'not_approached',
+            journeyStage: 'new',
+            profileCaptureStatus: 'captured',
+          })
+          .returning()
+      )[0];
   if (!person) return c.json({ error: 'Unable to save company person.' }, 500);
-  await db.insert(schema.companyPersonCategories).values({ personId: person.id, category: category as CompanyPersonType, isPrimary: true, updatedAt: now }).onConflictDoUpdate({ target: [schema.companyPersonCategories.personId, schema.companyPersonCategories.category], set: { isPrimary: true, updatedAt: now } });
+  await db
+    .insert(schema.companyPersonCategories)
+    .values({
+      personId: person.id,
+      category: category as CompanyPersonType,
+      isPrimary: true,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: [schema.companyPersonCategories.personId, schema.companyPersonCategories.category],
+      set: { isPrimary: true, updatedAt: now },
+    });
   if (companyId && companyName) {
-    const [employment] = await db.select({ id: schema.companyPersonEmployments.id }).from(schema.companyPersonEmployments).where(and(eq(schema.companyPersonEmployments.personId, person.id), eq(schema.companyPersonEmployments.companyId, companyId), eq(schema.companyPersonEmployments.isCurrent, true))).limit(1);
-    if (!employment) await db.insert(schema.companyPersonEmployments).values({ personId: person.id, companyId, companyNameSnapshot: companyName, title: typeof profile.headline === 'string' ? profile.headline : null, isCurrent: true, source: 'linkedin_extension', rawEvidence: profile });
+    const [employment] = await db
+      .select({ id: schema.companyPersonEmployments.id })
+      .from(schema.companyPersonEmployments)
+      .where(
+        and(
+          eq(schema.companyPersonEmployments.personId, person.id),
+          eq(schema.companyPersonEmployments.companyId, companyId),
+          eq(schema.companyPersonEmployments.isCurrent, true)
+        )
+      )
+      .limit(1);
+    if (!employment)
+      await db
+        .insert(schema.companyPersonEmployments)
+        .values({
+          personId: person.id,
+          companyId,
+          companyNameSnapshot: companyName,
+          title: typeof profile.headline === 'string' ? profile.headline : null,
+          isCurrent: true,
+          source: 'linkedin_extension',
+          rawEvidence: profile,
+        });
   }
-  await db.insert(schema.companyPersonCaptures).values({ workspaceId: DEFAULT_WORKSPACE_ID, personId: person.id, capturedBy: resolved.userId, capturedByApiKeyId: resolved.keyId, capturedByApiKeyLabel: resolved.label, payload: profile, payloadHash: await sha256Hex(JSON.stringify(profile)), createdAt: now });
-  await withAudit(db, schema.auditLog, { actorUserId: resolved.userId, action: 'capture_company_person', resourceType: 'company_person', resourceId: person.id, after: { category, companyId, displayName }, app: 'crm' });
-  return c.json({ person, category, companyId, duplicate: Boolean(existing) }, existing ? 200 : 201);
+  await db
+    .insert(schema.companyPersonCaptures)
+    .values({
+      workspaceId: DEFAULT_WORKSPACE_ID,
+      personId: person.id,
+      capturedBy: resolved.userId,
+      capturedByApiKeyId: resolved.keyId,
+      capturedByApiKeyLabel: resolved.label,
+      payload: profile,
+      payloadHash: await sha256Hex(JSON.stringify(profile)),
+      createdAt: now,
+    });
+  await withAudit(db, schema.auditLog, {
+    actorUserId: resolved.userId,
+    action: 'capture_company_person',
+    resourceType: 'company_person',
+    resourceId: person.id,
+    after: { category, companyId, displayName },
+    app: 'crm',
+  });
+  return c.json(
+    { person, category, companyId, duplicate: Boolean(existing) },
+    existing ? 200 : 201
+  );
 });
 
 // --- COMPANIES ---
@@ -4419,7 +4869,12 @@ app.get('/api/companies', async (c) => {
   if (!role) return c.json({ error: 'Forbidden.' }, 403);
 
   try {
-    const [recentSync] = await db.select({ syncedAt: schema.companies.lastTalentOsSyncAt }).from(schema.companies).where(isNotNull(schema.companies.lastTalentOsSyncAt)).orderBy(desc(schema.companies.lastTalentOsSyncAt)).limit(1);
+    const [recentSync] = await db
+      .select({ syncedAt: schema.companies.lastTalentOsSyncAt })
+      .from(schema.companies)
+      .where(isNotNull(schema.companies.lastTalentOsSyncAt))
+      .orderBy(desc(schema.companies.lastTalentOsSyncAt))
+      .limit(1);
     if (!recentSync?.syncedAt || Date.now() - recentSync.syncedAt.getTime() > 5 * 60_000) {
       await syncTalentOsCompanies(db, c.env, c.get('userId'));
     }
@@ -9758,8 +10213,10 @@ async function buildCeoOperationalContext(
       lastUsedAt: sql<Date | null>`max(${schema.aiUsageEvents.createdAt})`,
     })
     .from(schema.aiUsageEvents)
-    .where(sql`${schema.aiUsageEvents.createdAt} >= now() - interval '30 days'
-      AND NOT (${schema.aiUsageEvents.requestType} = 'chat' AND ${schema.aiUsageEvents.model} = 'embedding')`)
+    .where(
+      sql`${schema.aiUsageEvents.createdAt} >= now() - interval '30 days'
+      AND NOT (${schema.aiUsageEvents.requestType} = 'chat' AND ${schema.aiUsageEvents.model} = 'embedding')`
+    )
     .groupBy(schema.aiUsageEvents.agentId);
   scope.push('agentOperations');
 
