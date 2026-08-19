@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   AlertCircle,
   AlertTriangle,
@@ -7,6 +8,7 @@ import {
   ChevronRight,
   ClipboardList,
   Download,
+  ExternalLink,
   FileText,
   Mail,
   MapPin,
@@ -87,9 +89,11 @@ function formatDate(value: string | null): string {
 function ApplicantDetail({
   applicant,
   onClose,
+  fullPage = false,
 }: {
   applicant: InternalApplicant;
   onClose: () => void;
+  fullPage?: boolean;
 }) {
   const { data, isLoading } = useInternalApplicant(applicant.id);
   const update = useUpdateInternalApplicant();
@@ -129,10 +133,21 @@ function ApplicantDetail({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/30" onClick={onClose}>
+    <div
+      className={cn(
+        fullPage
+          ? 'min-h-[calc(100vh-5rem)]'
+          : 'fixed inset-0 z-50 flex justify-end bg-slate-950/30'
+      )}
+      onClick={fullPage ? undefined : onClose}
+    >
       <aside
-        className="h-full w-full max-w-2xl overflow-y-auto bg-white shadow-2xl"
-        onClick={(event) => event.stopPropagation()}
+        className={cn(
+          fullPage
+            ? 'mx-auto min-h-[calc(100vh-5rem)] w-full max-w-6xl overflow-y-auto bg-white'
+            : 'h-full w-full max-w-2xl overflow-y-auto bg-white shadow-2xl'
+        )}
+        onClick={fullPage ? undefined : (event) => event.stopPropagation()}
       >
         <div className="sticky top-0 z-10 flex items-start justify-between border-b border-slate-200 bg-white px-6 py-5">
           <div className="flex min-w-0 items-center gap-3">
@@ -289,6 +304,66 @@ function ApplicantDetail({
                 {formatDate(applicant.firstReceivedAt)} – {formatDate(applicant.lastReceivedAt)}
               </div>
             </div>
+          </section>
+
+          <section className="grid gap-3 rounded-lg border border-slate-200 p-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
+            <div>
+              <div className="text-xs text-slate-400">Source</div>
+              <div className="mt-1 text-slate-700">{applicant.source}</div>
+            </div>
+            <div>
+              <div className="text-xs text-slate-400">Messages received</div>
+              <div className="mt-1 text-slate-700">{applicant.messageCount}</div>
+            </div>
+            <div>
+              <div className="text-xs text-slate-400">First received</div>
+              <div className="mt-1 text-slate-700">{formatDate(applicant.firstReceivedAt)}</div>
+            </div>
+            <div>
+              <div className="text-xs text-slate-400">Last received</div>
+              <div className="mt-1 text-slate-700">{formatDate(applicant.lastReceivedAt)}</div>
+            </div>
+          </section>
+
+          <section className="rounded-lg border border-slate-200 p-4">
+            <h3 className="mb-3 text-sm font-semibold text-slate-800">Screening evidence</h3>
+            <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-5">
+              <div>
+                <div className="text-xs text-slate-400">Skills score</div>
+                <div className="mt-1 font-semibold text-slate-700">
+                  {applicant.skillsScore ?? '—'}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-400">Education score</div>
+                <div className="mt-1 font-semibold text-slate-700">
+                  {applicant.educationScore ?? '—'}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-400">Culture evidence</div>
+                <div className="mt-1 font-semibold text-slate-700">
+                  {applicant.cultureEvidenceCount}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-400">Projects</div>
+                <div className="mt-1 font-semibold text-slate-700">
+                  {applicant.projectEvidenceCount}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-400">Completeness</div>
+                <div className="mt-1 font-semibold text-slate-700">
+                  {applicant.completenessCount}
+                </div>
+              </div>
+            </div>
+            {applicant.schoolOutsideDhaka && (
+              <div className="mt-3 text-xs text-amber-700">
+                Education location proxy applied: {applicant.locationProxyAdjustment} points.
+              </div>
+            )}
           </section>
 
           <section>
@@ -571,7 +646,6 @@ export default function InternalApplicantsPage() {
                 {applicants.map((applicant) => (
                   <tr
                     key={applicant.id}
-                    onClick={() => setSelected(applicant)}
                     className={cn(
                       'cursor-pointer',
                       isDoNotContact(applicant)
@@ -593,7 +667,22 @@ export default function InternalApplicantsPage() {
                         </div>
                         <div className="min-w-0">
                           <div className="flex items-center gap-2 font-medium text-slate-800">
-                            {applicant.fullName}
+                            <Link
+                              to={`/internal-applicants/${applicant.applicantNumber}`}
+                              className="hover:text-blue-600 hover:underline"
+                            >
+                              {applicant.fullName}
+                            </Link>
+                            <a
+                              href={`/internal-applicants/${applicant.applicantNumber}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-slate-400 hover:text-blue-600"
+                              aria-label={`Open ${applicant.fullName} in a new tab`}
+                              onClick={(event) => event.stopPropagation()}
+                            >
+                              <ExternalLink size={14} />
+                            </a>
                             {isDoNotContact(applicant) && (
                               <span className="inline-flex items-center gap-1 rounded-full bg-red-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
                                 <AlertTriangle size={11} /> Do not contact
@@ -663,5 +752,29 @@ export default function InternalApplicantsPage() {
       </p>
       {selected && <ApplicantDetail applicant={selected} onClose={() => setSelected(null)} />}
     </div>
+  );
+}
+
+export function InternalApplicantProfilePage() {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const { data, isLoading, error } = useInternalApplicant(id ?? null);
+
+  if (isLoading)
+    return (
+      <div className="p-12 text-center text-sm text-slate-400">Loading applicant profile…</div>
+    );
+  if (error || !data)
+    return (
+      <div className="p-12 text-center text-sm text-red-500">
+        Applicant profile could not be loaded.
+      </div>
+    );
+  return (
+    <ApplicantDetail
+      applicant={data.applicant}
+      onClose={() => navigate('/internal-applicants')}
+      fullPage
+    />
   );
 }

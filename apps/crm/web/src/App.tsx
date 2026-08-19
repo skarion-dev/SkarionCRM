@@ -16,7 +16,9 @@ import TasksPage from './pages/TasksPage.js';
 import PipelinePage from './pages/PipelinePage.js';
 import SettingsPage from './pages/SettingsPage.js';
 import ChatPage from './pages/ChatPage.js';
-import InternalApplicantsPage from './pages/InternalApplicantsPage.js';
+import InternalApplicantsPage, {
+  InternalApplicantProfilePage,
+} from './pages/InternalApplicantsPage.js';
 import AdminActivityLogsPage from './pages/AdminActivityLogsPage.js';
 import CompanyPeoplePage from './pages/CompanyPeoplePage.js';
 import CompanyPersonDetailPage from './pages/CompanyPersonDetailPage.js';
@@ -216,6 +218,14 @@ export default function App() {
             element={
               <RequireAuth>
                 <InternalApplicantsPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/internal-applicants/:id"
+            element={
+              <RequireAuth>
+                <InternalApplicantProfilePage />
               </RequireAuth>
             }
           />

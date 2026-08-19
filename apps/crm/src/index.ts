@@ -3246,12 +3246,16 @@ app.get('/api/internal-applicants/:id', async (c) => {
   if (!canViewInternalApplicants(c))
     return c.json({ error: 'Hiring manager access is required.' }, 403);
   const db = getDb(c.env, schema) as CrmDb;
+  const identifier = c.req.param('id');
+  const applicantIdentifier = identifier.startsWith('SKR-')
+    ? eq(schema.internalApplicants.applicantNumber, identifier)
+    : eq(schema.internalApplicants.id, identifier);
   const [applicant] = await db
     .select()
     .from(schema.internalApplicants)
     .where(
       and(
-        eq(schema.internalApplicants.id, c.req.param('id')),
+        applicantIdentifier,
         eq(schema.internalApplicants.workspaceId, schema.DEFAULT_WORKSPACE_ID),
         isNull(schema.internalApplicants.deletedAt)
       )
