@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "Skarion Conversation Capture",
+  "version": "1.0.0",
+  "description": "Ingests the open LinkedIn conversation into Skarion CRM and drafts reply options from the candidate-conversation agent.",
+  "permissions": ["activeTab", "scripting", "storage", "tabs", "sidePanel"],
+  "host_permissions": [
+    "https://www.linkedin.com/*",
+    "https://*.workers.dev/*",
+    "http://localhost:*/*",
+    "http://127.0.0.1:*/*"
+  ],
+  "action": {
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.linkedin.com/messaging/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
