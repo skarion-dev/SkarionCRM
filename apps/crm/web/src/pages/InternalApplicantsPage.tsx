@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
+  AlertTriangle,
   BriefcaseBusiness,
   ChevronLeft,
   ChevronRight,
@@ -58,6 +59,12 @@ function recommendationTone(recommendation: string | null): string {
   return 'text-slate-400';
 }
 
+function isDoNotContact(applicant: InternalApplicant): boolean {
+  return (applicant.tags ?? []).some((tag) =>
+    ['do not contact', 'do_not_contact', 'screened_no_contact'].includes(tag.toLowerCase())
+  );
+}
+
 function initials(name: string): string {
   return name
     .split(/\s+/)
@@ -88,6 +95,7 @@ function ApplicantDetail({
   const update = useUpdateInternalApplicant();
   const [notes, setNotes] = useState(applicant.notes ?? '');
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const doNotContact = isDoNotContact(applicant);
 
   useEffect(() => setNotes(applicant.notes ?? ''), [applicant.id, applicant.notes]);
 
@@ -128,7 +136,12 @@ function ApplicantDetail({
       >
         <div className="sticky top-0 z-10 flex items-start justify-between border-b border-slate-200 bg-white px-6 py-5">
           <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-blue-100 font-semibold text-blue-700">
+            <div
+              className={cn(
+                'flex h-11 w-11 shrink-0 items-center justify-center rounded-full font-semibold',
+                doNotContact ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'
+              )}
+            >
               {initials(applicant.fullName)}
             </div>
             <div className="min-w-0">
@@ -153,6 +166,18 @@ function ApplicantDetail({
         </div>
 
         <div className="space-y-6 p-6">
+          {doNotContact && (
+            <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+              <AlertTriangle size={17} className="mt-0.5 shrink-0" />
+              <div>
+                <div className="font-semibold">Do not contact</div>
+                <div className="text-xs text-red-700">
+                  This candidate has already been screened. Contact only with explicit
+                  hiring-manager approval.
+                </div>
+              </div>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <div className="rounded-lg border border-slate-200 p-3">
               <div className="text-xs text-slate-400">Overall</div>
@@ -547,15 +572,34 @@ export default function InternalApplicantsPage() {
                   <tr
                     key={applicant.id}
                     onClick={() => setSelected(applicant)}
-                    className="cursor-pointer hover:bg-blue-50/40"
+                    className={cn(
+                      'cursor-pointer',
+                      isDoNotContact(applicant)
+                        ? 'bg-red-50 hover:bg-red-100/70'
+                        : 'hover:bg-blue-50/40'
+                    )}
                   >
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-3">
-                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-600">
+                        <div
+                          className={cn(
+                            'flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-semibold',
+                            isDoNotContact(applicant)
+                              ? 'bg-red-100 text-red-700'
+                              : 'bg-slate-100 text-slate-600'
+                          )}
+                        >
                           {initials(applicant.fullName)}
                         </div>
                         <div className="min-w-0">
-                          <div className="font-medium text-slate-800">{applicant.fullName}</div>
+                          <div className="flex items-center gap-2 font-medium text-slate-800">
+                            {applicant.fullName}
+                            {isDoNotContact(applicant) && (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-red-600 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
+                                <AlertTriangle size={11} /> Do not contact
+                              </span>
+                            )}
+                          </div>
                           <div className="font-mono text-xs text-slate-400">
                             {applicant.applicantNumber} · {applicant.email}
                           </div>
