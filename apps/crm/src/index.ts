@@ -128,6 +128,7 @@ import {
   sanitizeCandidateLeadAction,
   sanitizeCandidateConversationIdentity,
   sanitizeCandidateDraft,
+  sanitizeCandidateDraftOptions,
   type CandidateLeadAction,
   type CandidateConversationContext,
   type CandidateConversationIdentity,
@@ -2300,6 +2301,257 @@ app.post('/extension/prospects/review', async (c) => {
     }
     throw error;
   }
+});
+
+// Live LinkedIn messaging-thread capture. Distinct from /extension/leads
+// (profile-page capture): this ingests a full conversation transcript
+// scraped from an open linkedin.com/messaging thread and stores it on
+// linkedin_conversations, keyed per-operator so the candidate-conversation
+// draft agent can read it straight back via loadCandidateConversationContext.
+app.post('/extension/conversations/ingest', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const resolved = await resolveExtensionKeyOwner(db, readExtensionKey(c));
+  if (!resolved) return c.json({ error: 'Invalid or missing API key.' }, 401);
+  const rateLimit = checkRateLimit(`extension:conversations:ingest:${resolved.userId}`, 60, 60_000);
+  if (!rateLimit.allowed) {
+    c.header('Retry-After', String(rateLimit.retryAfter));
+    return c.json({ error: 'Too many extension requests. Please wait and retry.' }, 429);
+  }
+
+  const body = (await c.req.json()) as Record<string, unknown>;
+  const externalConversationId =
+    typeof body.externalConversationId === 'string'
+      ? body.externalConversationId.trim().slice(0, 300)
+      : '';
+  const otherPartyName =
+    typeof body.otherPartyName === 'string' ? body.otherPartyName.trim().slice(0, 200) : '';
+  const otherPartyProfileUrl = canonicalizeLinkedinUrl(body.otherPartyProfileUrl);
+  const profileKey = linkedinProfileKey(otherPartyProfileUrl);
+  const ownerProfileUrl =
+    typeof body.ownerProfileUrl === 'string' && body.ownerProfileUrl.trim()
+      ? body.ownerProfileUrl.trim().slice(0, 500)
+      : 'unknown';
+
+  if (!externalConversationId || !otherPartyName || !otherPartyProfileUrl || !profileKey) {
+    return c.json(
+      {
+        error:
+          'A conversation id, candidate name, and a valid candidate LinkedIn URL are required.',
+      },
+      400
+    );
+  }
+
+  const rawMessages = Array.isArray(body.messages) ? body.messages : [];
+  const messages: Array<{
+    sentAt: string;
+    direction: 'inbound' | 'outbound';
+    senderName: string;
+    content: string;
+  }> = [];
+  for (const raw of rawMessages) {
+    if (!raw || typeof raw !== 'object') continue;
+    const m = raw as Record<string, unknown>;
+    const content = typeof m.content === 'string' ? m.content.trim().slice(0, 8_000) : '';
+    const sentAtDate = typeof m.sentAt === 'string' && m.sentAt ? new Date(m.sentAt) : null;
+    if (!content || !sentAtDate || Number.isNaN(sentAtDate.getTime())) continue;
+    messages.push({
+      sentAt: sentAtDate.toISOString(),
+      direction: m.direction === 'outbound' ? 'outbound' : 'inbound',
+      senderName:
+        typeof m.senderName === 'string' && m.senderName.trim()
+          ? m.senderName.trim().slice(0, 200)
+          : otherPartyName,
+      content,
+    });
+  }
+  if (messages.length === 0) {
+    return c.json({ error: 'No usable messages were supplied.' }, 400);
+  }
+  messages.sort((a, b) => new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime());
+
+  const exact = await findExactMatch(db, {
+    linkedinUrl: otherPartyProfileUrl,
+    email: null,
+    phone: null,
+  });
+
+  let lead: typeof schema.leads.$inferSelect | null = null;
+  if (exact?.entityType === 'lead') {
+    lead = exact.record;
+  } else if (!exact) {
+    const identity = await nextLeadIdentity(db);
+    const name = deriveProspectName(otherPartyName, otherPartyProfileUrl);
+    const journeyStage: LeadJourneyStage = 'engaged';
+    const legacy = legacyFieldsForJourney(journeyStage);
+    const [inserted] = await db
+      .insert(schema.leads)
+      .values({
+        workspaceId: DEFAULT_WORKSPACE_ID,
+        ...identity,
+        firstName: name.firstName,
+        lastName: name.lastName,
+        linkedinUrl: otherPartyProfileUrl,
+        linkedinProfileKey: profileKey,
+        source: 'linkedin',
+        ownerId: resolved.userId,
+        capturedByApiKeyId: resolved.keyId,
+        capturedByApiKeyLabel: resolved.label,
+        journeyStage,
+        status: legacy.status,
+        outreachStatus: legacy.outreachStatus,
+      })
+      .returning();
+    if (!inserted) return c.json({ error: 'Could not create candidate lead.' }, 500);
+    lead = inserted;
+    await linkImportedLinkedInConversationsToLead(db, lead);
+  }
+  // exact?.entityType === 'contact': this candidate was already converted.
+  // Leave lead as null — the conversation still gets stored (unlinked)
+  // rather than creating a duplicate lead for someone already converted.
+
+  const [priorConversation] = await db
+    .select({ messages: schema.linkedinConversations.messages })
+    .from(schema.linkedinConversations)
+    .where(
+      and(
+        eq(schema.linkedinConversations.importedBy, resolved.userId),
+        eq(schema.linkedinConversations.externalConversationId, externalConversationId)
+      )
+    )
+    .limit(1);
+  const priorCount = Array.isArray(priorConversation?.messages)
+    ? priorConversation.messages.length
+    : 0;
+
+  const last = messages[messages.length - 1]!;
+  const outboundCount = messages.filter((message) => message.direction === 'outbound').length;
+  const conversationValues = {
+    externalConversationId,
+    leadId: lead?.id ?? null,
+    otherPartyName,
+    otherPartyProfileUrl,
+    ownerProfileUrl,
+    messageCount: messages.length,
+    outboundCount,
+    lastMessageAt: new Date(last.sentAt),
+    lastMessageFromUs: last.direction === 'outbound',
+    messages,
+    importedBy: resolved.userId,
+    updatedAt: new Date(),
+  };
+  await db
+    .insert(schema.linkedinConversations)
+    .values(conversationValues)
+    .onConflictDoUpdate({
+      target: [
+        schema.linkedinConversations.importedBy,
+        schema.linkedinConversations.externalConversationId,
+      ],
+      set: conversationValues,
+    });
+
+  return c.json({
+    lead: lead
+      ? {
+          id: lead.id,
+          leadNumber: lead.leadNumber,
+          name: `${lead.firstName} ${lead.lastName}`.trim(),
+        }
+      : null,
+    duplicate: exact?.entityType === 'contact',
+    entityType: exact?.entityType ?? 'lead',
+    messageCount: messages.length,
+    newMessageCount: Math.max(0, messages.length - priorCount),
+    lastMessageFromUs: conversationValues.lastMessageFromUs,
+  });
+});
+
+app.post('/extension/conversations/draft', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const resolved = await resolveExtensionKeyOwner(db, readExtensionKey(c));
+  if (!resolved) return c.json({ error: 'Invalid or missing API key.' }, 401);
+  const rateLimit = checkRateLimit(`extension:conversations:draft:${resolved.userId}`, 30, 60_000);
+  if (!rateLimit.allowed) {
+    c.header('Retry-After', String(rateLimit.retryAfter));
+    return c.json({ error: 'Too many extension requests. Please wait and retry.' }, 429);
+  }
+
+  const body = (await c.req.json()) as Record<string, unknown>;
+  const linkedinUrl = canonicalizeLinkedinUrl(body.linkedinUrl);
+  const profileKey = linkedinProfileKey(linkedinUrl);
+  if (!linkedinUrl || !profileKey) {
+    return c.json({ error: 'A valid candidate LinkedIn URL is required.' }, 400);
+  }
+  const isFollowUp = body.mode === 'follow_up';
+
+  const [lead] = await db
+    .select()
+    .from(schema.leads)
+    .where(
+      and(
+        eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
+        eq(schema.leads.linkedinProfileKey, profileKey),
+        isNull(schema.leads.deletedAt)
+      )
+    )
+    .limit(1);
+  if (!lead) {
+    return c.json(
+      { error: 'No lead found for this LinkedIn URL. Ingest this conversation first.' },
+      404
+    );
+  }
+
+  if (!ai.isAiConfigured(c.env)) {
+    return c.json({ error: 'AI drafting is not configured.' }, 503);
+  }
+
+  const context = await loadCandidateConversationContext(db, lead);
+  const prompt = buildCandidateConversationPrompt(
+    context,
+    isFollowUp
+      ? 'Draft a follow-up message — the candidate has not replied to our last message yet.'
+      : 'Draft the next reply to this candidate.'
+  );
+  const result = await ai.extractStructured<{ drafts?: unknown }>(prompt, c.env, {
+    tier: 'fast',
+    agent: 'candidate-conversation',
+    temperature: 0.4,
+    systemInstruction: buildCandidateConversationSystemInstruction(
+      isFollowUp ? 'follow_up' : 'reply_options'
+    ),
+  });
+  const drafts = sanitizeCandidateDraftOptions(result?.drafts);
+  if (!drafts) {
+    return c.json({ error: 'The candidate conversation model returned no usable drafts.' }, 422);
+  }
+
+  await withAudit(db, schema.auditLog, {
+    actorUserId: resolved.userId,
+    action: 'generate',
+    resourceType: isFollowUp
+      ? 'candidate_follow_up_draft_options'
+      : 'candidate_reply_draft_options',
+    resourceId: lead.id,
+    after: {
+      leadId: lead.id,
+      mode: isFollowUp ? 'follow_up' : 'reply',
+      draftCount: drafts.length,
+      linkedinMessagesUsed: context.linkedinMessages.length,
+      sentToCandidate: false,
+    },
+    app: 'crm',
+  });
+
+  return c.json({
+    lead: {
+      id: lead.id,
+      leadNumber: lead.leadNumber,
+      name: `${lead.firstName} ${lead.lastName}`.trim(),
+    },
+    drafts,
+  });
 });
 
 app.post('/internal/lead-score-queue/drain', async (c) => {
