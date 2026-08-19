@@ -244,6 +244,15 @@ function initLiConvoCapture() {
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.action === 'ingestConversationNow') {
+      // The manifest injects this script into every linkedin.com frame
+      // (all_frames: true) because LinkedIn sometimes renders the real
+      // messaging UI inside a same-origin child iframe (observed:
+      // /preload/?_bprMode=vanilla) instead of the top-level document —
+      // the top frame is left an empty shell in that case. Only the one
+      // frame that actually has the message list should ever answer;
+      // every other frame silently declines instead of racing a wrong
+      // or empty response back to the popup.
+      if (!findMessagePane()) return false;
       void run()
         .then((conversation) => sendResponse({ ok: true, conversation }))
         .catch((error) =>

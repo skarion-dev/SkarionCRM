@@ -81,12 +81,20 @@ async function refreshActiveTab() {
 }
 
 async function requestFromContentScript(action) {
-  try {
-    return await chrome.tabs.sendMessage(activeTab.id, { action });
-  } catch {
-    await chrome.scripting.executeScript({ target: { tabId: activeTab.id }, files: ['content.js'] });
-    return chrome.tabs.sendMessage(activeTab.id, { action });
-  }
+  // chrome.tabs.sendMessage resolves with `undefined` — not a rejection —
+  // when no content script frame actually called sendResponse. That
+  // happens both when nothing was ever injected (extension loaded after
+  // this tab was already open) and when LinkedIn rendered the real
+  // messaging UI inside a same-origin child iframe that only an
+  // allFrames-scoped injection reaches. Treat both the same: (re)inject
+  // into every frame and retry once.
+  const response = await chrome.tabs.sendMessage(activeTab.id, { action }).catch(() => undefined);
+  if (response !== undefined) return response;
+  await chrome.scripting.executeScript({
+    target: { tabId: activeTab.id, allFrames: true },
+    files: ['content.js'],
+  });
+  return chrome.tabs.sendMessage(activeTab.id, { action });
 }
 
 async function ingest() {
