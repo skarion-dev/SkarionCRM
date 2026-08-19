@@ -3262,7 +3262,7 @@ app.get('/api/internal-applicants/:id', async (c) => {
     )
     .limit(1);
   if (!applicant) return c.json({ error: 'Applicant not found.' }, 404);
-  const [documents, messages] = await Promise.all([
+  const [documents, messages, notes] = await Promise.all([
     db
       .select()
       .from(schema.internalApplicantDocuments)
@@ -3273,8 +3273,106 @@ app.get('/api/internal-applicants/:id', async (c) => {
       .from(schema.internalApplicantMessages)
       .where(eq(schema.internalApplicantMessages.applicantId, applicant.id))
       .orderBy(desc(schema.internalApplicantMessages.receivedAt)),
+    db
+      .select()
+      .from(schema.internalApplicantNotes)
+      .where(eq(schema.internalApplicantNotes.applicantId, applicant.id))
+      .orderBy(
+        desc(schema.internalApplicantNotes.occurredAt),
+        desc(schema.internalApplicantNotes.createdAt)
+      ),
   ]);
-  return c.json({ applicant: serializeInternalApplicant(applicant), documents, messages });
+  return c.json({ applicant: serializeInternalApplicant(applicant), documents, messages, notes });
+});
+
+function internalApplicantNoteType(
+  value: unknown
+): (typeof schema.internalApplicantNoteTypeEnum.enumValues)[number] | null {
+  return typeof value === 'string' &&
+    schema.internalApplicantNoteTypeEnum.enumValues.includes(value as never)
+    ? (value as (typeof schema.internalApplicantNoteTypeEnum.enumValues)[number])
+    : null;
+}
+
+app.get('/api/internal-applicants/:id/notes', async (c) => {
+  if (!canViewInternalApplicants(c))
+    return c.json({ error: 'Hiring manager access is required.' }, 403);
+  const db = getDb(c.env, schema) as CrmDb;
+  const identifier = c.req.param('id');
+  const applicantIdentifier = identifier.startsWith('SKR-')
+    ? eq(schema.internalApplicants.applicantNumber, identifier)
+    : eq(schema.internalApplicants.id, identifier);
+  const [applicant] = await db
+    .select({ id: schema.internalApplicants.id })
+    .from(schema.internalApplicants)
+    .where(
+      and(
+        applicantIdentifier,
+        eq(schema.internalApplicants.workspaceId, schema.DEFAULT_WORKSPACE_ID),
+        isNull(schema.internalApplicants.deletedAt)
+      )
+    )
+    .limit(1);
+  if (!applicant) return c.json({ error: 'Applicant not found.' }, 404);
+  const notes = await db
+    .select()
+    .from(schema.internalApplicantNotes)
+    .where(eq(schema.internalApplicantNotes.applicantId, applicant.id))
+    .orderBy(
+      desc(schema.internalApplicantNotes.occurredAt),
+      desc(schema.internalApplicantNotes.createdAt)
+    );
+  return c.json({ notes });
+});
+
+app.post('/api/internal-applicants/:id/notes', async (c) => {
+  if (!canViewInternalApplicants(c))
+    return c.json({ error: 'Hiring manager access is required.' }, 403);
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const noteType = internalApplicantNoteType(body.noteType ?? body.type);
+  if (!noteType) return c.json({ error: 'Note type must be screening or email.' }, 400);
+  const note = typeof body.note === 'string' ? body.note.trim().slice(0, 10000) : '';
+  if (!note) return c.json({ error: 'Add a note before saving.' }, 400);
+  const occurredAt = body.occurredAt ? new Date(String(body.occurredAt)) : new Date();
+  if (Number.isNaN(occurredAt.getTime())) return c.json({ error: 'Invalid note date.' }, 400);
+
+  const db = getDb(c.env, schema) as CrmDb;
+  const identifier = c.req.param('id');
+  const applicantIdentifier = identifier.startsWith('SKR-')
+    ? eq(schema.internalApplicants.applicantNumber, identifier)
+    : eq(schema.internalApplicants.id, identifier);
+  const [applicant] = await db
+    .select({ id: schema.internalApplicants.id })
+    .from(schema.internalApplicants)
+    .where(
+      and(
+        applicantIdentifier,
+        eq(schema.internalApplicants.workspaceId, schema.DEFAULT_WORKSPACE_ID),
+        isNull(schema.internalApplicants.deletedAt)
+      )
+    )
+    .limit(1);
+  if (!applicant) return c.json({ error: 'Applicant not found.' }, 404);
+
+  const userId = c.get('userId');
+  const [created] = await db
+    .insert(schema.internalApplicantNotes)
+    .values({
+      workspaceId: schema.DEFAULT_WORKSPACE_ID,
+      applicantId: applicant.id,
+      noteType,
+      note,
+      occurredAt,
+      createdBy: typeof userId === 'string' ? userId : null,
+    })
+    .returning();
+  if (noteType === 'screening') {
+    await db
+      .update(schema.internalApplicants)
+      .set({ screenedAt: occurredAt, updatedAt: new Date() })
+      .where(eq(schema.internalApplicants.id, applicant.id));
+  }
+  return c.json({ note: created }, 201);
 });
 
 app.get('/api/internal-applicants/:id/documents/:documentId', async (c) => {

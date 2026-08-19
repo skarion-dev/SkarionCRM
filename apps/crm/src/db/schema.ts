@@ -171,6 +171,11 @@ export const internalApplicantDocumentTypeEnum = crmSchema.enum(
   ['resume', 'portfolio', 'certificate', 'other']
 );
 
+export const internalApplicantNoteTypeEnum = crmSchema.enum('internal_applicant_note_type', [
+  'screening',
+  'email',
+]);
+
 export const currencyEnum = crmSchema.enum('currency', [
   'USD',
   'EUR',
@@ -633,6 +638,7 @@ export const internalApplicants = crmSchema.table(
     status: internalApplicantStatusEnum('status').default('new').notNull(),
     firstReceivedAt: timestamp('first_received_at', { withTimezone: true }),
     lastReceivedAt: timestamp('last_received_at', { withTimezone: true }),
+    screenedAt: timestamp('screened_at', { withTimezone: true }),
     messageCount: integer('message_count').default(0).notNull(),
     university: text('university'),
     school: text('school'),
@@ -1380,6 +1386,39 @@ export const internalApplicantMessagesRelations = relations(
     }),
   })
 );
+
+export const internalApplicantNotes = crmSchema.table(
+  'internal_applicant_notes',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    workspaceId: uuid('workspace_id')
+      .default(sql`'${sql.raw(DEFAULT_WORKSPACE_ID)}'::uuid`)
+      .notNull()
+      .references(() => workspaces.id),
+    applicantId: uuid('applicant_id')
+      .notNull()
+      .references(() => internalApplicants.id, { onDelete: 'cascade' }),
+    noteType: internalApplicantNoteTypeEnum('note_type').notNull(),
+    note: text('note').notNull(),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).defaultNow().notNull(),
+    createdBy: uuid('created_by'),
+    ...timestamps(),
+  },
+  (table) => [
+    index('idx_internal_applicant_notes_applicant_occurred').on(
+      table.applicantId,
+      table.occurredAt
+    ),
+    index('idx_internal_applicant_notes_workspace_type').on(table.workspaceId, table.noteType),
+  ]
+);
+
+export const internalApplicantNotesRelations = relations(internalApplicantNotes, ({ one }) => ({
+  applicant: one(internalApplicants, {
+    fields: [internalApplicantNotes.applicantId],
+    references: [internalApplicants.id],
+  }),
+}));
 
 export const leadAiAssessmentsRelations = relations(leadAiAssessments, ({ one }) => ({
   lead: one(leads, {

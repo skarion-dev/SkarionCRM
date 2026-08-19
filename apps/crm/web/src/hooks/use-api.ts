@@ -47,8 +47,10 @@ import {
   deleteWorkflowRule,
   listInternalApplicants,
   getInternalApplicant,
+  createInternalApplicantNote,
   updateInternalApplicant,
   type InternalApplicantStatus,
+  type InternalApplicantNoteType,
   listActivityLogs,
   type ActivityLogResponse,
 } from '../api.js';
@@ -150,6 +152,23 @@ export function useUpdateInternalApplicant() {
     onSuccess: (_result, variables) => {
       qc.invalidateQueries({ queryKey: ['internal-applicants'] });
       qc.invalidateQueries({ queryKey: ['internal-applicant', variables.id] });
+    },
+  });
+}
+
+export function useCreateInternalApplicantNote() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      data,
+    }: {
+      id: string;
+      data: { noteType: InternalApplicantNoteType; note: string; occurredAt: string };
+    }) => createInternalApplicantNote(id, data),
+    onSuccess: (_result, variables) => {
+      qc.invalidateQueries({ queryKey: ['internal-applicant', variables.id] });
+      qc.invalidateQueries({ queryKey: ['internal-applicants'] });
     },
   });
 }

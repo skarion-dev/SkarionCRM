@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   AlertCircle,
@@ -20,9 +20,15 @@ import {
 import {
   useInternalApplicant,
   useInternalApplicants,
+  useCreateInternalApplicantNote,
   useUpdateInternalApplicant,
 } from '../hooks/use-api.js';
-import type { InternalApplicant, InternalApplicantStatus } from '../api.js';
+import type {
+  InternalApplicant,
+  InternalApplicantNote,
+  InternalApplicantNoteType,
+  InternalApplicantStatus,
+} from '../api.js';
 import { downloadInternalApplicantDocument } from '../api.js';
 import { cn } from '../lib/utils.js';
 import { showToast } from '../stores/toast.js';
@@ -84,6 +90,115 @@ function formatDate(value: string | null): string {
     day: 'numeric',
     year: 'numeric',
   });
+}
+
+function formatDateTime(value: string): string {
+  return new Date(value).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function ApplicantNotesSection({
+  applicantId,
+  noteType,
+  title,
+  description,
+  icon,
+  notes,
+  isLoading,
+}: {
+  applicantId: string;
+  noteType: InternalApplicantNoteType;
+  title: string;
+  description: string;
+  icon: ReactNode;
+  notes: InternalApplicantNote[];
+  isLoading: boolean;
+}) {
+  const createNote = useCreateInternalApplicantNote();
+  const [note, setNote] = useState('');
+  const [occurredAt, setOccurredAt] = useState(() => new Date().toISOString().slice(0, 10));
+  const entries = notes.filter((entry) => entry.noteType === noteType);
+
+  const submit = () => {
+    const trimmed = note.trim();
+    if (!trimmed) {
+      showToast(`Add a ${noteType} note before saving.`, 'error');
+      return;
+    }
+    createNote.mutate(
+      { id: applicantId, data: { noteType, note: trimmed, occurredAt } },
+      {
+        onSuccess: () => {
+          setNote('');
+          setOccurredAt(new Date().toISOString().slice(0, 10));
+          showToast(`${title} saved.`, 'success');
+        },
+        onError: (error) =>
+          showToast(error instanceof Error ? error.message : 'Could not save note.', 'error'),
+      }
+    );
+  };
+
+  return (
+    <section className="rounded-lg border border-slate-200 p-4">
+      <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+        {icon} {title}
+      </h3>
+      <p className="mt-1 text-xs text-slate-500">{description}</p>
+      <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
+        <textarea
+          value={note}
+          onChange={(event) => setNote(event.target.value)}
+          rows={3}
+          placeholder={`Add ${noteType} notes…`}
+          className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+        />
+        <div className="flex flex-row gap-2 sm:flex-col">
+          <label className="text-xs text-slate-500">
+            Date
+            <input
+              type="date"
+              value={occurredAt}
+              onChange={(event) => setOccurredAt(event.target.value)}
+              className="mt-1 w-full rounded-md border border-slate-300 px-2 py-2 text-sm text-slate-700"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={createNote.isPending || !note.trim()}
+            className="self-end rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 sm:self-auto"
+          >
+            {createNote.isPending ? 'Saving…' : 'Add note'}
+          </button>
+        </div>
+      </div>
+      <div className="mt-4 space-y-2">
+        {isLoading ? (
+          <div className="text-xs text-slate-400">Loading notes…</div>
+        ) : entries.length === 0 ? (
+          <div className="text-xs text-slate-400">No {noteType} notes yet.</div>
+        ) : (
+          entries.map((entry) => (
+            <article key={entry.id} className="rounded-md bg-slate-50 px-3 py-2">
+              <div className="flex items-center justify-between gap-3 text-[11px] text-slate-400">
+                <span>{formatDateTime(entry.occurredAt)}</span>
+                <span>Added {formatDateTime(entry.createdAt)}</span>
+              </div>
+              <p className="mt-1 whitespace-pre-wrap text-sm leading-5 text-slate-700">
+                {entry.note}
+              </p>
+            </article>
+          ))
+        )}
+      </div>
+    </section>
+  );
 }
 
 function ApplicantDetail({
@@ -306,7 +421,7 @@ function ApplicantDetail({
             </div>
           </section>
 
-          <section className="grid gap-3 rounded-lg border border-slate-200 p-4 text-sm sm:grid-cols-2 lg:grid-cols-4">
+          <section className="grid gap-3 rounded-lg border border-slate-200 p-4 text-sm sm:grid-cols-2 lg:grid-cols-5">
             <div>
               <div className="text-xs text-slate-400">Source</div>
               <div className="mt-1 text-slate-700">{applicant.source}</div>
@@ -322,6 +437,10 @@ function ApplicantDetail({
             <div>
               <div className="text-xs text-slate-400">Last received</div>
               <div className="mt-1 text-slate-700">{formatDate(applicant.lastReceivedAt)}</div>
+            </div>
+            <div>
+              <div className="text-xs text-slate-400">Screened on</div>
+              <div className="mt-1 text-slate-700">{formatDate(applicant.screenedAt)}</div>
             </div>
           </section>
 
@@ -395,6 +514,27 @@ function ApplicantDetail({
               {update.isPending ? 'Saving…' : 'Save notes'}
             </button>
           </section>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <ApplicantNotesSection
+              applicantId={applicant.id}
+              noteType="screening"
+              title="Screening notes"
+              description="Record screening decisions, evidence, and the date the review happened."
+              icon={<ClipboardList size={16} />}
+              notes={data?.notes ?? []}
+              isLoading={isLoading}
+            />
+            <ApplicantNotesSection
+              applicantId={applicant.id}
+              noteType="email"
+              title="Email notes"
+              description="Keep follow-ups, replies, and outreach context separate from screening notes."
+              icon={<Mail size={16} />}
+              notes={data?.notes ?? []}
+              isLoading={isLoading}
+            />
+          </div>
 
           {isLoading ? (
             <div className="text-sm text-slate-400">Loading source documents and messages…</div>

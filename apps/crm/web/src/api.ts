@@ -1163,6 +1163,7 @@ export interface InternalApplicant {
   status: InternalApplicantStatus;
   firstReceivedAt: string | null;
   lastReceivedAt: string | null;
+  screenedAt: string | null;
   messageCount: number;
   university: string | null;
   school: string | null;
@@ -1227,6 +1228,19 @@ export interface InternalApplicantMessage {
   outlookLink: string | null;
 }
 
+export type InternalApplicantNoteType = 'screening' | 'email';
+
+export interface InternalApplicantNote {
+  id: string;
+  applicantId: string;
+  noteType: InternalApplicantNoteType;
+  note: string;
+  occurredAt: string;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface InternalApplicantListResponse {
   applicants: InternalApplicant[];
   page: number;
@@ -1266,7 +1280,18 @@ export function getInternalApplicant(id: string) {
     applicant: InternalApplicant;
     documents: InternalApplicantDocument[];
     messages: InternalApplicantMessage[];
+    notes: InternalApplicantNote[];
   }>(`/api/internal-applicants/${id}`);
+}
+
+export function createInternalApplicantNote(
+  id: string,
+  data: { noteType: InternalApplicantNoteType; note: string; occurredAt: string }
+) {
+  return crmFetch<{ note: InternalApplicantNote }>(`/api/internal-applicants/${id}/notes`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
 }
 
 export function downloadInternalApplicantDocument(applicantId: string, documentId: string) {
