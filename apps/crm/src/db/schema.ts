@@ -151,6 +151,25 @@ export const leadChannelStageEnum = crmSchema.enum('lead_channel_stage', [
   'no_response',
 ]);
 
+/** Recruiting workflow state for Skarion's internal applicant tracker. */
+export const internalApplicantStatusEnum = crmSchema.enum('internal_applicant_status', [
+  'new',
+  'screening',
+  'shortlisted',
+  'interview',
+  'assessment',
+  'offer',
+  'hired',
+  'rejected',
+  'withdrawn',
+  'on_hold',
+]);
+
+export const internalApplicantDocumentTypeEnum = crmSchema.enum(
+  'internal_applicant_document_type',
+  ['resume', 'portfolio', 'certificate', 'other']
+);
+
 export const currencyEnum = crmSchema.enum('currency', [
   'USD',
   'EUR',
@@ -373,6 +392,139 @@ export const leads = crmSchema.table(
     uniqueIndex('idx_leads_idempotency_key')
       .on(table.idempotencyKey)
       .where(sql`${table.idempotencyKey} IS NOT NULL`),
+  ]
+);
+
+/**
+ * Internal recruiting records are intentionally separate from sales leads.
+ * The source-of-truth identity is the applicant number + normalized email;
+ * raw source text remains available for audit while scored fields stay
+ * editable and reviewable by hiring managers.
+ */
+export const internalApplicants = crmSchema.table(
+  'internal_applicants',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    workspaceId: uuid('workspace_id')
+      .default(sql`'${sql.raw(DEFAULT_WORKSPACE_ID)}'::uuid`)
+      .notNull()
+      .references(() => workspaces.id),
+    applicantNumber: text('applicant_number').notNull(),
+    fullName: text('full_name').notNull(),
+    email: text('email').notNull(),
+    phone: text('phone'),
+    rolesApplied: jsonb('roles_applied').notNull(),
+    source: text('source').default('outlook').notNull(),
+    status: internalApplicantStatusEnum('status').default('new').notNull(),
+    firstReceivedAt: timestamp('first_received_at', { withTimezone: true }),
+    lastReceivedAt: timestamp('last_received_at', { withTimezone: true }),
+    messageCount: integer('message_count').default(0).notNull(),
+    university: text('university'),
+    school: text('school'),
+    educationLocation: text('education_location'),
+    gpa: decimal('gpa', { precision: 4, scale: 2 }),
+    graduationYear: integer('graduation_year'),
+    skills: jsonb('skills').notNull(),
+    skillCount: integer('skill_count').default(0).notNull(),
+    cultureEvidenceCount: integer('culture_evidence_count').default(0).notNull(),
+    schoolOutsideDhaka: boolean('school_outside_dhaka').default(false).notNull(),
+    locationProxyAdjustment: integer('location_proxy_adjustment').default(0).notNull(),
+    projectEvidenceCount: integer('project_evidence_count').default(0).notNull(),
+    completenessCount: integer('completeness_count').default(0).notNull(),
+    resumeCount: integer('resume_count').default(0).notNull(),
+    skillsScore: decimal('skills_score', { precision: 5, scale: 2 }),
+    educationScore: decimal('education_score', { precision: 5, scale: 2 }),
+    cultureScore: decimal('culture_score', { precision: 5, scale: 2 }),
+    overallScore: decimal('overall_score', { precision: 5, scale: 2 }),
+    recommendation: text('recommendation'),
+    scoreNotes: text('score_notes'),
+    rawEmailText: text('raw_email_text'),
+    rawTextTruncated: boolean('raw_text_truncated').default(false).notNull(),
+    resumeText: text('resume_text'),
+    sourceMessageIds: jsonb('source_message_ids').notNull(),
+    assignedTo: uuid('assigned_to'),
+    tags: jsonb('tags'),
+    notes: text('notes'),
+    ...timestamps(),
+    ...softDelete(),
+  },
+  (table) => [
+    uniqueIndex('idx_internal_applicants_workspace_number').on(
+      table.workspaceId,
+      table.applicantNumber
+    ),
+    uniqueIndex('idx_internal_applicants_workspace_email').on(
+      table.workspaceId,
+      sql`lower(${table.email})`
+    ),
+    index('idx_internal_applicants_status').on(table.workspaceId, table.status),
+    index('idx_internal_applicants_score').on(table.workspaceId, table.overallScore),
+    index('idx_internal_applicants_received').on(table.workspaceId, table.firstReceivedAt),
+    index('idx_internal_applicants_name').on(table.fullName),
+  ]
+);
+
+export const internalApplicantDocuments = crmSchema.table(
+  'internal_applicant_documents',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    workspaceId: uuid('workspace_id')
+      .default(sql`'${sql.raw(DEFAULT_WORKSPACE_ID)}'::uuid`)
+      .notNull()
+      .references(() => workspaces.id),
+    applicantId: uuid('applicant_id')
+      .notNull()
+      .references(() => internalApplicants.id, { onDelete: 'cascade' }),
+    documentType: internalApplicantDocumentTypeEnum('document_type').default('resume').notNull(),
+    fileName: text('file_name').notNull(),
+    mimeType: text('mime_type'),
+    sourcePath: text('source_path'),
+    storageKey: text('storage_key'),
+    sourceMessageId: text('source_message_id'),
+    extractedText: text('extracted_text'),
+    fileSizeBytes: integer('file_size_bytes'),
+    sha256: text('sha256'),
+    receivedAt: timestamp('received_at', { withTimezone: true }),
+    ...timestamps(),
+  },
+  (table) => [
+    index('idx_internal_applicant_documents_applicant').on(table.applicantId),
+    uniqueIndex('idx_internal_applicant_documents_checksum').on(table.applicantId, table.sha256),
+  ]
+);
+
+export const internalApplicantMessages = crmSchema.table(
+  'internal_applicant_messages',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    workspaceId: uuid('workspace_id')
+      .default(sql`'${sql.raw(DEFAULT_WORKSPACE_ID)}'::uuid`)
+      .notNull()
+      .references(() => workspaces.id),
+    applicantId: uuid('applicant_id')
+      .notNull()
+      .references(() => internalApplicants.id, { onDelete: 'cascade' }),
+    externalMessageId: text('external_message_id').notNull(),
+    messageFile: text('message_file'),
+    receivedAt: timestamp('received_at', { withTimezone: true }),
+    sender: text('sender'),
+    senderName: text('sender_name'),
+    subject: text('subject'),
+    toRecipients: text('to_recipients'),
+    ccRecipients: text('cc_recipients'),
+    bodyContentType: text('body_content_type'),
+    rawEmailText: text('raw_email_text'),
+    rawTruncated: boolean('raw_truncated').default(false).notNull(),
+    hasAttachments: boolean('has_attachments').default(false).notNull(),
+    outlookLink: text('outlook_link'),
+    ...timestamps(),
+  },
+  (table) => [
+    uniqueIndex('idx_internal_applicant_messages_external_id').on(table.externalMessageId),
+    index('idx_internal_applicant_messages_applicant_received').on(
+      table.applicantId,
+      table.receivedAt
+    ),
   ]
 );
 
@@ -988,6 +1140,31 @@ export const leadsRelations = relations(leads, ({ one, many }) => ({
     references: [leadAiAssessments.leadId],
   }),
 }));
+
+export const internalApplicantsRelations = relations(internalApplicants, ({ many }) => ({
+  documents: many(internalApplicantDocuments),
+  messages: many(internalApplicantMessages),
+}));
+
+export const internalApplicantDocumentsRelations = relations(
+  internalApplicantDocuments,
+  ({ one }) => ({
+    applicant: one(internalApplicants, {
+      fields: [internalApplicantDocuments.applicantId],
+      references: [internalApplicants.id],
+    }),
+  })
+);
+
+export const internalApplicantMessagesRelations = relations(
+  internalApplicantMessages,
+  ({ one }) => ({
+    applicant: one(internalApplicants, {
+      fields: [internalApplicantMessages.applicantId],
+      references: [internalApplicants.id],
+    }),
+  })
+);
 
 export const leadAiAssessmentsRelations = relations(leadAiAssessments, ({ one }) => ({
   lead: one(leads, {

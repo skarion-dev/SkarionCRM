@@ -40,6 +40,10 @@ import {
   createWorkflowRule,
   updateWorkflowRule,
   deleteWorkflowRule,
+  listInternalApplicants,
+  getInternalApplicant,
+  updateInternalApplicant,
+  type InternalApplicantStatus,
 } from '../api.js';
 import { buildLeadsQueryString, type LeadFilters } from '../lib/leadFilters.js';
 
@@ -75,6 +79,53 @@ export function useDashboard() {
     },
     refetchInterval: 15_000,
     refetchIntervalInBackground: false,
+  });
+}
+
+export function useInternalApplicants(params: {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  status?: InternalApplicantStatus | '';
+  recommendation?: string;
+  role?: string;
+}) {
+  return useCrmQuery(
+    [
+      'internal-applicants',
+      String(params.page ?? 1),
+      String(params.pageSize ?? 50),
+      params.search ?? '',
+      params.status ?? '',
+      params.recommendation ?? '',
+      params.role ?? '',
+    ],
+    () => listInternalApplicants(params)
+  );
+}
+
+export function useInternalApplicant(id: string | null) {
+  return useCrmQuery(
+    ['internal-applicant', id ?? ''],
+    () => getInternalApplicant(id as string),
+    Boolean(id)
+  );
+}
+
+export function useUpdateInternalApplicant() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      data,
+    }: {
+      id: string;
+      data: Parameters<typeof updateInternalApplicant>[1];
+    }) => updateInternalApplicant(id, data),
+    onSuccess: (_result, variables) => {
+      qc.invalidateQueries({ queryKey: ['internal-applicants'] });
+      qc.invalidateQueries({ queryKey: ['internal-applicant', variables.id] });
+    },
   });
 }
 

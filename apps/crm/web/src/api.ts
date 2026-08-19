@@ -982,6 +982,147 @@ export interface DashboardLead {
   recommendedAction: string;
 }
 
+export type InternalApplicantStatus =
+  | 'new'
+  | 'screening'
+  | 'shortlisted'
+  | 'interview'
+  | 'assessment'
+  | 'offer'
+  | 'hired'
+  | 'rejected'
+  | 'withdrawn'
+  | 'on_hold';
+
+export interface InternalApplicant {
+  id: string;
+  applicantNumber: string;
+  fullName: string;
+  email: string;
+  phone: string | null;
+  rolesApplied: string[];
+  source: string;
+  status: InternalApplicantStatus;
+  firstReceivedAt: string | null;
+  lastReceivedAt: string | null;
+  messageCount: number;
+  university: string | null;
+  school: string | null;
+  educationLocation: string | null;
+  gpa: number | null;
+  graduationYear: number | null;
+  skills: string[];
+  skillCount: number;
+  cultureEvidenceCount: number;
+  schoolOutsideDhaka: boolean;
+  locationProxyAdjustment: number;
+  projectEvidenceCount: number;
+  completenessCount: number;
+  resumeCount: number;
+  skillsScore: number | null;
+  educationScore: number | null;
+  cultureScore: number | null;
+  overallScore: number | null;
+  recommendation: string | null;
+  scoreNotes: string | null;
+  rawEmailText: string | null;
+  rawTextTruncated: boolean;
+  resumeText: string | null;
+  sourceMessageIds: string[];
+  assignedTo: string | null;
+  tags: string[] | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface InternalApplicantDocument {
+  id: string;
+  applicantId: string;
+  documentType: 'resume' | 'portfolio' | 'certificate' | 'other';
+  fileName: string;
+  mimeType: string | null;
+  sourcePath: string | null;
+  storageKey: string | null;
+  sourceMessageId: string | null;
+  extractedText: string | null;
+  fileSizeBytes: number | null;
+  sha256: string | null;
+  receivedAt: string | null;
+}
+
+export interface InternalApplicantMessage {
+  id: string;
+  applicantId: string;
+  externalMessageId: string;
+  messageFile: string | null;
+  receivedAt: string | null;
+  sender: string | null;
+  senderName: string | null;
+  subject: string | null;
+  toRecipients: string | null;
+  ccRecipients: string | null;
+  bodyContentType: string | null;
+  rawEmailText: string | null;
+  rawTruncated: boolean;
+  hasAttachments: boolean;
+  outlookLink: string | null;
+}
+
+export interface InternalApplicantListResponse {
+  applicants: InternalApplicant[];
+  page: number;
+  pageSize: number;
+  total: number;
+  stats: {
+    total: number;
+    withResume: number;
+    highPriority: number;
+    review: number;
+    hold: number;
+  };
+}
+
+export function listInternalApplicants(
+  params: {
+    page?: number;
+    pageSize?: number;
+    search?: string;
+    status?: InternalApplicantStatus | '';
+    recommendation?: string;
+    role?: string;
+  } = {}
+) {
+  const qs = new URLSearchParams();
+  qs.set('page', String(params.page ?? 1));
+  qs.set('pageSize', String(params.pageSize ?? 50));
+  if (params.search) qs.set('search', params.search);
+  if (params.status) qs.set('status', params.status);
+  if (params.recommendation) qs.set('recommendation', params.recommendation);
+  if (params.role) qs.set('role', params.role);
+  return crmFetch<InternalApplicantListResponse>(`/api/internal-applicants?${qs.toString()}`);
+}
+
+export function getInternalApplicant(id: string) {
+  return crmFetch<{
+    applicant: InternalApplicant;
+    documents: InternalApplicantDocument[];
+    messages: InternalApplicantMessage[];
+  }>(`/api/internal-applicants/${id}`);
+}
+
+export function updateInternalApplicant(
+  id: string,
+  data: Partial<
+    Pick<InternalApplicant, 'status' | 'recommendation' | 'notes' | 'assignedTo' | 'tags'>
+  >
+) {
+  return crmFetch<{ applicant: InternalApplicant }>(`/api/internal-applicants/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+}
+
 export function listCompanies() {
   return crmFetch<{ companies: Company[] }>('/api/companies');
 }

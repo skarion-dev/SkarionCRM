@@ -16,6 +16,7 @@ import TasksPage from './pages/TasksPage.js';
 import PipelinePage from './pages/PipelinePage.js';
 import SettingsPage from './pages/SettingsPage.js';
 import ChatPage from './pages/ChatPage.js';
+import InternalApplicantsPage from './pages/InternalApplicantsPage.js';
 
 const ReportingCeoPage = lazy(() => import('./pages/ReportingCeoPage.js'));
 
@@ -172,6 +173,14 @@ export default function App() {
             element={
               <RequireAuth>
                 <ChatPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/internal-applicants"
+            element={
+              <RequireAuth>
+                <InternalApplicantsPage />
               </RequireAuth>
             }
           />

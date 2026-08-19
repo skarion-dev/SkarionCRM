@@ -2638,6 +2638,192 @@ function getRole(c: unknown): string {
   return (apps as { crm?: string } | undefined)?.crm ?? '';
 }
 
+function canViewInternalApplicants(c: { get: (key: string) => unknown }): boolean {
+  return Boolean(c.get('isSuperadmin')) || getRole(c) === 'manager';
+}
+
+function serializeInternalApplicant(row: typeof schema.internalApplicants.$inferSelect) {
+  return {
+    ...row,
+    gpa: row.gpa === null ? null : Number(row.gpa),
+    skillsScore: row.skillsScore === null ? null : Number(row.skillsScore),
+    educationScore: row.educationScore === null ? null : Number(row.educationScore),
+    cultureScore: row.cultureScore === null ? null : Number(row.cultureScore),
+    overallScore: row.overallScore === null ? null : Number(row.overallScore),
+  };
+}
+
+function internalApplicantStatus(
+  value: unknown
+): (typeof schema.internalApplicantStatusEnum.enumValues)[number] | null {
+  return typeof value === 'string' &&
+    schema.internalApplicantStatusEnum.enumValues.includes(value as never)
+    ? (value as (typeof schema.internalApplicantStatusEnum.enumValues)[number])
+    : null;
+}
+
+app.get('/api/internal-applicants', async (c) => {
+  if (!canViewInternalApplicants(c))
+    return c.json({ error: 'Hiring manager access is required.' }, 403);
+
+  const db = getDb(c.env, schema) as CrmDb;
+  const workspaceId = schema.DEFAULT_WORKSPACE_ID;
+  const page = Math.max(1, Number(c.req.query('page') ?? 1) || 1);
+  const pageSize = Math.min(100, Math.max(1, Number(c.req.query('pageSize') ?? 50) || 50));
+  const search = c.req.query('search')?.trim() ?? '';
+  const status = internalApplicantStatus(c.req.query('status'));
+  const recommendation = c.req.query('recommendation')?.trim() ?? '';
+  const role = c.req.query('role')?.trim() ?? '';
+
+  const filters = [
+    eq(schema.internalApplicants.workspaceId, workspaceId),
+    isNull(schema.internalApplicants.deletedAt),
+    status ? eq(schema.internalApplicants.status, status) : undefined,
+    recommendation
+      ? ilike(schema.internalApplicants.recommendation, `%${recommendation}%`)
+      : undefined,
+    role ? sql`${schema.internalApplicants.rolesApplied}::text ILIKE ${`%${role}%`}` : undefined,
+    search
+      ? or(
+          ilike(schema.internalApplicants.fullName, `%${search}%`),
+          ilike(schema.internalApplicants.email, `%${search}%`),
+          ilike(schema.internalApplicants.applicantNumber, `%${search}%`),
+          sql`${schema.internalApplicants.rolesApplied}::text ILIKE ${`%${search}%`}`
+        )
+      : undefined,
+  ].filter((value): value is NonNullable<typeof value> => value !== undefined);
+  const where = and(...filters);
+
+  const [rows, countRows] = await Promise.all([
+    db
+      .select()
+      .from(schema.internalApplicants)
+      .where(where)
+      .orderBy(
+        desc(schema.internalApplicants.overallScore),
+        desc(schema.internalApplicants.firstReceivedAt)
+      )
+      .limit(pageSize)
+      .offset((page - 1) * pageSize),
+    db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.internalApplicants)
+      .where(where),
+  ]);
+
+  const statsWhere = and(
+    eq(schema.internalApplicants.workspaceId, workspaceId),
+    isNull(schema.internalApplicants.deletedAt)
+  );
+  const [totalRows, resumeRows, highRows, reviewRows, holdRows] = await Promise.all([
+    db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.internalApplicants)
+      .where(statsWhere),
+    db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.internalApplicants)
+      .where(and(statsWhere, sql`${schema.internalApplicants.resumeCount} > 0`)),
+    db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.internalApplicants)
+      .where(and(statsWhere, sql`${schema.internalApplicants.recommendation} = 'High priority'`)),
+    db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.internalApplicants)
+      .where(and(statsWhere, sql`${schema.internalApplicants.recommendation} = 'Review'`)),
+    db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.internalApplicants)
+      .where(
+        and(statsWhere, sql`${schema.internalApplicants.recommendation} = 'Hold / incomplete'`)
+      ),
+  ]);
+
+  return c.json({
+    applicants: rows.map(serializeInternalApplicant),
+    page,
+    pageSize,
+    total: Number(countRows[0]?.count ?? 0),
+    stats: {
+      total: Number(totalRows[0]?.count ?? 0),
+      withResume: Number(resumeRows[0]?.count ?? 0),
+      highPriority: Number(highRows[0]?.count ?? 0),
+      review: Number(reviewRows[0]?.count ?? 0),
+      hold: Number(holdRows[0]?.count ?? 0),
+    },
+  });
+});
+
+app.get('/api/internal-applicants/:id', async (c) => {
+  if (!canViewInternalApplicants(c))
+    return c.json({ error: 'Hiring manager access is required.' }, 403);
+  const db = getDb(c.env, schema) as CrmDb;
+  const [applicant] = await db
+    .select()
+    .from(schema.internalApplicants)
+    .where(
+      and(
+        eq(schema.internalApplicants.id, c.req.param('id')),
+        eq(schema.internalApplicants.workspaceId, schema.DEFAULT_WORKSPACE_ID),
+        isNull(schema.internalApplicants.deletedAt)
+      )
+    )
+    .limit(1);
+  if (!applicant) return c.json({ error: 'Applicant not found.' }, 404);
+  const [documents, messages] = await Promise.all([
+    db
+      .select()
+      .from(schema.internalApplicantDocuments)
+      .where(eq(schema.internalApplicantDocuments.applicantId, applicant.id))
+      .orderBy(desc(schema.internalApplicantDocuments.receivedAt)),
+    db
+      .select()
+      .from(schema.internalApplicantMessages)
+      .where(eq(schema.internalApplicantMessages.applicantId, applicant.id))
+      .orderBy(desc(schema.internalApplicantMessages.receivedAt)),
+  ]);
+  return c.json({ applicant: serializeInternalApplicant(applicant), documents, messages });
+});
+
+app.patch('/api/internal-applicants/:id', async (c) => {
+  if (!canViewInternalApplicants(c))
+    return c.json({ error: 'Hiring manager access is required.' }, 403);
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const update: Partial<typeof schema.internalApplicants.$inferInsert> = { updatedAt: new Date() };
+  if (body.status !== undefined) {
+    const status = internalApplicantStatus(body.status);
+    if (!status) return c.json({ error: 'Invalid applicant status.' }, 400);
+    update.status = status;
+  }
+  if (body.recommendation !== undefined)
+    update.recommendation =
+      typeof body.recommendation === 'string' ? body.recommendation.slice(0, 100) : null;
+  if (body.notes !== undefined)
+    update.notes = typeof body.notes === 'string' ? body.notes.slice(0, 10000) : null;
+  if (body.assignedTo !== undefined)
+    update.assignedTo =
+      typeof body.assignedTo === 'string' && body.assignedTo ? body.assignedTo : null;
+  if (body.tags !== undefined)
+    update.tags = Array.isArray(body.tags)
+      ? body.tags.filter((tag): tag is string => typeof tag === 'string').slice(0, 30)
+      : null;
+  const db = getDb(c.env, schema) as CrmDb;
+  const [updated] = await db
+    .update(schema.internalApplicants)
+    .set(update)
+    .where(
+      and(
+        eq(schema.internalApplicants.id, c.req.param('id')),
+        eq(schema.internalApplicants.workspaceId, schema.DEFAULT_WORKSPACE_ID),
+        isNull(schema.internalApplicants.deletedAt)
+      )
+    )
+    .returning();
+  if (!updated) return c.json({ error: 'Applicant not found.' }, 404);
+  return c.json({ applicant: serializeInternalApplicant(updated) });
+});
+
 type AiRuntimeSettings = {
   defaultProvider: 'vertex_proxy' | 'google_ai';
   tierModels: {

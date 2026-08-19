@@ -35,6 +35,7 @@ import {
   ClipboardCheck,
   Moon,
   Sun,
+  UserRoundSearch,
 } from 'lucide-react';
 
 const THEME_STORAGE_KEY = 'skarion-crm-theme';
@@ -65,6 +66,12 @@ const NAV_ITEMS = [
   { icon: Users, label: 'Opportunities', path: '/opportunities', roles: ['manager', 'member'] },
   { icon: CheckSquare, label: 'Tasks', path: '/tasks', roles: ['manager', 'member'] },
   { icon: MessageSquare, label: 'AI Chat', path: '/chat', roles: ['manager', 'member'] },
+  {
+    icon: UserRoundSearch,
+    label: 'Internal Applicants',
+    path: '/internal-applicants',
+    roles: ['manager'],
+  },
   { icon: Crown, label: 'Reporting CEO', path: '/ceo-chat', roles: [] },
   { icon: Settings, label: 'Settings', path: '/settings', roles: ['manager'] },
 ];
