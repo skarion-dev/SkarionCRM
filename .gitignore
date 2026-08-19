@@ -14,3 +14,6 @@ coverage/
 .dev.vars.*
 !*.example
 Notes/
+
+# Personal extension API keys - local-only, never a repo secret
+extension/*/default-settings.js

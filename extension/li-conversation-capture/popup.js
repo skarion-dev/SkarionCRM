@@ -175,10 +175,19 @@ chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
 });
 
 void chrome.storage.local.get(['crmSettings']).then(async (stored) => {
+  // First run on this machine: seed from default-settings.js (gitignored,
+  // ships only in the locally-built/zipped extension) so it works with no
+  // manual setup. Once anything is saved to chrome.storage.local, that
+  // always wins over the seed.
+  const seed = window.__SKARION_DEFAULT_SETTINGS__;
+  const hasStored = Boolean(stored.crmSettings?.apiKey);
   crmSettings = {
-    crmUrl: normalizeCrmUrl(stored.crmSettings?.crmUrl) || DEFAULT_CRM_URL,
-    apiKey: stored.crmSettings?.apiKey || '',
+    crmUrl: normalizeCrmUrl(stored.crmSettings?.crmUrl || seed?.crmUrl) || DEFAULT_CRM_URL,
+    apiKey: (hasStored ? stored.crmSettings.apiKey : seed?.apiKey) || '',
   };
+  if (!hasStored && crmSettings.apiKey) {
+    await chrome.storage.local.set({ crmSettings });
+  }
   crmUrlInput.value = crmSettings.crmUrl;
   apiKeyInput.value = crmSettings.apiKey;
   if (!crmSettings.apiKey) settings.classList.add('open');
