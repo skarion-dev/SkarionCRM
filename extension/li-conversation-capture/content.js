@@ -143,7 +143,19 @@ function initLiConvoCapture() {
   }
 
   function extractThreadId() {
-    const match = window.location.pathname.match(/\/messaging\/thread\/([^/]+)\/?/);
+    // When this frame is the child iframe LinkedIn sometimes renders the
+    // real thread inside (see the all_frames comment above), this frame's
+    // own window.location is something unrelated (observed: /preload/) —
+    // only the top-level window's address bar URL actually has the thread
+    // id. Same-origin (both www.linkedin.com), so window.top is reachable.
+    let pathname = window.location.pathname;
+    try {
+      if (window.top && window.top !== window) pathname = window.top.location.pathname;
+    } catch {
+      // Cross-origin top window (shouldn't happen on linkedin.com, but
+      // fall back to this frame's own location rather than throwing).
+    }
+    const match = pathname.match(/\/messaging\/thread\/([^/]+)\/?/);
     return match ? decodeURIComponent(match[1]) : '';
   }
 

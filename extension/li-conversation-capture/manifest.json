@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Skarion Conversation Capture",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Ingests the open LinkedIn conversation into Skarion CRM and drafts reply options from the candidate-conversation agent.",
   "permissions": ["activeTab", "scripting", "storage", "tabs", "sidePanel"],
   "host_permissions": [
