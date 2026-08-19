@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { login, loginVerify, me } from '../api.js';
+import { changeTemporaryPassword, login, loginVerify, me } from '../api.js';
 import { redirectAfterLogin } from '../redirect.js';
 
 export function Login() {
@@ -8,7 +8,9 @@ export function Login() {
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
   const [pendingToken, setPendingToken] = useState('');
-  const [step, setStep] = useState<'password' | 'code'>('password');
+  const [step, setStep] = useState<'password' | 'code' | 'change'>('password');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -19,6 +21,10 @@ export function Login() {
     try {
       const result = await login(email, password);
       if (result.access_token) {
+        if (result.user?.mustChangePassword) {
+          setStep('change');
+          return;
+        }
         const meResponse = await me(result.access_token);
         redirectAfterLogin(meResponse.apps, result.access_token, result.refresh_token);
         return;
@@ -43,10 +49,40 @@ export function Login() {
     setLoading(true);
     try {
       const result = await loginVerify(pendingToken, code);
+      if (result.user.mustChangePassword) {
+        setStep('change');
+        return;
+      }
       const meResponse = await me(result.access_token);
       redirectAfterLogin(meResponse.apps, result.access_token, result.refresh_token);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Verification failed.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleChangePassword(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    if (newPassword.length < 8) {
+      setError('New password must be at least 8 characters.');
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      setError('Passwords do not match.');
+      return;
+    }
+    setLoading(true);
+    try {
+      await changeTemporaryPassword(email, password, newPassword);
+      setPassword(newPassword);
+      setNewPassword('');
+      setConfirmNewPassword('');
+      setStep('password');
+      setError('Password updated. Sign in again with your new password.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update password.');
     } finally {
       setLoading(false);
     }
@@ -57,6 +93,37 @@ export function Login() {
     setPendingToken('');
     setCode('');
     setError('');
+  }
+
+  if (step === 'change') {
+    return (
+      <div style={styles.page}>
+        <form onSubmit={handleChangePassword} style={styles.form}>
+          <h1 style={styles.heading}>Set your new password</h1>
+          <p style={styles.subtext}>Your temporary password can only be used once.</p>
+          <input
+            type="password"
+            placeholder="New password"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            autoComplete="new-password"
+            required
+          />
+          <input
+            type="password"
+            placeholder="Confirm new password"
+            value={confirmNewPassword}
+            onChange={(e) => setConfirmNewPassword(e.target.value)}
+            autoComplete="new-password"
+            required
+          />
+          {error && <p style={styles.error}>{error}</p>}
+          <button type="submit" disabled={loading}>
+            {loading ? 'Saving...' : 'Set new password'}
+          </button>
+        </form>
+      </div>
+    );
   }
 
   if (step === 'code') {

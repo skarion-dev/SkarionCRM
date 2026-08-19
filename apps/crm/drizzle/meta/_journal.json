@@ -299,8 +299,36 @@
     {
       "idx": 42,
       "version": "7",
+      "when": 1785700000000,
+      "tag": "0042_ready_for_email_stage",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1785980000000,
+      "tag": "0044_promote_stuck_extension_captures",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1785985000000,
+      "tag": "0045_company_people_lead_profile",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1785986000000,
+      "tag": "0046_company_person_activities",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
       "when": 1787164917886,
-      "tag": "0042_internal_applicants",
+      "tag": "0047_internal_applicants",
       "breakpoints": true
     }
   ]

@@ -6,6 +6,7 @@ import {
   isLeadHoldingStage,
   journeyStageForTags,
   journeyStageFromLegacy,
+  legacyFieldsForJourney,
   mergeJourneyWithChannelStages,
   normalizeTagNames,
   profileCaptureCompleteTags,
@@ -20,6 +21,10 @@ describe('lead journey compatibility', () => {
     );
     expect(journeyStageFromLegacy({ outreachStatus: 'booked_call' })).toBe('meeting_booked');
     expect(journeyStageFromLegacy({ hasConnectionNote: true })).toBe('ready_to_reach_out');
+    expect(legacyFieldsForJourney('ready_for_email')).toEqual({
+      status: 'new',
+      outreachStatus: 'not_approached',
+    });
   });
 
   it('moves forward from channel activity without regressing manual outcomes', () => {
@@ -27,6 +32,10 @@ describe('lead journey compatibility', () => {
       'connection_sent'
     );
     expect(mergeJourneyWithChannelStages('engaged', ['connection_request_sent'])).toBe('engaged');
+    expect(mergeJourneyWithChannelStages('ready_for_email', [])).toBe('ready_for_email');
+    expect(mergeJourneyWithChannelStages('ready_for_email', ['connection_request_sent'])).toBe(
+      'connection_sent'
+    );
     expect(mergeJourneyWithChannelStages('nurture', ['replied'])).toBe('nurture');
     expect(mergeJourneyWithChannelStages('follow_up', ['booked_call'])).toBe('follow_up');
     expect(mergeJourneyWithChannelStages('future', ['connection_request_sent'])).toBe(
@@ -60,6 +69,7 @@ describe('lead tags', () => {
     expect(syncHoldingTagsForJourney(['Future'], 'foreign_national')).toEqual(['Foreign National']);
     expect(syncHoldingTagsForJourney(['Foreign National'], 'stem')).toEqual(['STEM']);
     expect(isLeadActivationStage('new')).toBe(true);
+    expect(isLeadActivationStage('ready_for_email')).toBe(true);
     expect(isLeadActivationStage('future')).toBe(false);
     expect(isLeadHoldingStage('future')).toBe(true);
     expect(isLeadHoldingStage('foreign_national')).toBe(true);

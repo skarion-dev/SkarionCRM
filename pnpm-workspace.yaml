@@ -1,5 +1,8 @@
 packages:
   - 'apps/*'
+  # The standalone Cloud Run gateway is built by Cloud Build and has its own
+  # npm dependency graph; keep it out of the CRM workspace lockfile.
+  - '!apps/vertex-gateway'
   - 'apps/identity/admin'
   - 'apps/identity/login'
   - 'apps/crm/web'

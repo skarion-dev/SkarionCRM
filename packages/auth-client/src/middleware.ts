@@ -28,6 +28,15 @@ export async function requireAuth(
   const token = header.slice('Bearer '.length);
   try {
     const payload = await verifyAccessToken(token, c.env.JWT_SECRET);
+    if (payload.mustChangePassword) {
+      return c.json(
+        {
+          error: 'Password change required before accessing the application.',
+          code: 'PASSWORD_CHANGE_REQUIRED',
+        },
+        403
+      );
+    }
     c.set('userId', payload.sub);
     c.set('userEmail', payload.email);
     c.set('apps', payload.apps);

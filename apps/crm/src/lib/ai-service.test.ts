@@ -3,6 +3,7 @@ import {
   cosineSimilarity,
   normalizeCandidateOutreachDraft,
   normalizeLinkedinConnectionNote,
+  normalizeOutreachDraft,
   sanitizeNormalizedLeadProfile,
 } from './ai-service.js';
 
@@ -38,6 +39,15 @@ describe('candidate outreach draft normalization', () => {
       body: 'Hi Sam, your OSP design work caught my attention.\n\nHow is your search going?',
       wordCount: 14,
     });
+  });
+});
+
+describe('outreach channel limits', () => {
+  it('enforces paste-ready limits for LinkedIn and SMS responses', () => {
+    const longDraft = `Hi Sam, ${'your fiber design work and GIS experience stood out. '.repeat(20)}`;
+    expect([...normalizeOutreachDraft(longDraft, 'linkedin')].length).toBeLessThanOrEqual(300);
+    expect([...normalizeOutreachDraft(longDraft, 'sms')].length).toBeLessThanOrEqual(160);
+    expect(normalizeOutreachDraft(longDraft, 'linkedin').endsWith('...')).toBe(true);
   });
 });
 

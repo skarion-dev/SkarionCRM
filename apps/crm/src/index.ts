@@ -128,6 +128,7 @@ import {
   sanitizeCandidateLeadAction,
   sanitizeCandidateConversationIdentity,
   sanitizeCandidateDraft,
+  sanitizeCandidateDraftOptions,
   type CandidateLeadAction,
   type CandidateConversationContext,
   type CandidateConversationIdentity,
@@ -390,6 +391,92 @@ async function enqueueLeadProfileCleanup(db: CrmDb, leadId: string): Promise<voi
       updatedAt: now,
     })
     .where(eq(schema.leads.id, leadId));
+}
+
+/**
+ * Imports can create the lead row before a long-lived background import task
+ * is interrupted. Reconcile those rows on every cron drain so a prospect can
+ * never remain in the UI as "waiting for cleanup" without a queue job.
+ */
+async function drainPhdProspectDisqualifications(db: CrmDb, limit = 100): Promise<void> {
+  const phdLeads = await db
+    .select()
+    .from(schema.leads)
+    .where(
+      and(
+        eq(schema.leads.reviewState, 'pending'),
+        isNull(schema.leads.deletedAt),
+        prospectHasPhdSql()
+      )
+    )
+    .orderBy(asc(schema.leads.createdAt))
+    .limit(limit);
+  await runWithConcurrency(phdLeads, AI_QUEUE_CONCURRENCY, async (lead) => {
+    await enforcePhdAutoDisqualification(db, lead, null);
+  });
+}
+
+async function recoverOrphanedLeadProfileJobs(db: CrmDb): Promise<void> {
+  await db.execute(sql`
+    INSERT INTO "crm"."lead_profile_jobs" (
+      "lead_id", "status", "attempts", "next_attempt_at", "locked_at",
+      "completed_at", "last_error", "created_at", "updated_at"
+    )
+    SELECT
+      lead."id", 'pending', 0, now(), NULL, NULL, NULL, now(), now()
+    FROM "crm"."leads" lead
+    LEFT JOIN "crm"."lead_profile_jobs" job ON job."lead_id" = lead."id"
+    WHERE lead."deleted_at" IS NULL
+      AND lead."review_state" = 'pending'
+      AND lead."profile_normalization_status" = 'pending'
+      AND job."id" IS NULL
+      AND NOT (
+        lower(concat_ws(
+          ' ', lead."first_name", lead."last_name", lead."headline", lead."about",
+          lead."experience", lead."education", lead."skills", lead."current_role",
+          lead."current_role_dates", lead."profile_summary", lead."education_entries"::text,
+          lead."experience_entries"::text, lead."notes"
+        )) ~ '(^|[^[:alpha:]])ph[.]?[[:space:]]*d[.]?([^[:alpha:]]|$)'
+        OR lower(concat_ws(
+          ' ', lead."first_name", lead."last_name", lead."headline", lead."about",
+          lead."experience", lead."education", lead."skills", lead."current_role",
+          lead."current_role_dates", lead."profile_summary", lead."education_entries"::text,
+          lead."experience_entries"::text, lead."notes"
+        )) LIKE '%doctor of philosophy%'
+      )
+      AND (
+        NULLIF(trim(lead."headline"), '') IS NOT NULL
+        OR NULLIF(trim(lead."location"), '') IS NOT NULL
+        OR NULLIF(trim(lead."about"), '') IS NOT NULL
+        OR NULLIF(trim(lead."experience"), '') IS NOT NULL
+        OR NULLIF(trim(lead."education"), '') IS NOT NULL
+        OR NULLIF(trim(lead."skills"), '') IS NOT NULL
+        OR NULLIF(trim(lead."current_role"), '') IS NOT NULL
+        OR NULLIF(trim(lead."current_role_dates"), '') IS NOT NULL
+        OR (lead."source" = 'linkedin' AND NULLIF(trim(lead."notes"), '') IS NOT NULL)
+      )
+    ON CONFLICT ("lead_id") DO NOTHING
+  `);
+
+  // Recover the other half of the same inconsistency if a worker stopped
+  // between completing the queue row and updating the lead.
+  await db.execute(sql`
+    UPDATE "crm"."lead_profile_jobs" job
+    SET
+      "status" = 'pending',
+      "attempts" = 0,
+      "next_attempt_at" = now(),
+      "locked_at" = NULL,
+      "completed_at" = NULL,
+      "last_error" = NULL,
+      "updated_at" = now()
+    FROM "crm"."leads" lead
+    WHERE job."lead_id" = lead."id"
+      AND job."status" = 'completed'
+      AND lead."deleted_at" IS NULL
+      AND lead."review_state" = 'pending'
+      AND lead."profile_normalization_status" = 'pending'
+  `);
 }
 
 function structuredLeadQualificationInput(
@@ -732,6 +819,8 @@ async function processProspectImport(
       {
         id: string;
         workspaceId: string;
+        linkedinProfileKey: string | null;
+        linkedinUrl: string | null;
         headline: string | null;
         location: string | null;
         about: string | null;
@@ -745,17 +834,23 @@ async function processProspectImport(
         connectionDegree: string | null;
         prospectSourceContext: unknown;
         journeyStage: string;
+        reviewState: string;
       }
     >();
     for (const keyChunk of chunksOf(
       candidates.map((candidate) => candidate.linkedinProfileKey),
       400
     )) {
+      const urlChunk = candidates
+        .filter((candidate) => keyChunk.includes(candidate.linkedinProfileKey))
+        .map((candidate) => candidate.linkedinUrl?.toLowerCase())
+        .filter((url): url is string => Boolean(url));
       const rows = await db
         .select({
           id: schema.leads.id,
           workspaceId: schema.leads.workspaceId,
           linkedinProfileKey: schema.leads.linkedinProfileKey,
+          linkedinUrl: schema.leads.linkedinUrl,
           headline: schema.leads.headline,
           location: schema.leads.location,
           about: schema.leads.about,
@@ -769,17 +864,26 @@ async function processProspectImport(
           connectionDegree: schema.leads.connectionDegree,
           prospectSourceContext: schema.leads.prospectSourceContext,
           journeyStage: schema.leads.journeyStage,
+          reviewState: schema.leads.reviewState,
         })
         .from(schema.leads)
         .where(
           and(
             eq(schema.leads.workspaceId, batch.workspaceId),
-            inArray(schema.leads.linkedinProfileKey, keyChunk),
+            or(
+              inArray(schema.leads.linkedinProfileKey, keyChunk),
+              ...(urlChunk.length > 0
+                ? [inArray(sql`lower(${schema.leads.linkedinUrl})`, urlChunk)]
+                : [])
+            ),
             isNull(schema.leads.deletedAt)
           )
         );
       for (const row of rows) {
-        if (row.linkedinProfileKey) existingByKey.set(row.linkedinProfileKey, row);
+        // Older rows may have a URL but no profile key. Normalize them in
+        // memory so a re-import cannot create a second prospect.
+        const key = row.linkedinProfileKey ?? linkedinProfileKey(row.linkedinUrl);
+        if (key) existingByKey.set(key, { ...row, linkedinProfileKey: key });
       }
     }
 
@@ -944,6 +1048,7 @@ async function processProspectImport(
           id: schema.leads.id,
           workspaceId: schema.leads.workspaceId,
           linkedinProfileKey: schema.leads.linkedinProfileKey,
+          linkedinUrl: schema.leads.linkedinUrl,
           headline: schema.leads.headline,
           location: schema.leads.location,
           about: schema.leads.about,
@@ -957,6 +1062,7 @@ async function processProspectImport(
           connectionDegree: schema.leads.connectionDegree,
           prospectSourceContext: schema.leads.prospectSourceContext,
           journeyStage: schema.leads.journeyStage,
+          reviewState: schema.leads.reviewState,
         })
         .from(schema.leads)
         .where(
@@ -976,6 +1082,7 @@ async function processProspectImport(
     );
     const cleanupLeadIds = new Set<string>();
     const provisionalScoreLeadIds = new Set<string>();
+    const promotedProspectIds = new Set<string>();
     for (const [profileKey, existing] of existingByKey) {
       if (discardedActiveDuplicateKeys.has(profileKey)) continue;
       const candidate = candidateByKey.get(profileKey);
@@ -1001,11 +1108,27 @@ async function processProspectImport(
           prospectSourceContext: existing.prospectSourceContext ?? candidate.sourceContext,
           profileCaptureStatus: 'partial',
           profileNormalizationStatus: 'pending',
+          ...(existing.reviewState === 'pending'
+            ? {
+                reviewState: 'accepted' as const,
+                reviewedAt: new Date(),
+                reviewedBy: actorUserId,
+                rowVersion: sql`${schema.leads.rowVersion} + 1`,
+              }
+            : {}),
           updatedAt: new Date(),
         })
         .where(eq(schema.leads.id, existing.id))
         .returning({ id: schema.leads.id });
-      if (enriched) cleanupLeadIds.add(enriched.id);
+      if (enriched) {
+        cleanupLeadIds.add(enriched.id);
+        if (existing.reviewState === 'pending') {
+          promotedProspectIds.add(enriched.id);
+          await db
+            .delete(schema.prospectReviewClaims)
+            .where(eq(schema.prospectReviewClaims.leadId, enriched.id));
+        }
+      }
     }
     for (const candidate of newCandidates) {
       const leadId = createdByKey.get(candidate.linkedinProfileKey);
@@ -1021,6 +1144,15 @@ async function processProspectImport(
     }
     for (const leadId of provisionalScoreLeadIds) {
       await enqueueLeadScoring(db, leadId);
+    }
+    for (const leadId of promotedProspectIds) {
+      await db.insert(schema.leadEventOutbox).values({
+        workspaceId: batch.workspaceId,
+        leadId,
+        eventType: 'prospect.reviewed',
+        actorUserId,
+        payload: { leadId, reviewState: 'accepted', source: 'prospect-recapture' },
+      });
     }
     const memberships = candidates
       .map((candidate) => {
@@ -1162,6 +1294,7 @@ interface Env extends AiGatewayEnv {
   RESEND_API_KEY?: string;
   WORKFLOW_RUNNER_URL?: string;
   WORKFLOW_RUNNER_SECRET?: string;
+  COMPANY_SYNC_OWNER_ID?: string;
   AI_PROVIDER?: string;
   AI_GATEWAY_BASE_URL?: string;
   AI_GATEWAY_API_KEY?: string;
@@ -1182,6 +1315,10 @@ interface Env extends AiGatewayEnv {
   DOCUMENT_CONVERTER_SECRET?: string;
   /** Max chars to send to AI from converted documents. Default 50000. */
   DOCUMENT_AI_MAX_CHARS?: string;
+  /** TalentOS jobs/company feed. The CRM treats TalentOS as the source of truth. */
+  TALENTOS_API_URL?: string;
+  TALENTOS_API_KEY?: string;
+  CRM_INTEGRATION_SECRET?: string;
   /** Git branch name, set by deploy workflow. Optional for debug endpoints. */
   GIT_BRANCH?: string;
   /** Git commit SHA, set by deploy workflow. Optional for debug endpoints. */
@@ -1311,6 +1448,10 @@ app.use('*', async (c, next) => {
 
 app.get('/health', (c) => c.json({ status: 'ok', service: 'skarion-crm-platform' }));
 
+// Keep the extension compatibility path in the deploy diff so production
+// rollouts cannot silently remain on a pre-compatibility worker revision.
+// The capture-history migration is idempotent for existing production rows.
+
 app.get('/api/debug/version', (c) => {
   const branch = c.env.GIT_BRANCH ?? 'cloudflare-platform-rewrite';
   const commit = c.env.GIT_COMMIT_SHA ?? 'unknown';
@@ -1405,6 +1546,13 @@ async function findPendingProspectForCapture(
   const name = deriveProspectName(input.profileName, input.linkedinUrl ?? '');
   if (name.generated) return null;
 
+  // Older extension builds sometimes return a different LinkedIn URL shape
+  // (opaque member id vs. public slug). Match the captured name using both
+  // the split fields and a punctuation-insensitive full-name key so the
+  // pending prospect is still promoted instead of receiving a second row.
+  const fullName = input.profileName.trim().replace(/\s+/g, ' ').split(',')[0] ?? '';
+  const compactName = fullName.toLowerCase().replace(/[^a-z0-9]/g, '');
+
   const matches = await db
     .select()
     .from(schema.leads)
@@ -1412,8 +1560,11 @@ async function findPendingProspectForCapture(
       and(
         eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
         eq(schema.leads.reviewState, 'pending'),
-        eq(sql`lower(trim(${schema.leads.firstName}))`, name.firstName.trim().toLowerCase()),
-        eq(sql`lower(trim(${schema.leads.lastName}))`, name.lastName.trim().toLowerCase()),
+        sql`(
+          (lower(trim(${schema.leads.firstName})) = ${name.firstName.trim().toLowerCase()}
+            AND lower(trim(${schema.leads.lastName})) = ${name.lastName.trim().toLowerCase()})
+          OR regexp_replace(lower(concat_ws('', ${schema.leads.firstName}, ${schema.leads.lastName})), '[^a-z0-9]', '', 'g') = ${compactName}
+        )`,
         isNull(schema.leads.deletedAt)
       )
     )
@@ -1547,6 +1698,29 @@ app.post('/extension/leads/check', async (c) => {
   }
 
   const body = await c.req.json();
+  // Compatibility shim for older extension builds that sent the captured
+  // profile under `profile` instead of flattening first/last name and URL.
+  const legacyProfile =
+    body.profile && typeof body.profile === 'object'
+      ? (body.profile as Record<string, unknown>)
+      : null;
+  if (legacyProfile) {
+    const legacyName =
+      profileString(legacyProfile, 'name') ??
+      profileString(legacyProfile, 'fullName') ??
+      profileString(legacyProfile, 'displayName');
+    const parts = legacyName?.split(/\s+/).filter(Boolean) ?? [];
+    if (!body.firstName && parts.length > 0) body.firstName = parts.shift();
+    if (!body.lastName && parts.length > 0) body.lastName = parts.join(' ');
+    if (!body.linkedinUrl)
+      body.linkedinUrl =
+        profileString(legacyProfile, 'profileUrl') ?? profileString(legacyProfile, 'linkedinUrl');
+    if (!body.companyName)
+      body.companyName =
+        profileString(legacyProfile, 'companyName') ??
+        profileString(legacyProfile, 'currentCompany');
+    if (!body.notes) body.notes = profileString(legacyProfile, 'about');
+  }
   const linkedinUrl = canonicalizeLinkedinUrl(body.linkedinUrl);
   const email = isRealEmail(body.email) ? body.email.trim().toLowerCase() : null;
   const phone = normalizePhoneKey(body.phone);
@@ -1672,6 +1846,27 @@ app.post('/extension/leads', async (c) => {
   const ownerId = resolved.userId;
 
   const body = await c.req.json();
+  const legacyProfile =
+    body.profile && typeof body.profile === 'object'
+      ? (body.profile as Record<string, unknown>)
+      : null;
+  if (legacyProfile) {
+    const legacyName =
+      profileString(legacyProfile, 'name') ??
+      profileString(legacyProfile, 'fullName') ??
+      profileString(legacyProfile, 'displayName');
+    const parts = legacyName?.split(/\s+/).filter(Boolean) ?? [];
+    if (!body.firstName && parts.length > 0) body.firstName = parts.shift();
+    if (!body.lastName && parts.length > 0) body.lastName = parts.join(' ');
+    if (!body.linkedinUrl)
+      body.linkedinUrl =
+        profileString(legacyProfile, 'profileUrl') ?? profileString(legacyProfile, 'linkedinUrl');
+    if (!body.companyName)
+      body.companyName =
+        profileString(legacyProfile, 'companyName') ??
+        profileString(legacyProfile, 'currentCompany');
+    if (!body.notes) body.notes = profileString(legacyProfile, 'about');
+  }
   const displayName = `${body.firstName ?? ''} ${body.lastName ?? ''}`.trim();
   const linkedinUrl = canonicalizeLinkedinUrl(body.linkedinUrl);
   if (!displayName || (!linkedinUrl && !isRealEmail(body.email))) {
@@ -1950,10 +2145,24 @@ app.post('/extension/prospects/resolve', async (c) => {
       and(
         eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
         eq(schema.leads.linkedinProfileKey, profileKey),
+        eq(schema.leads.reviewState, 'pending'),
         isNull(schema.leads.deletedAt)
       )
     )
     .limit(1);
+  if (!lead) {
+    [lead] = await db
+      .select()
+      .from(schema.leads)
+      .where(
+        and(
+          eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
+          eq(schema.leads.linkedinProfileKey, profileKey),
+          isNull(schema.leads.deletedAt)
+        )
+      )
+      .limit(1);
+  }
   if (!lead) {
     lead =
       (await findPendingProspectForCapture(db, {
@@ -1977,11 +2186,19 @@ app.post('/extension/prospects/review', async (c) => {
   if (!isProspectDisposition(body.disposition)) {
     return c.json({ error: 'Choose a valid review decision.' }, 400);
   }
-  const profile =
+  let profile =
     body.profile && typeof body.profile === 'object'
       ? (body.profile as Record<string, unknown>)
       : null;
-  const capturedProfileName = profileString(profile ?? {}, 'name');
+  const capturedProfileName =
+    profileString(profile ?? {}, 'name') ??
+    profileString(profile ?? {}, 'fullName') ??
+    profileString(profile ?? {}, 'displayName') ??
+    profileString(body, 'profileName') ??
+    profileString(body, 'name');
+  if (profile && capturedProfileName && !profileString(profile, 'name')) {
+    profile = { ...profile, name: capturedProfileName };
+  }
   if (profile && !isPlausibleProspectName(capturedProfileName)) {
     return c.json(
       {
@@ -1992,7 +2209,9 @@ app.post('/extension/prospects/review', async (c) => {
     );
   }
   const linkedinUrl = canonicalizeLinkedinUrl(
-    profileString(profile ?? {}, 'profileUrl') ?? body.linkedinUrl
+    profileString(profile ?? {}, 'profileUrl') ??
+      profileString(profile ?? {}, 'linkedinUrl') ??
+      body.linkedinUrl
   );
   const profileKey = linkedinProfileKey(linkedinUrl);
   if (!linkedinUrl || !profileKey) {
@@ -2006,10 +2225,24 @@ app.post('/extension/prospects/review', async (c) => {
       and(
         eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
         eq(schema.leads.linkedinProfileKey, profileKey),
+        eq(schema.leads.reviewState, 'pending'),
         isNull(schema.leads.deletedAt)
       )
     )
     .limit(1);
+  if (!lead) {
+    [lead] = await db
+      .select()
+      .from(schema.leads)
+      .where(
+        and(
+          eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
+          eq(schema.leads.linkedinProfileKey, profileKey),
+          isNull(schema.leads.deletedAt)
+        )
+      )
+      .limit(1);
+  }
   if (!lead) {
     lead =
       (await findPendingProspectForCapture(db, {
@@ -2071,6 +2304,257 @@ app.post('/extension/prospects/review', async (c) => {
     }
     throw error;
   }
+});
+
+// Live LinkedIn messaging-thread capture. Distinct from /extension/leads
+// (profile-page capture): this ingests a full conversation transcript
+// scraped from an open linkedin.com/messaging thread and stores it on
+// linkedin_conversations, keyed per-operator so the candidate-conversation
+// draft agent can read it straight back via loadCandidateConversationContext.
+app.post('/extension/conversations/ingest', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const resolved = await resolveExtensionKeyOwner(db, readExtensionKey(c));
+  if (!resolved) return c.json({ error: 'Invalid or missing API key.' }, 401);
+  const rateLimit = checkRateLimit(`extension:conversations:ingest:${resolved.userId}`, 60, 60_000);
+  if (!rateLimit.allowed) {
+    c.header('Retry-After', String(rateLimit.retryAfter));
+    return c.json({ error: 'Too many extension requests. Please wait and retry.' }, 429);
+  }
+
+  const body = (await c.req.json()) as Record<string, unknown>;
+  const externalConversationId =
+    typeof body.externalConversationId === 'string'
+      ? body.externalConversationId.trim().slice(0, 300)
+      : '';
+  const otherPartyName =
+    typeof body.otherPartyName === 'string' ? body.otherPartyName.trim().slice(0, 200) : '';
+  const otherPartyProfileUrl = canonicalizeLinkedinUrl(body.otherPartyProfileUrl);
+  const profileKey = linkedinProfileKey(otherPartyProfileUrl);
+  const ownerProfileUrl =
+    typeof body.ownerProfileUrl === 'string' && body.ownerProfileUrl.trim()
+      ? body.ownerProfileUrl.trim().slice(0, 500)
+      : 'unknown';
+
+  if (!externalConversationId || !otherPartyName || !otherPartyProfileUrl || !profileKey) {
+    return c.json(
+      {
+        error:
+          'A conversation id, candidate name, and a valid candidate LinkedIn URL are required.',
+      },
+      400
+    );
+  }
+
+  const rawMessages = Array.isArray(body.messages) ? body.messages : [];
+  const messages: Array<{
+    sentAt: string;
+    direction: 'inbound' | 'outbound';
+    senderName: string;
+    content: string;
+  }> = [];
+  for (const raw of rawMessages) {
+    if (!raw || typeof raw !== 'object') continue;
+    const m = raw as Record<string, unknown>;
+    const content = typeof m.content === 'string' ? m.content.trim().slice(0, 8_000) : '';
+    const sentAtDate = typeof m.sentAt === 'string' && m.sentAt ? new Date(m.sentAt) : null;
+    if (!content || !sentAtDate || Number.isNaN(sentAtDate.getTime())) continue;
+    messages.push({
+      sentAt: sentAtDate.toISOString(),
+      direction: m.direction === 'outbound' ? 'outbound' : 'inbound',
+      senderName:
+        typeof m.senderName === 'string' && m.senderName.trim()
+          ? m.senderName.trim().slice(0, 200)
+          : otherPartyName,
+      content,
+    });
+  }
+  if (messages.length === 0) {
+    return c.json({ error: 'No usable messages were supplied.' }, 400);
+  }
+  messages.sort((a, b) => new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime());
+
+  const exact = await findExactMatch(db, {
+    linkedinUrl: otherPartyProfileUrl,
+    email: null,
+    phone: null,
+  });
+
+  let lead: typeof schema.leads.$inferSelect | null = null;
+  if (exact?.entityType === 'lead') {
+    lead = exact.record;
+  } else if (!exact) {
+    const identity = await nextLeadIdentity(db);
+    const name = deriveProspectName(otherPartyName, otherPartyProfileUrl);
+    const journeyStage: LeadJourneyStage = 'engaged';
+    const legacy = legacyFieldsForJourney(journeyStage);
+    const [inserted] = await db
+      .insert(schema.leads)
+      .values({
+        workspaceId: DEFAULT_WORKSPACE_ID,
+        ...identity,
+        firstName: name.firstName,
+        lastName: name.lastName,
+        linkedinUrl: otherPartyProfileUrl,
+        linkedinProfileKey: profileKey,
+        source: 'linkedin',
+        ownerId: resolved.userId,
+        capturedByApiKeyId: resolved.keyId,
+        capturedByApiKeyLabel: resolved.label,
+        journeyStage,
+        status: legacy.status,
+        outreachStatus: legacy.outreachStatus,
+      })
+      .returning();
+    if (!inserted) return c.json({ error: 'Could not create candidate lead.' }, 500);
+    lead = inserted;
+    await linkImportedLinkedInConversationsToLead(db, lead);
+  }
+  // exact?.entityType === 'contact': this candidate was already converted.
+  // Leave lead as null — the conversation still gets stored (unlinked)
+  // rather than creating a duplicate lead for someone already converted.
+
+  const [priorConversation] = await db
+    .select({ messages: schema.linkedinConversations.messages })
+    .from(schema.linkedinConversations)
+    .where(
+      and(
+        eq(schema.linkedinConversations.importedBy, resolved.userId),
+        eq(schema.linkedinConversations.externalConversationId, externalConversationId)
+      )
+    )
+    .limit(1);
+  const priorCount = Array.isArray(priorConversation?.messages)
+    ? priorConversation.messages.length
+    : 0;
+
+  const last = messages[messages.length - 1]!;
+  const outboundCount = messages.filter((message) => message.direction === 'outbound').length;
+  const conversationValues = {
+    externalConversationId,
+    leadId: lead?.id ?? null,
+    otherPartyName,
+    otherPartyProfileUrl,
+    ownerProfileUrl,
+    messageCount: messages.length,
+    outboundCount,
+    lastMessageAt: new Date(last.sentAt),
+    lastMessageFromUs: last.direction === 'outbound',
+    messages,
+    importedBy: resolved.userId,
+    updatedAt: new Date(),
+  };
+  await db
+    .insert(schema.linkedinConversations)
+    .values(conversationValues)
+    .onConflictDoUpdate({
+      target: [
+        schema.linkedinConversations.importedBy,
+        schema.linkedinConversations.externalConversationId,
+      ],
+      set: conversationValues,
+    });
+
+  return c.json({
+    lead: lead
+      ? {
+          id: lead.id,
+          leadNumber: lead.leadNumber,
+          name: `${lead.firstName} ${lead.lastName}`.trim(),
+        }
+      : null,
+    duplicate: exact?.entityType === 'contact',
+    entityType: exact?.entityType ?? 'lead',
+    messageCount: messages.length,
+    newMessageCount: Math.max(0, messages.length - priorCount),
+    lastMessageFromUs: conversationValues.lastMessageFromUs,
+  });
+});
+
+app.post('/extension/conversations/draft', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const resolved = await resolveExtensionKeyOwner(db, readExtensionKey(c));
+  if (!resolved) return c.json({ error: 'Invalid or missing API key.' }, 401);
+  const rateLimit = checkRateLimit(`extension:conversations:draft:${resolved.userId}`, 30, 60_000);
+  if (!rateLimit.allowed) {
+    c.header('Retry-After', String(rateLimit.retryAfter));
+    return c.json({ error: 'Too many extension requests. Please wait and retry.' }, 429);
+  }
+
+  const body = (await c.req.json()) as Record<string, unknown>;
+  const linkedinUrl = canonicalizeLinkedinUrl(body.linkedinUrl);
+  const profileKey = linkedinProfileKey(linkedinUrl);
+  if (!linkedinUrl || !profileKey) {
+    return c.json({ error: 'A valid candidate LinkedIn URL is required.' }, 400);
+  }
+  const isFollowUp = body.mode === 'follow_up';
+
+  const [lead] = await db
+    .select()
+    .from(schema.leads)
+    .where(
+      and(
+        eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
+        eq(schema.leads.linkedinProfileKey, profileKey),
+        isNull(schema.leads.deletedAt)
+      )
+    )
+    .limit(1);
+  if (!lead) {
+    return c.json(
+      { error: 'No lead found for this LinkedIn URL. Ingest this conversation first.' },
+      404
+    );
+  }
+
+  if (!ai.isAiConfigured(c.env)) {
+    return c.json({ error: 'AI drafting is not configured.' }, 503);
+  }
+
+  const context = await loadCandidateConversationContext(db, lead);
+  const prompt = buildCandidateConversationPrompt(
+    context,
+    isFollowUp
+      ? 'Draft a follow-up message — the candidate has not replied to our last message yet.'
+      : 'Draft the next reply to this candidate.'
+  );
+  const result = await ai.extractStructured<{ drafts?: unknown }>(prompt, c.env, {
+    tier: 'fast',
+    agent: 'candidate-conversation',
+    temperature: 0.4,
+    systemInstruction: buildCandidateConversationSystemInstruction(
+      isFollowUp ? 'follow_up' : 'reply_options'
+    ),
+  });
+  const drafts = sanitizeCandidateDraftOptions(result?.drafts);
+  if (!drafts) {
+    return c.json({ error: 'The candidate conversation model returned no usable drafts.' }, 422);
+  }
+
+  await withAudit(db, schema.auditLog, {
+    actorUserId: resolved.userId,
+    action: 'generate',
+    resourceType: isFollowUp
+      ? 'candidate_follow_up_draft_options'
+      : 'candidate_reply_draft_options',
+    resourceId: lead.id,
+    after: {
+      leadId: lead.id,
+      mode: isFollowUp ? 'follow_up' : 'reply',
+      draftCount: drafts.length,
+      linkedinMessagesUsed: context.linkedinMessages.length,
+      sentToCandidate: false,
+    },
+    app: 'crm',
+  });
+
+  return c.json({
+    lead: {
+      id: lead.id,
+      leadNumber: lead.leadNumber,
+      name: `${lead.firstName} ${lead.lastName}`.trim(),
+    },
+    drafts,
+  });
 });
 
 app.post('/internal/lead-score-queue/drain', async (c) => {
@@ -2958,12 +3442,9 @@ async function getConfiguredAiEnv(db: CrmDb, env: Env, actorUserId?: string | nu
       Object.fromEntries(
         AI_AGENTS.map((agent) => [
           agent.id,
-          settings.agentModels[agent.id] ??
-            (agent.tier === 'embedding'
-              ? DEFAULT_AI_MODELS.embedding
-              : agent.tier === 'fast'
-                ? DEFAULT_AI_MODELS.fast
-                : DEFAULT_AI_MODELS.cheap),
+          (settings.agentModels[agent.id] ?? agent.tier === 'embedding')
+            ? settings.tierModels.embedding
+            : settings.tierModels[agent.tier],
         ])
       )
     ),
@@ -3072,7 +3553,8 @@ app.get('/api/dashboard', async (c) => {
         '[]'::jsonb
       ) AS value
       FROM unnest(ARRAY[
-        'future', 'foreign_national', 'stem', 'new', 'ready_to_reach_out', 'connection_sent',
+        'future', 'foreign_national', 'stem', 'new', 'ready_to_reach_out', 'ready_for_email',
+        'connection_sent',
         'connected', 'engaged', 'qualified', 'meeting_booked', 'opportunity',
         'follow_up', 'converted', 'nurture', 'no_response', 'disqualified', 'lost'
       ]::text[]) WITH ORDINALITY AS stages(stage, position)
@@ -3123,7 +3605,9 @@ app.get('/api/dashboard', async (c) => {
         FROM accepted_leads lead
         INNER JOIN crm.lead_ai_assessments assessment ON assessment.lead_id = lead.id
         WHERE assessment.hard_disqualifier = false
-          AND lead.journey_stage in ('new', 'ready_to_reach_out', 'connection_sent', 'connected')
+          AND lead.journey_stage in (
+            'new', 'ready_to_reach_out', 'ready_for_email', 'connection_sent', 'connected'
+          )
         ORDER BY assessment.overall_score DESC, lead.updated_at DESC
         LIMIT 6
       ) priority_row
@@ -3175,6 +3659,7 @@ app.get('/api/dashboard', async (c) => {
         coalesce(sum(event.estimated_cost_usd), 0)::numeric(16, 6) AS cost_usd
       FROM crm.ai_usage_events event
       WHERE event.created_at >= now() - interval '7 days'
+        AND NOT (event.request_type = 'chat' AND event.model = 'embedding')
         AND ${canViewAiSpend}::boolean
     )
     SELECT jsonb_build_object(
@@ -3528,6 +4013,8 @@ async function generateAndSaveLeadScore(
 }
 
 async function drainLeadProfileQueue(db: CrmDb, env: Env, limit: number) {
+  await drainPhdProspectDisqualifications(db);
+  await recoverOrphanedLeadProfileJobs(db);
   const now = new Date();
   await db.update(schema.leadProfileJobs).set({
     status: 'completed',
@@ -4048,12 +4535,848 @@ async function generateAndSaveLeadAiAssessment(
   return saved ?? null;
 }
 
+// --- COMPANY PEOPLE ---
+
+const COMPANY_PERSON_TYPES = ['recruiter', 'hiring_manager', 'company_leadership'] as const;
+type CompanyPersonType = (typeof COMPANY_PERSON_TYPES)[number];
+
+function isCompanyPersonType(value: unknown): value is CompanyPersonType {
+  return typeof value === 'string' && (COMPANY_PERSON_TYPES as readonly string[]).includes(value);
+}
+
+function normalizeCompanyDirectoryName(value: string): string {
+  return value
+    .normalize('NFKC')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function splitProfileDisplayName(value: string): { firstName: string; lastName: string } {
+  const parts = value.trim().split(/\s+/).filter(Boolean);
+  return { firstName: parts.shift() ?? 'Unknown', lastName: parts.join(' ') || 'Profile' };
+}
+
+async function findOrCreateDirectoryCompany(
+  db: CrmDb,
+  name: string,
+  ownerId: string,
+  linkedinUrl?: string | null
+): Promise<string | null> {
+  const normalizedName = normalizeCompanyDirectoryName(name);
+  if (!normalizedName) return null;
+  const [existing] = await db
+    .select({ id: schema.companies.id })
+    .from(schema.companies)
+    .where(
+      and(
+        isNull(schema.companies.deletedAt),
+        or(
+          eq(schema.companies.normalizedName, normalizedName),
+          linkedinUrl ? eq(schema.companies.linkedinUrl, linkedinUrl) : sql`false`
+        )
+      )
+    )
+    .limit(1);
+  if (existing) return existing.id;
+  const [created] = await db
+    .insert(schema.companies)
+    .values({
+      name: name.trim(),
+      normalizedName,
+      linkedinUrl: linkedinUrl ?? null,
+      ownerId,
+    })
+    .returning({ id: schema.companies.id });
+  return created?.id ?? null;
+}
+
+type TalentOsCompany = {
+  id?: string;
+  name?: string;
+  website?: string;
+  linkedin_url?: string;
+  description?: string;
+  industry?: string;
+  employees_count?: number;
+  address?: unknown;
+  last_seen_at?: string;
+  [key: string]: unknown;
+};
+
+async function fetchTalentOsCompanies(env: Env): Promise<TalentOsCompany[]> {
+  const base = (
+    env.TALENTOS_API_URL || 'https://skarion-talent-os.skarion-talentos.workers.dev'
+  ).replace(/\/+$/, '');
+  const headers: Record<string, string> = { accept: 'application/json' };
+  if (env.CRM_INTEGRATION_SECRET) headers.authorization = `Bearer ${env.CRM_INTEGRATION_SECRET}`;
+  const companies: TalentOsCompany[] = [];
+  for (let page = 1; page <= 100; page += 1) {
+    const response = await fetch(
+      `${base}/api/integrations/crm/companies?page=${page}&pageSize=100`,
+      { headers, signal: AbortSignal.timeout(8_000) }
+    );
+    if (!response.ok) throw new Error(`TalentOS companies feed returned ${response.status}`);
+    const payload = (await response.json()) as { data?: TalentOsCompany[]; total?: number };
+    const pageData = Array.isArray(payload.data) ? payload.data : [];
+    companies.push(...pageData);
+    if (companies.length >= Number(payload.total || pageData.length) || pageData.length < 100)
+      break;
+  }
+  return companies;
+}
+
+async function syncTalentOsCompanies(db: CrmDb, env: Env, ownerId: string): Promise<number> {
+  const companies = await fetchTalentOsCompanies(env);
+  for (const company of companies) {
+    const name = String(company.name || '').trim();
+    if (!name) continue;
+    const key = normalizeCompanyDirectoryName(name);
+    if (!key) continue;
+    const talentosId = String(company.id || `name:${key}`);
+    const [existing] = await db
+      .select({ id: schema.companies.id })
+      .from(schema.companies)
+      .where(and(eq(schema.companies.talentsOsId, talentosId), isNull(schema.companies.deletedAt)))
+      .limit(1);
+    if (existing) {
+      await db
+        .update(schema.companies)
+        .set({
+          name,
+          normalizedName: key,
+          website: company.website ?? null,
+          linkedinUrl: company.linkedin_url ?? null,
+          industry: company.industry ?? null,
+          size: company.employees_count == null ? null : String(company.employees_count),
+          address: company.address ?? null,
+          lastTalentOsSyncAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(schema.companies.id, existing.id));
+    } else {
+      await db.insert(schema.companies).values({
+        name,
+        normalizedName: key,
+        talentsOsId: talentosId,
+        website: company.website ?? null,
+        linkedinUrl: company.linkedin_url ?? null,
+        industry: company.industry ?? null,
+        size: company.employees_count == null ? null : String(company.employees_count),
+        address: company.address ?? null,
+        ownerId,
+        lastTalentOsSyncAt: new Date(),
+        researchStatus: 'not_started',
+      });
+    }
+  }
+  return companies.length;
+}
+
+app.post('/internal/talentos/companies/sync', async (c) => {
+  const configuredSecret = c.env.WORKFLOW_RUNNER_SECRET;
+  if (!configuredSecret || c.req.header('Authorization') !== `Bearer ${configuredSecret}`) {
+    return c.json({ error: 'Unauthorized.' }, 401);
+  }
+  const ownerId = c.env.COMPANY_SYNC_OWNER_ID;
+  if (!ownerId) return c.json({ error: 'Company sync owner is not configured.' }, 503);
+  const db = getDb(c.env, schema) as CrmDb;
+  try {
+    const companiesSynced = await syncTalentOsCompanies(db, c.env, ownerId);
+    return c.json({ ok: true, companiesSynced });
+  } catch (error) {
+    console.error('[TalentOS] scheduled company sync failed', error);
+    return c.json({ ok: false, error: 'TalentOS company sync failed.' }, 502);
+  }
+});
+
+app.post('/internal/talentos/companies/research/enqueue', async (c) => {
+  const configuredSecret = c.env.WORKFLOW_RUNNER_SECRET;
+  if (!configuredSecret || c.req.header('Authorization') !== `Bearer ${configuredSecret}`) {
+    return c.json({ error: 'Unauthorized.' }, 401);
+  }
+  const ownerId = c.env.COMPANY_SYNC_OWNER_ID;
+  if (!ownerId) return c.json({ error: 'Company sync owner is not configured.' }, 503);
+  const db = getDb(c.env, schema) as CrmDb;
+  const result = await db.execute(sql`
+    INSERT INTO crm.company_research_jobs (company_id, requested_by, status, created_at, updated_at)
+    SELECT company.id, ${ownerId}::uuid, 'queued', now(), now()
+    FROM crm.companies company
+    WHERE company.deleted_at IS NULL
+      AND company.research_status <> 'completed'
+      AND NOT EXISTS (
+        SELECT 1 FROM crm.company_research_jobs job
+        WHERE job.company_id = company.id AND job.status IN ('queued', 'researching')
+      )
+  `);
+  return c.json({
+    ok: true,
+    queued: Number((result as unknown as { rowCount?: number }).rowCount ?? 0),
+  });
+});
+
+app.post('/internal/company-research/drain', async (c) => {
+  const configuredSecret = c.env.WORKFLOW_RUNNER_SECRET;
+  if (!configuredSecret || c.req.header('Authorization') !== `Bearer ${configuredSecret}`) {
+    return c.json({ error: 'Unauthorized.' }, 401);
+  }
+  const db = getDb(c.env, schema) as CrmDb;
+  const [job] = await db
+    .select()
+    .from(schema.companyResearchJobs)
+    .where(eq(schema.companyResearchJobs.status, 'queued'))
+    .orderBy(asc(schema.companyResearchJobs.createdAt))
+    .limit(1);
+  if (!job) return c.json({ ok: true, processed: 0, remaining: 0 });
+  const [claimed] = await db
+    .update(schema.companyResearchJobs)
+    .set({ status: 'researching', startedAt: new Date(), updatedAt: new Date() })
+    .where(
+      and(
+        eq(schema.companyResearchJobs.id, job.id),
+        eq(schema.companyResearchJobs.status, 'queued')
+      )
+    )
+    .returning();
+  if (!claimed) return c.json({ ok: true, processed: 0, claimed: false });
+  const [company] = await db
+    .select()
+    .from(schema.companies)
+    .where(and(eq(schema.companies.id, job.companyId), isNull(schema.companies.deletedAt)))
+    .limit(1);
+  if (!company) {
+    await db
+      .update(schema.companyResearchJobs)
+      .set({
+        status: 'failed',
+        completedAt: new Date(),
+        error: 'Company not found.',
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.companyResearchJobs.id, job.id));
+    return c.json({ ok: false, processed: 1, status: 'failed', jobId: job.id });
+  }
+  try {
+    await runCompanyResearch(db, c.env, job.id, company);
+    return c.json({
+      ok: true,
+      processed: 1,
+      status: 'completed',
+      jobId: job.id,
+      companyId: company.id,
+      companyName: company.name,
+    });
+  } catch (error) {
+    await db
+      .update(schema.companyResearchJobs)
+      .set({
+        status: 'failed',
+        completedAt: new Date(),
+        error: error instanceof Error ? error.message : 'Research failed',
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.companyResearchJobs.id, job.id));
+    await db
+      .update(schema.companies)
+      .set({ researchStatus: 'failed', updatedAt: new Date() })
+      .where(eq(schema.companies.id, company.id));
+    return c.json(
+      {
+        ok: false,
+        processed: 1,
+        status: 'failed',
+        jobId: job.id,
+        companyId: company.id,
+        companyName: company.name,
+      },
+      502
+    );
+  }
+});
+
+async function runCompanyResearch(
+  db: CrmDb,
+  env: Env,
+  jobId: string,
+  company: typeof schema.companies.$inferSelect
+) {
+  const urls = new Set<string>();
+  const domain = (
+    String(company.domain || company.website || '')
+      .replace(/^https?:\/\//i, '')
+      .split('/')[0] || ''
+  ).trim();
+  if (!domain) {
+    const slug = normalizeCompanyDirectoryName(company.name).replace(/\s+/g, '');
+    if (slug) {
+      for (const suffix of ['.com', '.io', '.co']) urls.add(`https://${slug}${suffix}`);
+    }
+  }
+  if (domain) {
+    for (const path of [
+      '',
+      '/about',
+      '/company',
+      '/careers',
+      '/news',
+      '/robots.txt',
+      '/sitemap.xml',
+    ])
+      urls.add(`https://${domain}${path}`);
+  }
+  if (company.linkedinUrl) urls.add(company.linkedinUrl);
+  const sources: Array<{ url: string; text: string }> = [];
+  for (const url of [...urls].slice(0, 8)) {
+    try {
+      const response = await fetch(url, {
+        headers: { accept: 'text/html,text/plain' },
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!response.ok) continue;
+      const text = (await response.text())
+        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 12_000);
+      if (text) sources.push({ url, text });
+    } catch {
+      /* public sites may block individual paths; continue with evidence we can access */
+    }
+  }
+  const evidence = sources
+    .map((source) => `SOURCE: ${source.url}\n${source.text}`)
+    .join('\n\n')
+    .slice(0, 55_000);
+  const summary = await ai.chatCompletion(
+    [
+      {
+        role: 'user',
+        text: `Research this company using only the supplied public evidence. Return strict JSON with keys summary, industry, size, website, headquarters, products, hiringSignals, confidence, unknowns, sources. Never invent facts; put missing facts in unknowns.\n\nCompany: ${company.name}\n${evidence || 'No public pages were reachable.'}`,
+      },
+    ],
+    env,
+    {
+      agent: 'company-researcher',
+      tier: 'cheap',
+      temperature: 0.1,
+      systemInstruction:
+        'You are an evidence-first company research agent. Every factual claim must be traceable to a supplied URL.',
+    }
+  );
+  let result: Record<string, unknown> = {
+    summary: summary || 'No AI result',
+    sources: sources.map((item) => item.url),
+    fetchedAt: new Date().toISOString(),
+  };
+  try {
+    if (summary) result = { ...result, ...(JSON.parse(summary) as Record<string, unknown>) };
+  } catch {
+    result.raw = summary;
+  }
+  await db
+    .update(schema.companyResearchJobs)
+    .set({ status: 'completed', completedAt: new Date(), result, sourceSnapshot: sources })
+    .where(eq(schema.companyResearchJobs.id, jobId));
+  await db
+    .update(schema.companies)
+    .set({
+      researchStatus: 'completed',
+      researchedAt: new Date(),
+      researchSummary: String(result.summary || ''),
+      researchSources: result.sources ?? sources.map((item) => item.url),
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.companies.id, company.id));
+}
+
+app.get('/api/company-people', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const role = getRole(c);
+  if (!role) return c.json({ error: 'Forbidden.' }, 403);
+  const userId = c.get('userId');
+  const isTeamScope = Boolean(c.get('isSuperadmin')) || role === 'manager';
+  const { category, companyId, search } = c.req.query();
+  const conditions = [
+    sql`person.workspace_id = ${DEFAULT_WORKSPACE_ID}::uuid`,
+    sql`person.deleted_at IS NULL`,
+    sql`(${isTeamScope}::boolean OR person.owner_id = ${userId}::uuid)`,
+  ];
+  if (isCompanyPersonType(category))
+    conditions.push(sql`category.category = ${category}::crm.company_person_type`);
+  if (companyId) conditions.push(sql`person.current_company_id = ${companyId}::uuid`);
+  if (search) {
+    const needle = `%${search.toLowerCase()}%`;
+    conditions.push(
+      sql`(lower(person.display_name) LIKE ${needle} OR lower(coalesce(person.headline, '')) LIKE ${needle} OR lower(coalesce(company.name, '')) LIKE ${needle})`
+    );
+  }
+  const result = await db.execute(sql`
+    SELECT person.id, person.first_name, person.last_name, person.display_name, person.headline,
+      person.location, person.about, person.email, person.phone, person.linkedin_url, person.linkedin_profile_key,
+      person.current_title, person.current_company_id, company.name AS current_company_name,
+      person.experience, person.education, person.skills, person.current_role_dates, person.open_to_work,
+      person.years_experience, person.connection_degree, person.notes, person.tags,
+      person.source, person.status, person.outreach_status, person.journey_stage,
+      person.profile_capture_status, person.profile_normalization_status, person.data_completeness,
+      person.raw_profile, person.owner_id, person.captured_by_api_key_label, person.last_captured_at, person.created_at, person.updated_at,
+      coalesce(array_agg(DISTINCT category.category::text) FILTER (WHERE category.category IS NOT NULL), ARRAY[]::text[]) AS categories
+    FROM crm.company_people person
+    LEFT JOIN crm.companies company ON company.id = person.current_company_id AND company.deleted_at IS NULL
+    LEFT JOIN crm.company_person_categories category ON category.person_id = person.id
+    WHERE ${sql.join(conditions, sql` AND `)}
+    GROUP BY person.id, company.name
+    ORDER BY person.last_captured_at DESC NULLS LAST, person.updated_at DESC
+    LIMIT 500
+  `);
+  return c.json({ people: (result as unknown as { rows?: unknown[] }).rows ?? [] });
+});
+
+app.get('/api/company-people/:id', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const role = getRole(c);
+  if (!role) return c.json({ error: 'Forbidden.' }, 403);
+  const id = c.req.param('id');
+  const userId = c.get('userId');
+  const teamScope = Boolean(c.get('isSuperadmin')) || role === 'manager';
+  const [person] = await db
+    .execute(
+      sql`
+    SELECT person.*, company.name AS current_company_name
+    FROM crm.company_people person
+    LEFT JOIN crm.companies company ON company.id = person.current_company_id
+    WHERE person.id = ${id}::uuid AND person.workspace_id = ${DEFAULT_WORKSPACE_ID}::uuid
+      AND person.deleted_at IS NULL AND (${teamScope}::boolean OR person.owner_id = ${userId}::uuid)
+    LIMIT 1
+  `
+    )
+    .then((r) => ((r as unknown as { rows?: unknown[] }).rows ?? []) as Record<string, unknown>[]);
+  if (!person) return c.json({ error: 'Company person not found.' }, 404);
+  const [employments, captures, activities] = await Promise.all([
+    db.execute(
+      sql`SELECT employment.*, company.name AS company_name FROM crm.company_person_employments employment LEFT JOIN crm.companies company ON company.id = employment.company_id WHERE employment.person_id = ${id}::uuid ORDER BY employment.is_current DESC, employment.start_date DESC NULLS LAST`
+    ),
+    db.execute(
+      sql`SELECT id, captured_by, captured_by_api_key_label, payload_hash, created_at FROM crm.company_person_captures WHERE person_id = ${id}::uuid ORDER BY created_at DESC LIMIT 100`
+    ),
+    db.execute(
+      sql`SELECT id, type, subject, notes, occurred_at, created_by, created_at FROM crm.company_person_activities WHERE person_id = ${id}::uuid ORDER BY occurred_at DESC LIMIT 100`
+    ),
+  ]);
+  return c.json({
+    person,
+    employments: (employments as unknown as { rows?: unknown[] }).rows ?? [],
+    captures: (captures as unknown as { rows?: unknown[] }).rows ?? [],
+    activities: (activities as unknown as { rows?: unknown[] }).rows ?? [],
+  });
+});
+
+app.post('/api/company-people/:id/activities', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  if (!getRole(c)) return c.json({ error: 'Forbidden.' }, 403);
+  const id = c.req.param('id');
+  const body = (await c.req.json()) as Record<string, unknown>;
+  const type = String(body.type ?? 'note')
+    .trim()
+    .slice(0, 40);
+  const subject = body.subject ? String(body.subject).trim().slice(0, 240) : null;
+  const notes = body.notes ? String(body.notes).trim().slice(0, 10_000) : null;
+  if (!notes && !subject) return c.json({ error: 'Add a note or subject.' }, 400);
+  const [person] = await db
+    .select({ id: schema.companyPeople.id })
+    .from(schema.companyPeople)
+    .where(
+      and(
+        eq(schema.companyPeople.id, id),
+        eq(schema.companyPeople.workspaceId, DEFAULT_WORKSPACE_ID),
+        isNull(schema.companyPeople.deletedAt)
+      )
+    )
+    .limit(1);
+  if (!person) return c.json({ error: 'Company person not found.' }, 404);
+  const [activity] = await db
+    .insert(schema.companyPersonActivities)
+    .values({
+      personId: id,
+      workspaceId: DEFAULT_WORKSPACE_ID,
+      type,
+      subject,
+      notes,
+      occurredAt: body.occurredAt ? new Date(String(body.occurredAt)) : new Date(),
+      createdBy: c.get('userId'),
+    })
+    .returning();
+  if (!activity) return c.json({ error: 'Unable to create activity.' }, 500);
+  await withAudit(db, schema.auditLog, {
+    actorUserId: c.get('userId'),
+    action: 'create',
+    resourceType: 'company_person_activity',
+    resourceId: activity.id,
+    after: activity,
+    app: 'crm',
+  });
+  return c.json({ activity }, 201);
+});
+
+app.get('/api/companies/:id/people', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const role = getRole(c);
+  if (!role) return c.json({ error: 'Forbidden.' }, 403);
+  const result = await db.execute(sql`
+    SELECT person.id, person.display_name, person.headline, person.current_title,
+      person.email, person.location, person.linkedin_url, person.last_captured_at, person.data_completeness,
+      coalesce(array_agg(DISTINCT category.category::text) FILTER (WHERE category.category IS NOT NULL), ARRAY[]::text[]) AS categories
+    FROM crm.company_people person
+    JOIN crm.company_person_employments employment
+      ON employment.person_id = person.id AND employment.company_id = ${c.req.param('id')}::uuid
+    LEFT JOIN crm.company_person_categories category ON category.person_id = person.id
+    WHERE person.deleted_at IS NULL AND employment.is_current = true
+    GROUP BY person.id
+    ORDER BY person.display_name
+  `);
+  return c.json({ people: (result as unknown as { rows?: unknown[] }).rows ?? [] });
+});
+
+app.patch('/api/company-people/:id', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const role = getRole(c);
+  if (!role) return c.json({ error: 'Forbidden.' }, 403);
+  const id = c.req.param('id');
+  const body = (await c.req.json()) as Record<string, unknown>;
+  const [existing] = await db
+    .select()
+    .from(schema.companyPeople)
+    .where(and(eq(schema.companyPeople.id, id), isNull(schema.companyPeople.deletedAt)))
+    .limit(1);
+  if (!existing) return c.json({ error: 'Company person not found.' }, 404);
+  const update: Record<string, unknown> = { updatedAt: new Date() };
+  for (const field of [
+    'firstName',
+    'lastName',
+    'displayName',
+    'headline',
+    'location',
+    'about',
+    'email',
+    'phone',
+    'currentTitle',
+    'notes',
+    'source',
+    'status',
+    'outreachStatus',
+    'journeyStage',
+  ] as const) {
+    if (body[field] !== undefined)
+      update[field] = body[field] === null ? null : String(body[field]);
+  }
+  if (body.linkedinUrl !== undefined) {
+    const normalized = body.linkedinUrl ? canonicalizeLinkedinUrl(String(body.linkedinUrl)) : null;
+    update.linkedinUrl = normalized;
+    update.linkedinProfileKey = normalized ? linkedinProfileKey(normalized) : null;
+  }
+  if (body.currentCompanyId !== undefined) update.currentCompanyId = body.currentCompanyId || null;
+  const [person] = await db
+    .update(schema.companyPeople)
+    .set(update)
+    .where(eq(schema.companyPeople.id, id))
+    .returning();
+  if (!person) return c.json({ error: 'Unable to update company person.' }, 500);
+  if (body.category !== undefined) {
+    if (!isCompanyPersonType(String(body.category)))
+      return c.json({ error: 'Choose a valid company-person category.' }, 400);
+    await db
+      .delete(schema.companyPersonCategories)
+      .where(eq(schema.companyPersonCategories.personId, id));
+    await db.insert(schema.companyPersonCategories).values({
+      personId: id,
+      category: String(body.category) as CompanyPersonType,
+      isPrimary: true,
+      updatedAt: new Date(),
+    });
+  }
+  return c.json({ person });
+});
+
+app.post('/api/companies/:id/research', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const role = getRole(c);
+  if (!role) return c.json({ error: 'Forbidden.' }, 403);
+  const companyId = c.req.param('id');
+  const [company] = await db
+    .select()
+    .from(schema.companies)
+    .where(and(eq(schema.companies.id, companyId), isNull(schema.companies.deletedAt)))
+    .limit(1);
+  if (!company) return c.json({ error: 'Company not found.' }, 404);
+  const [job] = await db
+    .insert(schema.companyResearchJobs)
+    .values({ companyId, requestedBy: c.get('userId'), status: 'queued' })
+    .returning();
+  if (!job) return c.json({ error: 'Unable to queue research.' }, 500);
+  c.executionCtx.waitUntil(
+    (async () => {
+      await db
+        .update(schema.companyResearchJobs)
+        .set({ status: 'researching', startedAt: new Date(), updatedAt: new Date() })
+        .where(eq(schema.companyResearchJobs.id, job.id));
+      try {
+        await runCompanyResearch(db, c.env, job.id, company);
+      } catch (error) {
+        await db
+          .update(schema.companyResearchJobs)
+          .set({
+            status: 'failed',
+            completedAt: new Date(),
+            error: error instanceof Error ? error.message : 'Research failed',
+            updatedAt: new Date(),
+          })
+          .where(eq(schema.companyResearchJobs.id, job.id));
+        await db
+          .update(schema.companies)
+          .set({ researchStatus: 'failed', updatedAt: new Date() })
+          .where(eq(schema.companies.id, company.id));
+      }
+    })()
+  );
+  return c.json({ job, message: 'Evidence-first public company research queued.' }, 202);
+});
+
+app.post('/api/integrations/talentos/companies/sync', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const role = getRole(c);
+  if (!role) return c.json({ error: 'Forbidden.' }, 403);
+  const [run] = await db
+    .insert(schema.talentosCompanySyncRuns)
+    .values({ requestedBy: c.get('userId'), status: 'running', startedAt: new Date() })
+    .returning();
+  if (!run) return c.json({ error: 'Unable to create sync run.' }, 500);
+  try {
+    const count = await syncTalentOsCompanies(db, c.env, c.get('userId'));
+    const [completed] = await db
+      .update(schema.talentosCompanySyncRuns)
+      .set({
+        status: 'completed',
+        recordsSeen: count,
+        recordsCreated: count,
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.talentosCompanySyncRuns.id, run.id))
+      .returning();
+    return c.json({ run: completed, companiesSynced: count });
+  } catch (error) {
+    const [failed] = await db
+      .update(schema.talentosCompanySyncRuns)
+      .set({
+        status: 'failed',
+        error: error instanceof Error ? error.message : 'TalentOS sync failed',
+        completedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(schema.talentosCompanySyncRuns.id, run.id))
+      .returning();
+    return c.json({ run: failed, error: 'TalentOS company feed is unavailable.' }, 502);
+  }
+});
+
+app.post('/extension/company-people/capture', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const resolved = await resolveExtensionKeyOwner(db, readExtensionKey(c));
+  if (!resolved) return c.json({ error: 'Invalid or missing API key.' }, 401);
+  const body = (await c.req.json()) as Record<string, unknown>;
+  const requestedCategory = String(body.category ?? body.type ?? body.personType ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[-\s]+/g, '_');
+  const category = requestedCategory === 'leadership' ? 'company_leadership' : requestedCategory;
+  if (!isCompanyPersonType(category))
+    return c.json({ error: 'Choose a valid company-person category.' }, 400);
+  const profile =
+    body.profile && typeof body.profile === 'object'
+      ? (body.profile as Record<string, unknown>)
+      : {};
+  const displayName = String(profile.name ?? '').trim();
+  const linkedinUrl = canonicalizeLinkedinUrl(
+    typeof body.linkedinUrl === 'string' ? body.linkedinUrl : String(profile.profileUrl ?? '')
+  );
+  if (!displayName || !linkedinUrl)
+    return c.json({ error: 'A profile name and LinkedIn URL are required.' }, 400);
+  const { firstName, lastName } = splitProfileDisplayName(displayName);
+  const companyValue =
+    profile.currentCompanies ??
+    profile.currentCompany ??
+    profile.currentCompanyName ??
+    profile.companyName ??
+    profile.company ??
+    '';
+  const companyName =
+    (Array.isArray(companyValue) ? String(companyValue[0] ?? '') : String(companyValue))
+      .split(',')[0]
+      ?.trim() || '';
+  const companyId = companyName
+    ? await findOrCreateDirectoryCompany(db, companyName, resolved.userId)
+    : null;
+  const profileKey = linkedinProfileKey(linkedinUrl);
+  if (!profileKey) return c.json({ error: 'Unable to normalize the LinkedIn profile URL.' }, 400);
+  const [existing] = await db
+    .select()
+    .from(schema.companyPeople)
+    .where(
+      and(
+        eq(schema.companyPeople.workspaceId, DEFAULT_WORKSPACE_ID),
+        eq(schema.companyPeople.linkedinProfileKey, profileKey),
+        isNull(schema.companyPeople.deletedAt)
+      )
+    )
+    .limit(1);
+  const now = new Date();
+  const value = (key: string) => (typeof profile[key] === 'string' ? String(profile[key]) : null);
+  const completeness =
+    [
+      displayName,
+      linkedinUrl,
+      value('headline'),
+      value('location'),
+      value('about'),
+      profile.experience,
+      profile.education,
+      profile.skills,
+    ].filter(Boolean).length * 12;
+  const common = {
+    firstName,
+    lastName,
+    displayName,
+    headline: value('headline'),
+    location: value('location'),
+    about: value('about'),
+    currentTitle: value('headline'),
+    phone: value('phone'),
+    experience: profile.experience ? JSON.stringify(profile.experience) : null,
+    education: profile.education ? JSON.stringify(profile.education) : null,
+    skills: profile.skills ? JSON.stringify(profile.skills) : null,
+    currentRoleDates: profile.currentRoleDates ? JSON.stringify(profile.currentRoleDates) : null,
+    openToWork: typeof profile.openToWork === 'boolean' ? profile.openToWork : null,
+    yearsExperience: profile.yearsExperience == null ? null : String(profile.yearsExperience),
+    connectionDegree: value('connectionDegree'),
+    notes: value('notes'),
+    tags: Array.isArray(profile.tags) ? profile.tags : [],
+    currentCompanyId: companyId ?? undefined,
+    rawProfile: profile,
+    ownerId: resolved.userId,
+    capturedByApiKeyId: resolved.keyId,
+    capturedByApiKeyLabel: resolved.label,
+    lastCapturedAt: now,
+    dataCompleteness: Math.min(100, completeness),
+    profileNormalizationStatus:
+      profile.experience || profile.education || profile.skills ? 'pending' : 'not_queued',
+    updatedAt: now,
+  };
+  const person = existing
+    ? (
+        await db
+          .update(schema.companyPeople)
+          .set(common)
+          .where(eq(schema.companyPeople.id, existing.id))
+          .returning()
+      )[0]
+    : (
+        await db
+          .insert(schema.companyPeople)
+          .values({
+            workspaceId: DEFAULT_WORKSPACE_ID,
+            ...common,
+            linkedinUrl,
+            linkedinProfileKey: profileKey,
+            currentCompanyId: companyId,
+            source: 'linkedin-extension',
+            status: 'new',
+            outreachStatus: 'not_approached',
+            journeyStage: 'new',
+            profileCaptureStatus: 'captured',
+          })
+          .returning()
+      )[0];
+  if (!person) return c.json({ error: 'Unable to save company person.' }, 500);
+  await db
+    .insert(schema.companyPersonCategories)
+    .values({
+      personId: person.id,
+      category: category as CompanyPersonType,
+      isPrimary: true,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: [schema.companyPersonCategories.personId, schema.companyPersonCategories.category],
+      set: { isPrimary: true, updatedAt: now },
+    });
+  if (companyId && companyName) {
+    const [employment] = await db
+      .select({ id: schema.companyPersonEmployments.id })
+      .from(schema.companyPersonEmployments)
+      .where(
+        and(
+          eq(schema.companyPersonEmployments.personId, person.id),
+          eq(schema.companyPersonEmployments.companyId, companyId),
+          eq(schema.companyPersonEmployments.isCurrent, true)
+        )
+      )
+      .limit(1);
+    if (!employment)
+      await db.insert(schema.companyPersonEmployments).values({
+        personId: person.id,
+        companyId,
+        companyNameSnapshot: companyName,
+        title: typeof profile.headline === 'string' ? profile.headline : null,
+        isCurrent: true,
+        source: 'linkedin_extension',
+        rawEvidence: profile,
+      });
+  }
+  await db.insert(schema.companyPersonCaptures).values({
+    workspaceId: DEFAULT_WORKSPACE_ID,
+    personId: person.id,
+    capturedBy: resolved.userId,
+    capturedByApiKeyId: resolved.keyId,
+    capturedByApiKeyLabel: resolved.label,
+    payload: profile,
+    payloadHash: await sha256Hex(JSON.stringify(profile)),
+    createdAt: now,
+  });
+  await withAudit(db, schema.auditLog, {
+    actorUserId: resolved.userId,
+    action: 'capture_company_person',
+    resourceType: 'company_person',
+    resourceId: person.id,
+    after: { category, companyId, displayName },
+    app: 'crm',
+  });
+  return c.json(
+    { person, category, companyId, duplicate: Boolean(existing) },
+    existing ? 200 : 201
+  );
+});
+
 // --- COMPANIES ---
 
 app.get('/api/companies', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const role = getRole(c);
   if (!role) return c.json({ error: 'Forbidden.' }, 403);
+
+  try {
+    const [recentSync] = await db
+      .select({ syncedAt: schema.companies.lastTalentOsSyncAt })
+      .from(schema.companies)
+      .where(isNotNull(schema.companies.lastTalentOsSyncAt))
+      .orderBy(desc(schema.companies.lastTalentOsSyncAt))
+      .limit(1);
+    if (!recentSync?.syncedAt || Date.now() - recentSync.syncedAt.getTime() > 5 * 60_000) {
+      await syncTalentOsCompanies(db, c.env, c.get('userId'));
+    }
+  } catch (error) {
+    console.warn('[TalentOS] company feed unavailable; serving CRM cache', error);
+  }
 
   const { search, industry, owner } = c.req.query();
   const conditions = [isNull(schema.companies.deletedAt)];
@@ -4662,6 +5985,10 @@ app.get('/api/prospects', async (c) => {
   ];
   if (search) {
     const searchCondition = or(
+      like(
+        sql`lower(concat_ws(' ', ${schema.leads.firstName}, ${schema.leads.lastName}))`,
+        `%${search}%`
+      ),
       like(sql`lower(${schema.leads.firstName})`, `%${search}%`),
       like(sql`lower(${schema.leads.lastName})`, `%${search}%`),
       like(sql`lower(${schema.leads.companyName})`, `%${search}%`),
@@ -4727,8 +6054,8 @@ app.get('/api/prospects', async (c) => {
   const sortColumn = sortColumns[sortBy] ?? schema.leads.leadSequence;
   const ordering =
     sortOrder === 'desc'
-      ? sql`${sortColumn as never} desc nulls last`
-      : sql`${sortColumn as never} asc nulls last`;
+      ? sql`${sortColumn as never} desc nulls last, ${schema.leads.id} desc`
+      : sql`${sortColumn as never} asc nulls last, ${schema.leads.id} asc`;
 
   const availableConditions = [
     ...commonConditions,
@@ -5210,7 +6537,11 @@ app.get('/api/leads/scoring-status', async (c) => {
     eq(schema.leads.reviewState, 'accepted'),
     isNull(schema.leads.deletedAt)
   );
-  const beforeApproach = inArray(schema.leads.journeyStage, ['new', 'ready_to_reach_out']);
+  const beforeApproach = inArray(schema.leads.journeyStage, [
+    'new',
+    'ready_to_reach_out',
+    'ready_for_email',
+  ]);
   const eligibleForScoring = and(
     visibleLead,
     beforeApproach,
@@ -5410,7 +6741,9 @@ app.get('/api/leads', async (c) => {
 
   const sortColumn = resolveLeadSortColumn(sortBy);
   const orderByClause =
-    sortOrder === 'asc' ? sql`${sortColumn} asc nulls last` : sql`${sortColumn} desc nulls last`;
+    sortOrder === 'asc'
+      ? sql`${sortColumn} asc nulls last, ${schema.leads.id} asc`
+      : sql`${sortColumn} desc nulls last, ${schema.leads.id} desc`;
 
   // Get total count
   const countResult = await db
@@ -5439,7 +6772,18 @@ app.get('/api/leads', async (c) => {
   const statusCountsRaw = await db
     .select({ status: schema.leads.journeyStage, count: sql<number>`count(*)::int` })
     .from(schema.leads)
-    .where(and(isNull(schema.leads.deletedAt), eq(schema.leads.reviewState, 'accepted')))
+    .where(
+      and(
+        isNull(schema.leads.deletedAt),
+        or(
+          eq(schema.leads.reviewState, 'accepted'),
+          and(
+            eq(schema.leads.reviewState, 'rejected'),
+            eq(schema.leads.journeyStage, 'disqualified')
+          )
+        )
+      )
+    )
     .groupBy(schema.leads.journeyStage);
 
   const statusCounts = Object.fromEntries(LEAD_JOURNEY_STAGES.map((stage) => [stage, 0])) as Record<
@@ -7326,14 +8670,13 @@ app.get('/api/activities/:id', async (c) => {
 app.put('/api/activities/:id', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const id = c.req.param('id');
-  const isSuperadmin = c.get('isSuperadmin');
+  const role = getRole(c);
   const caller = { userId: c.get('userId') };
+
+  if (!role) return c.json({ error: 'Forbidden.' }, 403);
 
   const [existing] = await db.select().from(schema.activities).where(eq(schema.activities.id, id));
   if (!existing) return c.json({ error: 'Not found.' }, 404);
-  if (!isSuperadmin && existing.actorId !== caller.userId) {
-    return c.json({ error: 'Forbidden.' }, 403);
-  }
 
   const body = await c.req.json();
   const update: Record<string, unknown> = {};
@@ -8182,6 +9525,84 @@ app.post('/api/import/leads', async (c) => {
 
 // --- ADMIN ---
 
+app.get('/api/admin/activity-logs', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const page = Math.max(1, Number.parseInt(c.req.query('page') || '1', 10));
+  const pageSize = Math.min(
+    100,
+    Math.max(10, Number.parseInt(c.req.query('pageSize') || '50', 10))
+  );
+  const action = c.req.query('action')?.trim();
+  const resourceType = c.req.query('resourceType')?.trim();
+  const actorUserId = c.req.query('actorUserId')?.trim();
+  const search = c.req.query('search')?.trim();
+  const from = c.req.query('from')?.trim();
+  const to = c.req.query('to')?.trim();
+  const conditions = [eq(schema.auditLog.app, 'crm')];
+
+  if (action) conditions.push(eq(schema.auditLog.action, action));
+  if (resourceType) conditions.push(eq(schema.auditLog.resourceType, resourceType));
+  if (actorUserId && /^[0-9a-f-]{36}$/i.test(actorUserId)) {
+    conditions.push(eq(schema.auditLog.actorUserId, actorUserId));
+  }
+  if (search) {
+    const pattern = `%${search.toLowerCase()}%`;
+    const searchCondition = or(
+      ilike(schema.auditLog.action, pattern),
+      ilike(schema.auditLog.resourceType, pattern),
+      ilike(schema.auditLog.resourceId, pattern)
+    );
+    if (searchCondition) conditions.push(searchCondition);
+  }
+  if (from) {
+    const date = new Date(`${from}T00:00:00.000Z`);
+    if (!Number.isNaN(date.getTime())) conditions.push(gte(schema.auditLog.createdAt, date));
+  }
+  if (to) {
+    const date = new Date(`${to}T23:59:59.999Z`);
+    if (!Number.isNaN(date.getTime())) conditions.push(lte(schema.auditLog.createdAt, date));
+  }
+
+  const where = and(...conditions);
+  const [rows, countRows, actions, resourceTypes] = await Promise.all([
+    db
+      .select()
+      .from(schema.auditLog)
+      .where(where)
+      .orderBy(desc(schema.auditLog.createdAt))
+      .limit(pageSize)
+      .offset((page - 1) * pageSize),
+    db
+      .select({ count: sql<number>`count(*)` })
+      .from(schema.auditLog)
+      .where(where),
+    db
+      .select({ value: schema.auditLog.action })
+      .from(schema.auditLog)
+      .where(eq(schema.auditLog.app, 'crm'))
+      .groupBy(schema.auditLog.action)
+      .orderBy(asc(schema.auditLog.action)),
+    db
+      .select({ value: schema.auditLog.resourceType })
+      .from(schema.auditLog)
+      .where(eq(schema.auditLog.app, 'crm'))
+      .groupBy(schema.auditLog.resourceType)
+      .orderBy(asc(schema.auditLog.resourceType)),
+  ]);
+  const total = Number(countRows[0]?.count ?? 0);
+  return c.json({
+    logs: rows,
+    page,
+    pageSize,
+    total,
+    totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    filters: {
+      actions: actions.map((row) => row.value),
+      resourceTypes: resourceTypes.map((row) => row.value),
+    },
+  });
+});
+
 app.get('/api/admin/audit-log', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
   const rows = await db
@@ -8467,7 +9888,12 @@ app.get('/api/ai/usage', async (c) => {
       createdAt: schema.aiUsageEvents.createdAt,
     })
     .from(schema.aiUsageEvents)
-    .where(gte(schema.aiUsageEvents.createdAt, start))
+    .where(
+      and(
+        gte(schema.aiUsageEvents.createdAt, start),
+        sql`NOT (${schema.aiUsageEvents.requestType} = 'chat' AND ${schema.aiUsageEvents.model} = 'embedding')`
+      )
+    )
     .orderBy(asc(schema.aiUsageEvents.createdAt));
 
   type UsageAggregate = {
@@ -9286,7 +10712,10 @@ async function buildCeoOperationalContext(
       lastUsedAt: sql<Date | null>`max(${schema.aiUsageEvents.createdAt})`,
     })
     .from(schema.aiUsageEvents)
-    .where(sql`${schema.aiUsageEvents.createdAt} >= now() - interval '30 days'`)
+    .where(
+      sql`${schema.aiUsageEvents.createdAt} >= now() - interval '30 days'
+      AND NOT (${schema.aiUsageEvents.requestType} = 'chat' AND ${schema.aiUsageEvents.model} = 'embedding')`
+    )
     .groupBy(schema.aiUsageEvents.agentId);
   scope.push('agentOperations');
 
@@ -9544,6 +10973,344 @@ app.get('/api/dashboard/summary', async (c) => {
 });
 
 // ─── CHAT ────────────────────────────────────────────────────────────────
+
+app.get('/api/dashboard/prospect-operations', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const userId = (c.get('userId') as string | undefined) ?? '';
+  const role = getRole(c);
+  if (!role) return c.json({ error: 'Forbidden.' }, 403);
+  const isTeamScope = Boolean(c.get('isSuperadmin')) || role === 'manager';
+  const scope = (alias: string) => sql`
+    ${sql.raw(alias)}.workspace_id = ${DEFAULT_WORKSPACE_ID}::uuid
+    AND ${sql.raw(alias)}.deleted_at IS NULL
+    AND (${isTeamScope}::boolean OR ${sql.raw(alias)}.owner_id = ${userId}::uuid)
+  `;
+  const [
+    windowsResult,
+    scoreResult,
+    ingestionResult,
+    importsResult,
+    queueResult,
+    captureWindowsResult,
+    captureTrendResult,
+    recentCapturesResult,
+    captureActorsResult,
+    captureTokensResult,
+    captureTokenTrendResult,
+  ] = await Promise.all([
+    db.execute(sql`
+      WITH windows(label, duration) AS (VALUES
+        ('24h', '24 hours'::interval), ('12h', '12 hours'::interval),
+        ('3d', '3 days'::interval), ('7d', '7 days'::interval)
+      )
+      SELECT windows.label,
+        count(*) FILTER (WHERE lead.created_at >= now() - windows.duration)::int AS ingested,
+        count(*) FILTER (WHERE lead.reviewed_at >= now() - windows.duration)::int AS reviewed,
+        count(*) FILTER (WHERE lead.reviewed_at >= now() - windows.duration AND lead.review_state = 'accepted')::int AS accepted,
+        count(*) FILTER (WHERE lead.reviewed_at >= now() - windows.duration AND lead.review_disposition = 'disqualified')::int AS disqualified,
+        count(*) FILTER (WHERE lead.created_at >= now() - windows.duration AND lead.review_state = 'pending')::int AS pending
+      FROM windows LEFT JOIN crm.leads lead ON ${scope('lead')}
+      GROUP BY windows.label, windows.duration ORDER BY windows.duration
+    `),
+    db.execute(sql`
+      WITH reviewed AS (
+        SELECT CASE
+          WHEN assessment.overall_score >= 80 THEN '80-100'
+          WHEN assessment.overall_score >= 70 THEN '70-79'
+          WHEN assessment.overall_score >= 60 THEN '60-69'
+          WHEN assessment.overall_score >= 50 THEN '50-59'
+          WHEN assessment.overall_score >= 40 THEN '40-49'
+          WHEN assessment.overall_score IS NOT NULL THEN '0-39'
+          ELSE 'Unscored' END AS band
+        FROM crm.leads lead
+        LEFT JOIN crm.lead_ai_assessments assessment ON assessment.lead_id = lead.id
+        WHERE ${scope('lead')} AND lead.reviewed_at >= now() - interval '24 hours'
+      )
+      SELECT band, count(*)::int AS count
+      FROM reviewed
+      GROUP BY band ORDER BY CASE band
+        WHEN '80-100' THEN 1 WHEN '70-79' THEN 2 WHEN '60-69' THEN 3
+        WHEN '50-59' THEN 4 WHEN '40-49' THEN 5 WHEN '0-39' THEN 6 ELSE 7 END
+    `),
+    db.execute(sql`
+      SELECT date_trunc('hour', lead.created_at) AS hour,
+        coalesce(user_row.display_name, lead.captured_by_api_key_label, 'Unknown operator') AS actor,
+        count(*)::int AS count, min(lead.created_at) AS first_at, max(lead.created_at) AS last_at
+      FROM crm.leads lead
+      LEFT JOIN identity.users user_row ON user_row.id = lead.owner_id
+      WHERE ${scope('lead')} AND lead.created_at >= now() - interval '24 hours'
+      GROUP BY 1, 2 ORDER BY hour DESC, count DESC LIMIT 100
+    `),
+    db.execute(sql`
+      SELECT job.id, job.name, job.status, job.total_rows, job.processed_rows,
+        job.created_count, job.duplicate_count, job.invalid_count, job.created_at,
+        job.completed_at, coalesce(user_row.display_name, 'Unknown operator') AS actor
+      FROM crm.prospect_import_jobs job
+      LEFT JOIN identity.users user_row ON user_row.id = job.created_by
+      WHERE job.workspace_id = ${DEFAULT_WORKSPACE_ID}::uuid
+        AND (${isTeamScope}::boolean OR job.created_by = ${userId}::uuid)
+      ORDER BY job.created_at DESC LIMIT 20
+    `),
+    db.execute(sql`
+      SELECT
+        count(*) FILTER (WHERE lead.review_state = 'pending')::int AS pending_review,
+        count(*) FILTER (WHERE lead.review_state = 'pending' AND lead.profile_normalization_status IN ('pending', 'processing', 'failed'))::int AS cleanup_active,
+        count(*) FILTER (WHERE lead.review_state = 'pending' AND lead.profile_normalization_status = 'completed')::int AS cleanup_completed,
+        count(*) FILTER (WHERE lead.review_state = 'accepted')::int AS accepted,
+        count(*) FILTER (WHERE lead.review_state = 'accepted' AND assessment.lead_id IS NULL)::int AS accepted_unscored
+      FROM crm.leads lead
+      LEFT JOIN crm.lead_ai_assessments assessment ON assessment.lead_id = lead.id
+      WHERE ${scope('lead')}
+    `),
+    db.execute(sql`
+      WITH windows(label, duration) AS (VALUES
+        ('24h', '24 hours'::interval), ('7d', '7 days'::interval), ('30d', '30 days'::interval)
+      ), captures AS (
+        SELECT capture.created_at, capture.lead_id, lead.created_at AS lead_created_at,
+          (NOT EXISTS (SELECT 1 FROM crm.lead_profile_captures prior
+            WHERE prior.workspace_id = capture.workspace_id AND prior.lead_id = capture.lead_id
+              AND prior.created_at < capture.created_at)) AS is_fresh
+        FROM crm.lead_profile_captures capture
+        JOIN crm.leads lead ON lead.id = capture.lead_id
+        WHERE capture.workspace_id = ${DEFAULT_WORKSPACE_ID}::uuid AND ${scope('lead')}
+      )
+      SELECT windows.label,
+        count(captures.lead_id)::int AS captures,
+        count(*) FILTER (WHERE captures.is_fresh)::int AS fresh,
+        count(*) FILTER (WHERE NOT captures.is_fresh)::int AS recaptures,
+        count(DISTINCT captures.lead_id)::int AS unique_leads,
+        round(coalesce(avg(EXTRACT(EPOCH FROM (captures.created_at - captures.lead_created_at)) / 60.0), 0)::numeric, 1) AS avg_latency_minutes
+      FROM windows LEFT JOIN captures ON captures.created_at >= now() - windows.duration
+      GROUP BY windows.label, windows.duration ORDER BY windows.duration
+    `),
+    db.execute(sql`
+      WITH days AS (
+        SELECT generate_series(date_trunc('day', now()) - interval '6 days', date_trunc('day', now()), interval '1 day') AS day
+      ), captures AS (
+        SELECT capture.created_at, capture.lead_id,
+          NOT EXISTS (SELECT 1 FROM crm.lead_profile_captures prior
+            WHERE prior.workspace_id = capture.workspace_id AND prior.lead_id = capture.lead_id
+              AND prior.created_at < capture.created_at) AS is_fresh
+        FROM crm.lead_profile_captures capture JOIN crm.leads lead ON lead.id = capture.lead_id
+        WHERE capture.workspace_id = ${DEFAULT_WORKSPACE_ID}::uuid AND ${scope('lead')}
+          AND capture.created_at >= date_trunc('day', now()) - interval '6 days'
+      )
+      SELECT days.day, count(captures.lead_id)::int AS captures,
+        count(*) FILTER (WHERE captures.is_fresh)::int AS fresh,
+        count(*) FILTER (WHERE NOT captures.is_fresh)::int AS recaptures
+      FROM days LEFT JOIN captures ON date_trunc('day', captures.created_at) = days.day
+      GROUP BY days.day ORDER BY days.day
+    `),
+    db.execute(sql`
+      WITH ordered AS (
+        SELECT capture.id, capture.lead_id, capture.created_at, capture.source,
+          coalesce(user_row.display_name, capture.captured_by_api_key_label, 'Unknown operator') AS actor,
+          lead.first_name, lead.last_name, lead.company_name, lead.profile_capture_status,
+          lead.data_completeness, lead.created_at AS lead_created_at,
+          row_number() OVER (PARTITION BY capture.lead_id ORDER BY capture.created_at) = 1 AS is_fresh
+        FROM crm.lead_profile_captures capture
+        JOIN crm.leads lead ON lead.id = capture.lead_id
+        LEFT JOIN identity.users user_row ON user_row.id = capture.captured_by
+        WHERE capture.workspace_id = ${DEFAULT_WORKSPACE_ID}::uuid AND ${scope('lead')}
+      )
+      SELECT * FROM ordered ORDER BY created_at DESC LIMIT 50
+    `),
+    db.execute(sql`
+      SELECT date_trunc('hour', capture.created_at) AS hour,
+        coalesce(user_row.display_name, capture.captured_by_api_key_label, 'Unknown operator') AS actor,
+        count(*)::int AS captures,
+        count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM crm.lead_profile_captures prior
+          WHERE prior.workspace_id = capture.workspace_id AND prior.lead_id = capture.lead_id
+            AND prior.created_at < capture.created_at))::int AS fresh,
+        min(capture.created_at) AS first_at, max(capture.created_at) AS last_at
+      FROM crm.lead_profile_captures capture
+      JOIN crm.leads lead ON lead.id = capture.lead_id
+      LEFT JOIN identity.users user_row ON user_row.id = capture.captured_by
+      WHERE capture.workspace_id = ${DEFAULT_WORKSPACE_ID}::uuid AND ${scope('lead')}
+        AND capture.created_at >= now() - interval '24 hours'
+      GROUP BY 1, 2 ORDER BY hour DESC, captures DESC LIMIT 100
+    `),
+    db.execute(sql`
+      WITH scoped_keys AS (
+        SELECT key.id, key.label, key.email, key.created_at, key.last_used_at, key.revoked_at
+        FROM identity.api_keys key
+        WHERE ${isTeamScope}::boolean OR key.user_id = ${userId}::uuid
+      ), scoped_captures AS (
+        SELECT capture.id, capture.lead_id, capture.captured_by_api_key_id, capture.created_at,
+          row_number() OVER (PARTITION BY capture.lead_id ORDER BY capture.created_at) = 1 AS is_fresh
+        FROM crm.lead_profile_captures capture
+        JOIN crm.leads lead ON lead.id = capture.lead_id
+        WHERE capture.workspace_id = ${DEFAULT_WORKSPACE_ID}::uuid AND ${scope('lead')}
+      ), scoped_leads AS (
+        SELECT lead.id, lead.captured_by_api_key_id, lead.created_at
+        FROM crm.leads lead WHERE ${scope('lead')}
+      ), capture_totals AS (
+        SELECT key.id,
+          count(capture.id)::int AS captures,
+          count(*) FILTER (WHERE capture.is_fresh)::int AS fresh_captures,
+          count(DISTINCT capture.lead_id)::int AS unique_leads,
+          count(*) FILTER (WHERE capture.created_at >= now() - interval '24 hours')::int AS captures_24h,
+          count(*) FILTER (WHERE capture.created_at >= now() - interval '7 days')::int AS captures_7d,
+          min(capture.created_at) AS first_capture_at,
+          max(capture.created_at) AS last_capture_at
+        FROM scoped_keys key
+        LEFT JOIN scoped_captures capture ON capture.captured_by_api_key_id = key.id
+          AND capture.created_at >= key.created_at
+        GROUP BY key.id
+      ), lead_totals AS (
+        SELECT key.id, count(lead.id)::int AS leads_created
+        FROM scoped_keys key
+        LEFT JOIN scoped_leads lead ON lead.captured_by_api_key_id = key.id
+          AND lead.created_at >= key.created_at
+        GROUP BY key.id
+      )
+      SELECT key.id, key.label, key.email, key.created_at AS issued_at,
+        key.last_used_at, key.revoked_at,
+        capture_totals.captures, capture_totals.fresh_captures, capture_totals.unique_leads,
+        lead_totals.leads_created, capture_totals.captures_24h, capture_totals.captures_7d,
+        capture_totals.first_capture_at, capture_totals.last_capture_at
+      FROM scoped_keys key
+      JOIN capture_totals ON capture_totals.id = key.id
+      LEFT JOIN lead_totals ON lead_totals.id = key.id
+      WHERE key.revoked_at IS NULL AND capture_totals.captures > 0
+      ORDER BY capture_totals.captures DESC, key.created_at DESC
+    `),
+    db.execute(sql`
+      WITH scoped_keys AS (
+        SELECT key.id, key.created_at
+        FROM identity.api_keys key
+        WHERE key.revoked_at IS NULL AND (${isTeamScope}::boolean OR key.user_id = ${userId}::uuid)
+      ), days AS (
+        SELECT generate_series(
+          date_trunc('day', now()) - interval '29 days', date_trunc('day', now()), interval '1 day'
+        ) AS day
+      ), all_token_captures AS (
+        SELECT capture.captured_by_api_key_id AS token_id, capture.created_at,
+          row_number() OVER (PARTITION BY capture.lead_id ORDER BY capture.created_at) = 1 AS is_fresh
+        FROM crm.lead_profile_captures capture
+        JOIN crm.leads lead ON lead.id = capture.lead_id
+        WHERE capture.workspace_id = ${DEFAULT_WORKSPACE_ID}::uuid AND ${scope('lead')}
+      ), token_captures AS (
+        SELECT * FROM all_token_captures WHERE created_at >= now() - interval '30 days'
+      )
+      SELECT key.id AS token_id, days.day,
+        count(capture.token_id)::int AS captures,
+        count(*) FILTER (WHERE capture.is_fresh)::int AS fresh
+      FROM scoped_keys key
+      CROSS JOIN days
+      LEFT JOIN token_captures capture ON capture.token_id = key.id
+        AND capture.created_at >= key.created_at
+        AND date_trunc('day', capture.created_at) = days.day
+      GROUP BY key.id, days.day
+      ORDER BY key.id, days.day
+    `),
+  ]);
+  const rows = <T>(result: unknown): T[] => (result as { rows?: T[] }).rows ?? [];
+  const iso = (value: Date | string | null | undefined) => dashboardIsoString(value) ?? '';
+  return c.json({
+    generatedAt: new Date().toISOString(),
+    scope: isTeamScope ? 'team' : 'mine',
+    windows: rows<Record<string, unknown>>(windowsResult).map((row) => ({
+      label: row.label,
+      ingested: Number(row.ingested) || 0,
+      reviewed: Number(row.reviewed) || 0,
+      accepted: Number(row.accepted) || 0,
+      disqualified: Number(row.disqualified) || 0,
+      pending: Number(row.pending) || 0,
+    })),
+    scoreBands: rows<Record<string, unknown>>(scoreResult).map((row) => ({
+      band: row.band,
+      count: Number(row.count) || 0,
+    })),
+    ingestion: rows<Record<string, unknown>>(ingestionResult).map((row) => ({
+      hour: iso(row.hour as Date | string),
+      actor: row.actor,
+      count: Number(row.count) || 0,
+      firstAt: iso(row.first_at as Date | string),
+      lastAt: iso(row.last_at as Date | string),
+    })),
+    imports: rows<Record<string, unknown>>(importsResult).map((row) => ({
+      id: row.id,
+      name: row.name,
+      status: row.status,
+      actor: row.actor,
+      totalRows: Number(row.total_rows) || 0,
+      processedRows: Number(row.processed_rows) || 0,
+      createdCount: Number(row.created_count) || 0,
+      duplicateCount: Number(row.duplicate_count) || 0,
+      invalidCount: Number(row.invalid_count) || 0,
+      createdAt: iso(row.created_at as Date | string),
+      completedAt: row.completed_at ? iso(row.completed_at as Date | string) : null,
+    })),
+    queue: (() => {
+      const [row] = rows<Record<string, unknown>>(queueResult);
+      return {
+        pendingReview: Number(row?.pending_review) || 0,
+        cleanupActive: Number(row?.cleanup_active) || 0,
+        cleanupCompleted: Number(row?.cleanup_completed) || 0,
+        accepted: Number(row?.accepted) || 0,
+        acceptedUnscored: Number(row?.accepted_unscored) || 0,
+      };
+    })(),
+    captureWindows: rows<Record<string, unknown>>(captureWindowsResult).map((row) => ({
+      label: row.label,
+      captures: Number(row.captures) || 0,
+      fresh: Number(row.fresh) || 0,
+      recaptures: Number(row.recaptures) || 0,
+      uniqueLeads: Number(row.unique_leads) || 0,
+      avgLatencyMinutes: Number(row.avg_latency_minutes) || 0,
+    })),
+    captureTrend: rows<Record<string, unknown>>(captureTrendResult).map((row) => ({
+      day: iso(row.day as Date | string),
+      captures: Number(row.captures) || 0,
+      fresh: Number(row.fresh) || 0,
+      recaptures: Number(row.recaptures) || 0,
+    })),
+    recentCaptures: rows<Record<string, unknown>>(recentCapturesResult).map((row) => ({
+      id: row.id,
+      leadId: row.lead_id,
+      name: [row.first_name, row.last_name].filter(Boolean).join(' ') || 'Unnamed prospect',
+      company: row.company_name || null,
+      actor: row.actor,
+      source: row.source,
+      capturedAt: iso(row.created_at as Date | string),
+      leadCreatedAt: iso(row.lead_created_at as Date | string),
+      isFresh: Boolean(row.is_fresh),
+      profileCaptureStatus: row.profile_capture_status,
+      dataCompleteness: Number(row.data_completeness) || 0,
+    })),
+    captureActivity: rows<Record<string, unknown>>(captureActorsResult).map((row) => ({
+      hour: iso(row.hour as Date | string),
+      actor: row.actor,
+      captures: Number(row.captures) || 0,
+      fresh: Number(row.fresh) || 0,
+      firstAt: iso(row.first_at as Date | string),
+      lastAt: iso(row.last_at as Date | string),
+    })),
+    captureTokens: rows<Record<string, unknown>>(captureTokensResult).map((row) => ({
+      id: row.id,
+      label: row.label || 'Unnamed token',
+      email: row.email || null,
+      issuedAt: iso(row.issued_at as Date | string),
+      lastUsedAt: row.last_used_at ? iso(row.last_used_at as Date | string) : null,
+      revokedAt: row.revoked_at ? iso(row.revoked_at as Date | string) : null,
+      captures: Number(row.captures) || 0,
+      freshCaptures: Number(row.fresh_captures) || 0,
+      uniqueLeads: Number(row.unique_leads) || 0,
+      leadsCreated: Number(row.leads_created) || 0,
+      captures24h: Number(row.captures_24h) || 0,
+      captures7d: Number(row.captures_7d) || 0,
+      firstCaptureAt: row.first_capture_at ? iso(row.first_capture_at as Date | string) : null,
+      lastCaptureAt: row.last_capture_at ? iso(row.last_capture_at as Date | string) : null,
+    })),
+    captureTokenTrend: rows<Record<string, unknown>>(captureTokenTrendResult).map((row) => ({
+      tokenId: row.token_id,
+      day: iso(row.day as Date | string),
+      captures: Number(row.captures) || 0,
+      fresh: Number(row.fresh) || 0,
+    })),
+  });
+});
 
 app.get('/api/chat/history', async (c) => {
   const db = getDb(c.env, schema) as CrmDb;
@@ -12815,6 +14582,10 @@ app.get('/api/search', async (c) => {
           isNull(schema.leads.deletedAt),
           eq(schema.leads.reviewState, 'accepted'),
           or(
+            like(
+              sql`LOWER(concat_ws(' ', ${schema.leads.firstName}, ${schema.leads.lastName}))`,
+              query
+            ),
             like(sql`LOWER(${schema.leads.firstName})`, query),
             like(sql`LOWER(${schema.leads.lastName})`, query),
             like(sql`LOWER(${schema.leads.email})`, query),
@@ -12843,6 +14614,10 @@ app.get('/api/search', async (c) => {
         and(
           isNull(schema.contacts.deletedAt),
           or(
+            like(
+              sql`LOWER(concat_ws(' ', ${schema.contacts.firstName}, ${schema.contacts.lastName}))`,
+              query
+            ),
             like(sql`LOWER(${schema.contacts.firstName})`, query),
             like(sql`LOWER(${schema.contacts.lastName})`, query),
             like(sql`LOWER(${schema.contacts.email})`, query)

@@ -236,6 +236,7 @@ export async function findExactMatch(
           isNull(schema.leads.deletedAt)
         )
       )
+      .orderBy(sql`CASE WHEN ${schema.leads.reviewState} = 'pending' THEN 0 ELSE 1 END`)
       .limit(1);
     if (lead) return { matchType: 'linkedin_url', entityType: 'lead', record: lead };
 

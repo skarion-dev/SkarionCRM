@@ -47,6 +47,21 @@ async function drainAiQueues(env: Env): Promise<QueueDrainResult> {
   return { profileCleanup, leadScoring, linkedinSync };
 }
 
+async function syncTalentOsCompanies(env: Env): Promise<unknown> {
+  const response = await env.CRM_SERVICE.fetch(
+    new Request('https://crm.internal/internal/talentos/companies/sync', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.WORKFLOW_RUNNER_SECRET}` },
+    })
+  );
+  const body = await response.text();
+  if (!response.ok)
+    throw new Error(`/internal/talentos/companies/sync failed: ${response.status} ${body}`);
+  const syncResult = body ? JSON.parse(body) : {};
+  const enqueue = await drainEndpoint(env, '/internal/talentos/companies/research/enqueue?limit=1');
+  return { sync: syncResult, researchQueue: enqueue };
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -63,7 +78,11 @@ export default {
         return Response.json({ error: 'Unauthorized.' }, { status: 401 });
       }
       try {
-        return Response.json({ ok: true, ...(await drainAiQueues(env)) });
+        const result: Record<string, unknown> = { ok: true, ...(await drainAiQueues(env)) };
+        if (url.searchParams.get('syncCompanies') === '1') {
+          result.talentOsCompanySync = await syncTalentOsCompanies(env);
+        }
+        return Response.json(result);
       } catch (error) {
         return Response.json(
           {
@@ -78,6 +97,14 @@ export default {
   },
 
   async scheduled(event: ScheduledEvent, env: Env): Promise<void> {
+    if (event.cron === '0 3 * * *') {
+      try {
+        console.log('TalentOS company sync:', JSON.stringify(await syncTalentOsCompanies(env)));
+      } catch (error) {
+        console.error('Error syncing TalentOS companies:', error);
+      }
+    }
+
     if (event.cron === '0 * * * *') {
       const triggers = ['opportunity_stale', 'task_due_soon', 'outreach_stale'] as const;
       for (const trigger of triggers) {
@@ -100,6 +127,17 @@ export default {
         } catch (err) {
           console.error(`Error evaluating ${trigger}:`, err);
         }
+      }
+    }
+
+    if (event.cron === '* * * * *') {
+      try {
+        console.log(
+          'Company research queue:',
+          JSON.stringify(await drainEndpoint(env, '/internal/company-research/drain?limit=1'))
+        );
+      } catch (error) {
+        console.error('Error draining company research queue:', error);
       }
     }
 

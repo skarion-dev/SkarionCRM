@@ -77,6 +77,13 @@ function prospectAiRemark(prospect: Prospect, isPhd: boolean): string {
     : 'Lead scoring is queued.';
 }
 
+function formatProspectAddedAt(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? '—'
+    : date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+}
+
 const DECISIONS: Array<{
   id: ProspectDisposition;
   label: string;
@@ -665,6 +672,7 @@ export default function ProspectReviewPage() {
                 {(
                   [
                     ['leadSequence', 'Lead #'],
+                    ['createdAt', 'Added'],
                     ['aiScore', 'Score'],
                     ['name', 'Prospect'],
                     ['mostRecentGraduationYear', 'Latest education'],
@@ -700,6 +708,11 @@ export default function ProspectReviewPage() {
                     )}
                   >
                     <td className="px-3 py-3 font-mono text-xs">{prospect.leadNumber}</td>
+                    <td className="px-3 py-3 whitespace-nowrap text-xs text-slate-500">
+                      <time dateTime={prospect.createdAt} title={prospect.createdAt}>
+                        {formatProspectAddedAt(prospect.createdAt)}
+                      </time>
+                    </td>
                     <td className="px-3 py-3">
                       {isPhd ? (
                         <span className="inline-flex min-w-8 justify-center rounded bg-red-600 px-2 py-1 font-bold text-white">

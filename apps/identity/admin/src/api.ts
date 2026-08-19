@@ -137,8 +137,11 @@ export function enableUser(userId: string) {
   return apiFetch<{ ok: true }>(`/admin/users/${userId}/enable`, { method: 'POST' });
 }
 
-export function forcePasswordReset(userId: string) {
-  return apiFetch<{ ok: true }>(`/admin/users/${userId}/force-password-reset`, { method: 'POST' });
+export function forcePasswordReset(userId: string, temporaryPassword: string) {
+  return apiFetch<{ ok: true; temporary_password: string; email: string }>(
+    `/admin/users/${userId}/force-password-reset`,
+    { method: 'POST', body: JSON.stringify({ temporary_password: temporaryPassword }) }
+  );
 }
 
 // ── admin: audit log ──

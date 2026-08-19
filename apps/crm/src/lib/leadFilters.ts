@@ -51,7 +51,14 @@ export function parseCommaList(raw?: string): string[] | undefined {
 export function buildLeadConditions(params: LeadFilterParams): SQL[] {
   const conditions: SQL[] = [
     isNull(schema.leads.deletedAt) as unknown as SQL,
-    eq(schema.leads.reviewState, 'accepted') as unknown as SQL,
+    // Disqualified prospects are intentionally marked rejected so they stay
+    // out of enrichment/scoring queues, but they still belong in the Leads
+    // view when the user selects the Disqualified stage. Keep every other
+    // rejected prospect out of the normal lead list.
+    or(
+      eq(schema.leads.reviewState, 'accepted'),
+      and(eq(schema.leads.reviewState, 'rejected'), eq(schema.leads.journeyStage, 'disqualified'))
+    ) as unknown as SQL,
   ];
 
   if (params.statuses?.length) {
@@ -118,6 +125,10 @@ export function buildLeadConditions(params: LeadFilterParams): SQL[] {
     const searchLower = params.search.toLowerCase();
     const searchCondition = or(
       like(sql`lower(${schema.leads.email})`, `%${searchLower}%`),
+      like(
+        sql`lower(concat_ws(' ', ${schema.leads.firstName}, ${schema.leads.lastName}))`,
+        `%${searchLower}%`
+      ),
       like(sql`lower(${schema.leads.firstName})`, `%${searchLower}%`),
       like(sql`lower(${schema.leads.lastName})`, `%${searchLower}%`),
       like(sql`lower(${schema.leads.companyName})`, `%${searchLower}%`),

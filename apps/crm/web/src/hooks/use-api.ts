@@ -4,6 +4,10 @@ import {
   crmFetch,
   redirectToLogin,
   type Company,
+  type CompanyPerson,
+  type CompanyPersonCategory,
+  type CompanyPersonCapture,
+  type CompanyPersonActivity,
   type Contact,
   type Lead,
   type LeadAiAssessment,
@@ -11,6 +15,7 @@ import {
   type Opportunity,
   type Task,
   type DashboardData,
+  type DashboardProspectOperations,
   type Activity,
   type LeadAttachment,
   type ImportBatch,
@@ -44,6 +49,8 @@ import {
   getInternalApplicant,
   updateInternalApplicant,
   type InternalApplicantStatus,
+  listActivityLogs,
+  type ActivityLogResponse,
 } from '../api.js';
 import { buildLeadsQueryString, type LeadFilters } from '../lib/leadFilters.js';
 
@@ -78,6 +85,24 @@ export function useDashboard() {
       }
     },
     refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
+  });
+}
+
+export function useDashboardProspectOperations() {
+  return useQuery({
+    queryKey: ['dashboard', 'prospect-operations'],
+    queryFn: async () => {
+      try {
+        return await crmFetch<DashboardProspectOperations>('/api/dashboard/prospect-operations');
+      } catch (err) {
+        if (err instanceof Error && 'status' in err && err.status === 401) {
+          redirectToLogin();
+        }
+        throw err;
+      }
+    },
+    refetchInterval: 60_000,
     refetchIntervalInBackground: false,
   });
 }
@@ -162,8 +187,93 @@ export function useCreateActivity() {
   });
 }
 
+export function useUpdateActivity() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      id,
+      ...data
+    }: Pick<Activity, 'id' | 'type' | 'subject' | 'content' | 'happenedAt'>) =>
+      crmFetch<{ activity: Activity }>(`/api/activities/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['activities'] });
+    },
+  });
+}
+
 export function useCompanies() {
   return useCrmQuery(['companies'], () => crmFetch<{ companies: Company[] }>('/api/companies'));
+}
+
+export function useCompanyPeople(category: CompanyPersonCategory, search = '') {
+  const qs = new URLSearchParams({ category });
+  if (search) qs.set('search', search);
+  return useCrmQuery(['company-people', category, search], () =>
+    crmFetch<{ people: CompanyPerson[] }>(`/api/company-people?${qs.toString()}`)
+  );
+}
+
+export function useCompanyPeopleByCompany(companyId: string) {
+  return useCrmQuery(['company-people-by-company', companyId], () =>
+    crmFetch<{ people: CompanyPerson[] }>(`/api/companies/${companyId}/people`)
+  );
+}
+
+export function useCompanyPerson(id: string, enabled = true) {
+  return useCrmQuery(
+    ['company-person', id],
+    () =>
+      crmFetch<{
+        person: CompanyPerson;
+        employments: Record<string, unknown>[];
+        captures: CompanyPersonCapture[];
+        activities: CompanyPersonActivity[];
+      }>(`/api/company-people/${id}`),
+    enabled
+  );
+}
+
+export function useCreateCompanyPersonActivity() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { id: string; type: string; subject?: string; notes?: string }) =>
+      crmFetch(`/api/company-people/${input.id}/activities`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: (_data, input) => qc.invalidateQueries({ queryKey: ['company-person', input.id] }),
+  });
+}
+
+export function useResearchCompany() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => crmFetch(`/api/companies/${id}/research`, { method: 'POST' }),
+    onSuccess: (_data, id) => qc.invalidateQueries({ queryKey: ['companies', id] }),
+  });
+}
+
+export function useUpdateCompanyPerson() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      id: string;
+      category?: CompanyPersonCategory;
+      currentCompanyId?: string | null;
+      linkedinUrl?: string | null;
+    }) =>
+      crmFetch<{ person: CompanyPerson }>(`/api/company-people/${input.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['company-people'] });
+      qc.invalidateQueries({ queryKey: ['company-people-by-company'] });
+    },
+  });
 }
 
 export function useContacts() {
@@ -400,9 +510,20 @@ function prospectQueryString(filters: ProspectFilters): string {
 
 export function useProspects(filters: ProspectFilters) {
   const query = prospectQueryString(filters);
-  return useCrmQuery(['prospects', query], () =>
-    crmFetch<ProspectsResponse>(`/api/prospects?${query}`)
-  );
+  return useQuery({
+    queryKey: ['prospects', query],
+    queryFn: async () => {
+      try {
+        return await crmFetch<ProspectsResponse>(`/api/prospects?${query}`);
+      } catch (err) {
+        if (err instanceof Error && 'status' in err && err.status === 401) {
+          redirectToLogin();
+        }
+        throw err;
+      }
+    },
+    placeholderData: (previous) => previous,
+  });
 }
 
 export function useProfileCleanupStatus() {
@@ -1575,6 +1696,21 @@ export function useImportBatches() {
     const res = await listImportBatches();
     return res.batches;
   });
+}
+
+export function useActivityLogs(filters: {
+  page: number;
+  pageSize: number;
+  action: string;
+  resourceType: string;
+  actorUserId: string;
+  search: string;
+  from: string;
+  to: string;
+}) {
+  return useCrmQuery<ActivityLogResponse>(['admin-activity-logs', JSON.stringify(filters)], () =>
+    listActivityLogs(filters)
+  );
 }
 
 export function useIdentityUsers(enabled = true) {

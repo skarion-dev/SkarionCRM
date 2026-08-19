@@ -261,12 +261,22 @@ export async function chatCompletion(
       gatewayMessages.unshift({ role: 'system', content: opts.systemInstruction });
     }
 
-    const preferredModel =
+    const configuredPreferredModel =
       opts?.model ||
       (opts?.agent
         ? selectAiAgentModel(env, opts.agent, opts?.tier || 'fast')
         : selectAiModel(env, opts?.tier || 'fast'));
-    const fallbackModel = env.AI_MODEL_FALLBACK || selectAiModel(env, 'cheap');
+    // Embedding is a vector model and cannot answer chat requests. RAG agents
+    // legitimately use it for retrieval, but any chat call routed through
+    // those agents must use a text model instead of polluting telemetry with
+    // failed "embedding" chat requests.
+    const preferredModel =
+      configuredPreferredModel === 'embedding'
+        ? selectAiModel(env, opts?.tier === 'reasoning' ? 'reasoning' : 'fast')
+        : configuredPreferredModel;
+    const configuredFallback = env.AI_MODEL_FALLBACK || selectAiModel(env, 'cheap');
+    const fallbackModel =
+      configuredFallback === 'embedding' ? selectAiModel(env, 'cheap') : configuredFallback;
     const result = await gatewayChatCompletion(gatewayMessages, env, {
       model: preferredModel,
       agent: opts?.agent,
@@ -509,6 +519,26 @@ export interface OutreachDraftRequest {
   channel: 'email' | 'linkedin' | 'sms';
 }
 
+export function normalizeOutreachDraft(
+  text: string,
+  channel: OutreachDraftRequest['channel']
+): string {
+  const cleaned = text
+    .replace(/```(?:text|markdown)?/gi, '')
+    .replace(/```/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const limit = channel === 'linkedin' ? 300 : channel === 'sms' ? 160 : null;
+  if (!limit || [...cleaned].length <= limit) return cleaned;
+
+  // Model instruction alone is not an enforcement mechanism. Keep channel
+  // drafts paste-ready even when a provider returns a few extra characters.
+  const clipped = [...cleaned].slice(0, limit - 3).join('');
+  const lastSpace = clipped.lastIndexOf(' ');
+  const naturalBoundary = lastSpace > limit * 0.72 ? lastSpace : clipped.length;
+  return `${clipped.slice(0, naturalBoundary).trimEnd()}...`;
+}
+
 export async function draftOutreach(
   request: OutreachDraftRequest,
   env: Env
@@ -560,11 +590,12 @@ Skarion positioning: ${position}
 
 No markdown formatting, plain text only. Include one clear call to action. ${SUPPLIED_DATA_ONLY_GUARD_SHORT}`;
 
-  return chatCompletionSingle(prompt, env, {
+  const draft = await chatCompletionSingle(prompt, env, {
     temperature: 0.4,
     tier: 'cheap',
     agent: 'outreach-writer',
   });
+  return draft ? normalizeOutreachDraft(draft, request.channel) : null;
 }
 
 export type CandidateOutreachChannel = 'inmail' | 'email';

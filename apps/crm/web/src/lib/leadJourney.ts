@@ -6,6 +6,7 @@ export const LEAD_JOURNEY_STAGES: LeadJourneyStage[] = [
   'stem',
   'new',
   'ready_to_reach_out',
+  'ready_for_email',
   'connection_sent',
   'connected',
   'engaged',
@@ -26,6 +27,7 @@ export const ACTIVE_LEAD_JOURNEY: LeadJourneyStage[] = [
   'stem',
   'new',
   'ready_to_reach_out',
+  'ready_for_email',
   'connection_sent',
   'connected',
   'engaged',
@@ -42,6 +44,7 @@ export const LEAD_JOURNEY_LABELS: Record<LeadJourneyStage, string> = {
   stem: 'STEM',
   new: 'New',
   ready_to_reach_out: 'Ready to reach out',
+  ready_for_email: 'Ready for Email',
   connection_sent: 'Connection sent',
   connected: 'Connected',
   engaged: 'Engaged',
@@ -75,6 +78,7 @@ export function journeyBadgeClass(stage: LeadJourneyStage | string): string {
     return 'bg-green-100 text-green-700';
   }
   if (stage === 'engaged' || stage === 'connected') return 'bg-blue-100 text-blue-700';
+  if (stage === 'ready_for_email') return 'bg-fuchsia-100 text-fuchsia-700';
   if (stage === 'connection_sent' || stage === 'ready_to_reach_out') {
     return 'bg-violet-100 text-violet-700';
   }

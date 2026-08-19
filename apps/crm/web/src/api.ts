@@ -484,6 +484,70 @@ export interface Company {
   createdAt: string;
   updatedAt: string;
   deletedAt: string | null;
+  website?: string | null;
+  linkedinUrl?: string | null;
+  researchStatus?: string | null;
+  researchedAt?: string | null;
+  researchSummary?: string | null;
+  researchSources?: unknown;
+}
+
+export type CompanyPersonCategory = 'recruiter' | 'hiring_manager' | 'company_leadership';
+
+export interface CompanyPerson {
+  id: string;
+  first_name?: string;
+  last_name?: string;
+  display_name: string;
+  headline: string | null;
+  about?: string | null;
+  location: string | null;
+  email: string | null;
+  phone?: string | null;
+  linkedin_url: string | null;
+  linkedin_profile_key?: string | null;
+  current_title: string | null;
+  current_company_id: string | null;
+  current_company_name: string | null;
+  experience?: unknown;
+  education?: unknown;
+  skills?: unknown;
+  current_role_dates?: unknown;
+  open_to_work?: boolean | null;
+  years_experience?: number | null;
+  connection_degree?: string | null;
+  notes?: string | null;
+  tags?: unknown;
+  source?: string;
+  status?: string;
+  outreach_status?: string;
+  journey_stage?: string;
+  profile_capture_status?: string;
+  profile_normalization_status?: string;
+  data_completeness?: number;
+  captured_by_api_key_label?: string | null;
+  owner_id: string;
+  last_captured_at: string | null;
+  created_at: string;
+  updated_at: string;
+  categories: string[];
+}
+
+export interface CompanyPersonCapture {
+  id: string;
+  captured_by?: string;
+  captured_by_api_key_label?: string | null;
+  payload_hash?: string | null;
+  created_at: string;
+}
+export interface CompanyPersonActivity {
+  id: string;
+  type: string;
+  subject?: string | null;
+  notes?: string | null;
+  occurred_at: string;
+  created_by: string;
+  created_at: string;
 }
 
 export interface Contact {
@@ -506,6 +570,7 @@ export type LeadJourneyStage =
   | 'stem'
   | 'new'
   | 'ready_to_reach_out'
+  | 'ready_for_email'
   | 'connection_sent'
   | 'connected'
   | 'engaged'
@@ -737,6 +802,99 @@ export interface DashboardSummary {
     outreachDue: DashboardSummaryOutreachDue[];
     recentAcceptedLeads: DashboardSummaryRecentLead[];
   };
+}
+
+export interface DashboardProspectOperations {
+  generatedAt: string;
+  scope: 'team' | 'mine';
+  windows: Array<{
+    label: '24h' | '12h' | '3d' | '7d';
+    ingested: number;
+    reviewed: number;
+    accepted: number;
+    disqualified: number;
+    pending: number;
+  }>;
+  scoreBands: Array<{ band: string; count: number }>;
+  ingestion: Array<{
+    hour: string;
+    actor: string;
+    count: number;
+    firstAt: string;
+    lastAt: string;
+  }>;
+  imports: Array<{
+    id: string;
+    name: string;
+    status: string;
+    actor: string;
+    totalRows: number;
+    processedRows: number;
+    createdCount: number;
+    duplicateCount: number;
+    invalidCount: number;
+    createdAt: string;
+    completedAt: string | null;
+  }>;
+  queue: {
+    pendingReview: number;
+    cleanupActive: number;
+    cleanupCompleted: number;
+    accepted: number;
+    acceptedUnscored: number;
+  };
+  captureWindows: Array<{
+    label: '24h' | '7d' | '30d';
+    captures: number;
+    fresh: number;
+    recaptures: number;
+    uniqueLeads: number;
+    avgLatencyMinutes: number;
+  }>;
+  captureTrend: Array<{ day: string; captures: number; fresh: number; recaptures: number }>;
+  recentCaptures: Array<{
+    id: string;
+    leadId: string;
+    name: string;
+    company: string | null;
+    actor: string;
+    source: string;
+    capturedAt: string;
+    leadCreatedAt: string;
+    isFresh: boolean;
+    profileCaptureStatus: string;
+    dataCompleteness: number;
+  }>;
+  captureActivity: Array<{
+    hour: string;
+    actor: string;
+    captures: number;
+    fresh: number;
+    firstAt: string;
+    lastAt: string;
+  }>;
+  captureTokens: Array<{
+    id: string;
+    label: string;
+    email: string | null;
+    issuedAt: string;
+    lastUsedAt: string | null;
+    revokedAt: string | null;
+    captures: number;
+    freshCaptures: number;
+    uniqueLeads: number;
+    leadsCreated: number;
+    captures24h: number;
+    captures7d: number;
+    firstCaptureAt: string | null;
+    lastCaptureAt: string | null;
+  }>;
+  captureTokenTrend: Array<{
+    tokenId: string;
+    day: string;
+    captures: number;
+    fresh: number;
+  }>;
 }
 
 export interface ProspectImportJob {
@@ -1219,6 +1377,49 @@ export function deleteAttachment(id: string) {
 
 export function listImportBatches() {
   return crmFetch<{ batches: ImportBatch[] }>('/api/import-batches');
+}
+
+export interface ActivityLogEntry {
+  id: string;
+  actorUserId: string | null;
+  app: string;
+  action: string;
+  resourceType: string;
+  resourceId: string;
+  before: unknown;
+  after: unknown;
+  ip: string | null;
+  userAgent: string | null;
+  createdAt: string;
+}
+
+export interface ActivityLogResponse {
+  logs: ActivityLogEntry[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  filters: {
+    actions: string[];
+    resourceTypes: string[];
+  };
+}
+
+export function listActivityLogs(filters: {
+  page?: number;
+  pageSize?: number;
+  action?: string;
+  resourceType?: string;
+  actorUserId?: string;
+  search?: string;
+  from?: string;
+  to?: string;
+}) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined && value !== '') query.set(key, String(value));
+  }
+  return crmFetch<ActivityLogResponse>(`/api/admin/activity-logs?${query.toString()}`);
 }
 
 // ─── Identity users (for superadmin/manager assignment) ───

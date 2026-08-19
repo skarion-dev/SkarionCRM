@@ -9,6 +9,7 @@ on:
       - 'packages/importers/**'
       - 'packages/db-kit/**'
       - 'packages/auth-client/**'
+      - 'packages/ai-toolkit/**'
       - 'pnpm-lock.yaml'
       - '.github/workflows/deploy-crm.yml'
   workflow_dispatch:
@@ -106,6 +107,18 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           AI_GATEWAY_BASE_URL: ${{ secrets.AI_GATEWAY_BASE_URL }}
           AI_GATEWAY_API_KEY: ${{ secrets.AI_GATEWAY_API_KEY }}
+      - name: Set TalentOS CRM integration secret
+        working-directory: apps/crm
+        run: |
+          if [ -n "$CRM_INTEGRATION_SECRET" ]; then
+            printf '%s' "$CRM_INTEGRATION_SECRET" | wrangler secret put CRM_INTEGRATION_SECRET
+          else
+            echo "CRM_INTEGRATION_SECRET not set, TalentOS sync will remain unavailable"
+          fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CRM_INTEGRATION_SECRET: ${{ secrets.CRM_INTEGRATION_SECRET }}
       - name: Set GOOGLE_CHAT_MODEL secret
         working-directory: apps/crm
         run: printf '%s' "$GOOGLE_CHAT_MODEL" | wrangler secret put GOOGLE_CHAT_MODEL
@@ -178,7 +191,7 @@ jobs:
         env:
           VITE_API_URL: ${{ vars.VITE_CRM_API_URL || vars.VITE_API_URL || 'https://skarion-crm-platform.skarion-talentos.workers.dev' }}
           VITE_IDENTITY_API_URL: ${{ vars.VITE_IDENTITY_API_URL || 'https://skarion-identity.skarion-talentos.workers.dev' }}
-          VITE_IDENTITY_LOGIN_URL: ${{ vars.VITE_IDENTITY_LOGIN_URL || 'https://crm-login.skarion.com' }}
+          VITE_IDENTITY_LOGIN_URL: https://skarion-identity-login-4hu.pages.dev
           VITE_CRM_URL: https://crm.skarion.com
       - name: Deploy to Cloudflare Pages
         working-directory: apps/crm/web

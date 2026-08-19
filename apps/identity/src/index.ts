@@ -316,6 +316,30 @@ app.post('/auth/login', async (c) => {
   }
 });
 
+app.post('/auth/change-temporary-password', async (c) => {
+  const body = await c.req.json<{
+    email?: string;
+    current_password?: string;
+    new_password?: string;
+  }>();
+  if (!body.email || !body.current_password || !body.new_password) {
+    return c.json({ error: 'email, current_password, and new_password are required.' }, 400);
+  }
+  if (body.new_password.length < 8) {
+    return c.json({ error: 'new_password must be at least 8 characters.' }, 400);
+  }
+  try {
+    await authService.changeTemporaryPassword(getDb(c.env, schema), {
+      email: body.email,
+      currentPassword: body.current_password,
+      newPassword: body.new_password,
+    });
+    return c.json({ ok: true });
+  } catch (err) {
+    return errorResponse(c, err);
+  }
+});
+
 app.post('/auth/login/verify', async (c) => {
   const body = await c.req.json<{ pending_token: string; code: string }>();
   if (!body.pending_token || !body.code) {
@@ -679,19 +703,17 @@ app.post('/admin/users/:id/force-password-reset', requireAuth, async (c) => {
   if (!isPlatformAdmin(c)) return c.json({ error: 'Forbidden.' }, 403);
   const db = getDb(c.env, schema);
   try {
+    const body = await c.req.json<{ temporary_password?: string }>();
+    const temporaryPassword = body.temporary_password?.trim() ?? '';
+    if (temporaryPassword.length < 8) {
+      return c.json({ error: 'temporary_password must be at least 8 characters.' }, 400);
+    }
     const result = await adminService.forcePasswordReset(db, {
       targetUserId: requireParam(c, 'id'),
       actorUserId: c.get('userId'),
+      temporaryPassword,
     });
-    const email = await renderPasswordResetEmail({
-      resetUrl: `${c.env.APP_URL}/reset-password?token=${result.token}`,
-    });
-    try {
-      await sendEmail(c.env.RESEND_API_KEY, { to: result.email, ...email });
-    } catch (err) {
-      console.error('Failed to send forced-password-reset email:', err);
-    }
-    return c.json({ ok: true });
+    return c.json({ ok: true, temporary_password: result.temporaryPassword, email: result.email });
   } catch (err) {
     return errorResponse(c, err);
   }
