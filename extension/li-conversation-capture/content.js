@@ -180,6 +180,24 @@ function initLiConvoCapture() {
     return messages;
   }
 
+  // LinkedIn's messaging UI is a client-side SPA: switching threads in the
+  // conversation list doesn't reload the page, and the new thread's header
+  // (candidate name + profile link) can take a beat to re-render after the
+  // URL/selection changes. A single synchronous query right after a thread
+  // switch can catch that gap and find nothing. Retry briefly before giving up.
+  async function extractCandidateProfileWithRetry() {
+    const maxAttempts = 8;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const candidate = extractCandidateProfile();
+      if (candidate) return candidate;
+      if (attempt < maxAttempts - 1) {
+        reportProgress('running', 5, 'Waiting for the conversation to finish loading', '');
+        await delay(300);
+      }
+    }
+    return null;
+  }
+
   async function run() {
     if (window.__liConvoCaptureRunning) {
       reportProgress('running', 5, 'Already ingesting this conversation', '');
@@ -188,7 +206,7 @@ function initLiConvoCapture() {
     window.__liConvoCaptureRunning = true;
     try {
       reportProgress('running', 5, 'Starting conversation scan', '');
-      const candidate = extractCandidateProfile();
+      const candidate = await extractCandidateProfileWithRetry();
       if (!candidate) {
         throw new Error('Could not identify the other participant. Open a 1:1 message thread and try again.');
       }
