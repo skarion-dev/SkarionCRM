@@ -172,11 +172,25 @@
         color: #475569;
         margin: 8px 0 4px;
       }
-      input {
+      input,
+      textarea {
         width: 100%;
         padding: 9px;
         border: 1px solid #cbd5e1;
         border-radius: 7px;
+        font: inherit;
+      }
+      textarea {
+        resize: vertical;
+        min-height: 52px;
+      }
+      .direction-label {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+      }
+      .direction-label .muted {
+        margin: 0;
       }
       .save {
         margin-top: 10px;
@@ -222,6 +236,17 @@
         <div class="actions">
           <button class="action ingest" id="ingestButton">Ingest</button>
         </div>
+
+        <div class="direction-label">
+          <label for="directionInput" style="margin-bottom: 0">Steer this draft (optional)</label>
+          <span class="muted" id="directionCount">0/600</span>
+        </div>
+        <textarea
+          id="directionInput"
+          maxlength="600"
+          placeholder="e.g. ask if they're open to desktop support roles"
+        ></textarea>
+
         <div class="actions" style="margin-top: 9px">
           <button class="action draft" id="draftButton" disabled>Draft Reply</button>
           <button class="action followup" id="followUpButton" disabled>Follow Up</button>

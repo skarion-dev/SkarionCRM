@@ -2484,6 +2484,10 @@ app.post('/extension/conversations/draft', async (c) => {
     return c.json({ error: 'A valid candidate LinkedIn URL is required.' }, 400);
   }
   const isFollowUp = body.mode === 'follow_up';
+  const direction =
+    typeof body.direction === 'string' && body.direction.trim()
+      ? body.direction.trim().slice(0, 600)
+      : null;
 
   const [lead] = await db
     .select()
@@ -2508,12 +2512,13 @@ app.post('/extension/conversations/draft', async (c) => {
   }
 
   const context = await loadCandidateConversationContext(db, lead);
-  const prompt = buildCandidateConversationPrompt(
-    context,
-    isFollowUp
-      ? 'Draft a follow-up message — the candidate has not replied to our last message yet.'
-      : 'Draft the next reply to this candidate.'
-  );
+  const baseInstruction = isFollowUp
+    ? 'Draft a follow-up message — the candidate has not replied to our last message yet.'
+    : 'Draft the next reply to this candidate.';
+  const operatorRequest = direction
+    ? `${baseInstruction}\n\nOperator's additional direction for this draft: ${direction}`
+    : baseInstruction;
+  const prompt = buildCandidateConversationPrompt(context, operatorRequest);
   const result = await ai.extractStructured<{ drafts?: unknown }>(prompt, c.env, {
     tier: 'fast',
     agent: 'candidate-conversation',
@@ -2537,6 +2542,7 @@ app.post('/extension/conversations/draft', async (c) => {
     after: {
       leadId: lead.id,
       mode: isFollowUp ? 'follow_up' : 'reply',
+      operatorDirection: direction,
       draftCount: drafts.length,
       linkedinMessagesUsed: context.linkedinMessages.length,
       sentToCandidate: false,
