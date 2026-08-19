@@ -131,6 +131,21 @@ describe('Candidate conversation agent', () => {
     expect(instruction).toContain('Never guarantee a job');
   });
 
+  it('tells the model operator direction guides angle/topic but never overrides safety rules', () => {
+    const instruction = buildCandidateConversationSystemInstruction('reply_options');
+    expect(instruction).toContain('does not override any rule in this system instruction');
+  });
+
+  it('threads operator direction into the prompt as part of the operator request', () => {
+    const prompt = buildCandidateConversationPrompt(
+      context,
+      "Draft the next reply to this candidate.\n\nOperator's additional direction for this draft: Ask if they are open to desktop support roles."
+    );
+    expect(prompt).toContain('<operator_request>');
+    expect(prompt).toContain('Ask if they are open to desktop support roles.');
+    expect(prompt).toContain('untrusted data');
+  });
+
   it('applies human-sounding, anti-AI-tell guidance to every output mode', () => {
     for (const mode of ['reply_only', 'coach', 'reply_options', 'follow_up'] as const) {
       const instruction = buildCandidateConversationSystemInstruction(mode);

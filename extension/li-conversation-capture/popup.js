@@ -13,6 +13,8 @@ const followUpButton = document.getElementById('followUpButton');
 const draftsCard = document.getElementById('draftsCard');
 const draftsHeading = document.getElementById('draftsHeading');
 const draftsList = document.getElementById('draftsList');
+const directionInput = document.getElementById('directionInput');
+const directionCount = document.getElementById('directionCount');
 
 let activeTab = null;
 let busy = false;
@@ -160,9 +162,14 @@ async function generateDrafts(mode) {
     30
   );
   try {
+    const direction = directionInput.value.trim();
     const result = await api('/extension/conversations/draft', {
       method: 'POST',
-      body: JSON.stringify({ linkedinUrl: lastIngestedProfileUrl, mode }),
+      body: JSON.stringify({
+        linkedinUrl: lastIngestedProfileUrl,
+        mode,
+        direction: direction || undefined,
+      }),
     });
     renderDrafts(result.drafts);
     setStatus('Drafts ready.', 'success', 100);
@@ -172,6 +179,10 @@ async function generateDrafts(mode) {
     setBusy(false);
   }
 }
+
+directionInput.addEventListener('input', () => {
+  directionCount.textContent = `${directionInput.value.length}/600`;
+});
 
 document.getElementById('toggleSettings').addEventListener('click', () => {
   settings.classList.toggle('open');
