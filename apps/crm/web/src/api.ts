@@ -1111,6 +1111,10 @@ export function getInternalApplicant(id: string) {
   }>(`/api/internal-applicants/${id}`);
 }
 
+export function downloadInternalApplicantDocument(applicantId: string, documentId: string) {
+  return crmStream(`/api/internal-applicants/${applicantId}/documents/${documentId}`);
+}
+
 export function updateInternalApplicant(
   id: string,
   data: Partial<

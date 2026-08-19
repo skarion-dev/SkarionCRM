@@ -1190,6 +1190,9 @@ interface Env extends AiGatewayEnv {
   ALLOWED_ORIGINS?: string;
   /** R2 bucket for lead attachments (resumes, screenshots, etc.). */
   ATTACHMENTS_BUCKET?: R2Bucket;
+  /** Authenticated spare-PC resume bridge, exposed through the existing tunnel. */
+  RESUME_STORAGE_URL?: string;
+  RESUME_STORAGE_TOKEN?: string;
 }
 
 /** Send email via Resend API (if configured, otherwise log to console). */
@@ -2784,6 +2787,74 @@ app.get('/api/internal-applicants/:id', async (c) => {
       .orderBy(desc(schema.internalApplicantMessages.receivedAt)),
   ]);
   return c.json({ applicant: serializeInternalApplicant(applicant), documents, messages });
+});
+
+app.get('/api/internal-applicants/:id/documents/:documentId', async (c) => {
+  if (!canViewInternalApplicants(c))
+    return c.json({ error: 'Hiring manager access is required.' }, 403);
+  if (!c.env.RESUME_STORAGE_URL || !c.env.RESUME_STORAGE_TOKEN)
+    return c.json({ error: 'Resume storage is not configured.' }, 503);
+
+  const db = getDb(c.env, schema) as CrmDb;
+  const [document] = await db
+    .select({
+      applicantNumber: schema.internalApplicants.applicantNumber,
+      fileName: schema.internalApplicantDocuments.fileName,
+      sha256: schema.internalApplicantDocuments.sha256,
+    })
+    .from(schema.internalApplicantDocuments)
+    .innerJoin(
+      schema.internalApplicants,
+      eq(schema.internalApplicantDocuments.applicantId, schema.internalApplicants.id)
+    )
+    .where(
+      and(
+        eq(schema.internalApplicantDocuments.id, c.req.param('documentId')),
+        eq(schema.internalApplicants.id, c.req.param('id')),
+        eq(schema.internalApplicants.workspaceId, schema.DEFAULT_WORKSPACE_ID),
+        isNull(schema.internalApplicants.deletedAt)
+      )
+    )
+    .limit(1);
+  if (!document) return c.json({ error: 'Document not found.' }, 404);
+
+  const baseUrl = c.env.RESUME_STORAGE_URL.replace(/\/+$/, '');
+  const headers = { Authorization: `Bearer ${c.env.RESUME_STORAGE_TOKEN}` };
+  const listResponse = await fetch(
+    `${baseUrl}/resumes/${encodeURIComponent(document.applicantNumber)}`,
+    { headers }
+  );
+  if (!listResponse.ok) {
+    console.error('Resume bridge listing failed:', listResponse.status);
+    return c.json({ error: 'Resume storage could not be reached.' }, 502);
+  }
+  const storedDocuments = (await listResponse.json()) as Array<{
+    id: string;
+    file_name: string;
+    sha256: string;
+  }>;
+  const storedDocument = storedDocuments.find(
+    (candidate) =>
+      (document.sha256 && candidate.sha256 === document.sha256) ||
+      candidate.file_name === document.fileName
+  );
+  if (!storedDocument) return c.json({ error: 'Resume binary not found.' }, 404);
+
+  const resumeResponse = await fetch(
+    `${baseUrl}/resumes/${encodeURIComponent(document.applicantNumber)}/${encodeURIComponent(storedDocument.id)}`,
+    { headers }
+  );
+  if (!resumeResponse.ok || !resumeResponse.body)
+    return c.json({ error: 'Resume download failed.' }, 502);
+  const responseHeaders = new Headers();
+  for (const name of ['content-type', 'content-disposition', 'content-length']) {
+    const value = resumeResponse.headers.get(name);
+    if (value) responseHeaders.set(name, value);
+  }
+  return new Response(resumeResponse.body, {
+    status: 200,
+    headers: responseHeaders,
+  });
 });
 
 app.patch('/api/internal-applicants/:id', async (c) => {

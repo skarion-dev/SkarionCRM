@@ -60,6 +60,14 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
+      - name: Configure resume storage secret
+        working-directory: apps/crm
+        run: printf '%s' "$RESUME_STORAGE_TOKEN" | wrangler secret put RESUME_STORAGE_TOKEN
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          RESUME_STORAGE_TOKEN: ${{ secrets.RESUME_STORAGE_TOKEN }}
+
       - name: Set DATABASE_URL secret
         working-directory: apps/crm
         run: printf '%s' "$DATABASE_URL" | wrangler secret put DATABASE_URL

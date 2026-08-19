@@ -18,6 +18,7 @@ AI_EMBEDDING_MODEL = "embedding"
 GOOGLE_MODEL = "gemini-1.5-flash"
 GOOGLE_FALLBACK_MODEL = "gemini-1.5-pro"
 GOOGLE_EMBEDDING_MODEL = "text-embedding-004"
+RESUME_STORAGE_URL = "https://audit-db.skarion.com"
 # Document converter service (optional — falls back to local PDF extractor if not set)
 # DOCUMENT_CONVERTER_URL = "https://your-converter-service.example.com"
 # DOCUMENT_AI_MAX_CHARS = "50000"
@@ -33,6 +34,7 @@ AI_EMBEDDING_MODEL = "embedding"
 GOOGLE_MODEL = "gemini-1.5-flash"
 GOOGLE_FALLBACK_MODEL = "gemini-1.5-pro"
 GOOGLE_EMBEDDING_MODEL = "text-embedding-004"
+RESUME_STORAGE_URL = "https://audit-db.skarion.com"
 
 [[r2_buckets]]
 binding = "ATTACHMENTS_BUCKET"
