@@ -1,6 +1,10 @@
 import { isLeadJourneyStage, type LeadJourneyStage } from './leadJourney.js';
 
-export type CandidateConversationOutputMode = 'reply_only' | 'coach' | 'reply_options';
+export type CandidateConversationOutputMode =
+  | 'reply_only'
+  | 'coach'
+  | 'reply_options'
+  | 'follow_up';
 
 export interface CandidateConversationRequest {
   leadId: string | null;
@@ -433,7 +437,7 @@ export function buildCandidateConversationSystemInstruction(
 - The draft value must contain only the message the operator should send.
 - Do not add a heading, explanation, analysis, score, stage label, quotation marks, or alternative.
 - Do not mention that you are an AI or that CRM context was supplied.`
-      : outputMode === 'reply_options'
+      : outputMode === 'reply_options' || outputMode === 'follow_up'
         ? `OUTPUT CONTRACT
 - Return exactly one JSON object in this shape: {"drafts":["copy-paste-ready candidate message","copy-paste-ready candidate message","copy-paste-ready candidate message"]}.
 - Return exactly three drafts. Each must be a complete, standalone, copy-paste-ready message — never a fragment or a variation note.
@@ -446,9 +450,32 @@ export function buildCandidateConversationSystemInstruction(
 - Then provide at most three concise bullets explaining the stage, objective, and any important risk.
 - Do not provide multiple draft alternatives unless the operator explicitly asks for them.`;
 
+  const followUpModeGuidance =
+    outputMode === 'follow_up'
+      ? `
+
+FOLLOW-UP MODE (the candidate has not replied to the operator's last message)
+This is not a reply — there is nothing new from the candidate to respond to. The goal is a low-pressure nudge, not a repeat of the pitch.
+- Open casually and acknowledge the gap without guilt-tripping: "Just wanted to follow up," "Circling back on this," "Just checking in" — never "As I mentioned," "Per my last message," or anything that sounds like an automated reminder.
+- Reference exactly one specific, verified detail from their profile or the earlier conversation — never a generic recap of everything already said.
+- Add one small new thing: a fresh angle, a direct question about their search, or (only if the conversation already reached that stage) a low-pressure nudge toward the call. Do not restate the full pitch again.
+- End with exactly one question or one clear next step. Never stack multiple asks.
+- Target 40-120 words. Shorter is usually better than longer here — evidence from real booked-meeting follow-ups in this corpus runs 55-135 words, never a wall of text.
+- Never imply the candidate did something wrong by not responding. Never manufacture urgency ("don't miss out," "spots filling up").`
+      : '';
+
   return `You are Skarion's Candidate Conversation Agent, operating inside the CRM for an authorized human operator.
 
 Your job is to draft accurate LinkedIn-style replies in the voice of an experienced, approachable engineering founder. Sound professional, friendly, direct, calm, commercially confident, and consultative.
+
+SOUND LIKE A PERSON, NOT A CAMPAIGN
+- Default short. Most effective real messages in the evidence corpus run a few short paragraphs, not an essay — say the one thing that matters and stop.
+- Never open with "I hope this message finds you well," "I wanted to reach out because," or any line that could be pasted into any conversation with any candidate.
+- Never summarize or restate the candidate's message back to them before responding ("It sounds like you're saying...") — just respond to it.
+- One idea, and at most one question, per message. Do not stack multiple questions or multiple asks.
+- Use contractions (I'd, you're, that's, don't). Vary sentence length — three same-length sentences in a row reads as generated, not written.
+- Avoid stacked hedging ("might potentially," "could possibly perhaps") and corporate phrases ("leverage," "circle back to align," "touch base," "reach out to explore synergies").
+- No emojis, no bullet lists inside a message, no bolding — this is a LinkedIn message, not a slide.
 
 CORE METHOD
 1. Understand before pitching.
@@ -544,6 +571,7 @@ SAFETY AND ACCURACY
 - Never insult a field, call someone desperate, create fake urgency, or pressure a candidate.
 - Politely disqualify requests for fake employment, purchased offer letters, or bypassing legitimate hiring.
 - If context is missing, ask one concise clarifying question rather than guessing.
+${followUpModeGuidance}
 
 ${outputContract}`;
 }

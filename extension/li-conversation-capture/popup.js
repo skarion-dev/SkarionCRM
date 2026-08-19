@@ -9,13 +9,16 @@ const crmUrlInput = document.getElementById('crmUrl');
 const apiKeyInput = document.getElementById('apiKey');
 const ingestButton = document.getElementById('ingestButton');
 const draftButton = document.getElementById('draftButton');
+const followUpButton = document.getElementById('followUpButton');
 const draftsCard = document.getElementById('draftsCard');
+const draftsHeading = document.getElementById('draftsHeading');
 const draftsList = document.getElementById('draftsList');
 
 let activeTab = null;
 let busy = false;
 let crmSettings = { crmUrl: DEFAULT_CRM_URL, apiKey: '' };
 let lastIngestedProfileUrl = null;
+let lastMessageFromUs = null;
 
 function setStatus(message, kind = '', percent = null) {
   statusBox.textContent = message;
@@ -23,10 +26,21 @@ function setStatus(message, kind = '', percent = null) {
   if (percent !== null) progressBar.style.width = `${Math.max(0, Math.min(100, percent))}%`;
 }
 
+function updateDraftButtons() {
+  const ready = Boolean(lastIngestedProfileUrl) && !busy;
+  draftButton.disabled = !ready;
+  followUpButton.disabled = !ready;
+  // Recommend whichever action actually matches the conversation state: if
+  // our last message got no reply, a "reply" makes no sense (nothing new to
+  // reply to) — Follow Up is the useful action, and vice versa.
+  draftButton.classList.toggle('recommended', ready && lastMessageFromUs === false);
+  followUpButton.classList.toggle('recommended', ready && lastMessageFromUs === true);
+}
+
 function setBusy(value) {
   busy = value;
   ingestButton.disabled = value;
-  draftButton.disabled = value || !lastIngestedProfileUrl;
+  updateDraftButtons();
 }
 
 function normalizeCrmUrl(raw) {
@@ -59,7 +73,8 @@ async function refreshActiveTab() {
     candidateMeta.textContent = 'Then click Ingest.';
     draftsCard.style.display = 'none';
     lastIngestedProfileUrl = null;
-    draftButton.disabled = true;
+    lastMessageFromUs = null;
+    updateDraftButtons();
   }
 }
 
@@ -92,10 +107,12 @@ async function ingest() {
     });
 
     lastIngestedProfileUrl = conversation.otherPartyProfileUrl;
+    lastMessageFromUs = Boolean(result.lastMessageFromUs);
     const leadLabel = result.lead ? result.lead.leadNumber : 'existing contact';
+    const hint = lastMessageFromUs ? 'no reply yet — try Follow Up' : 'they replied — try Draft Reply';
     candidateMeta.textContent = result.duplicate
       ? `${leadLabel} · already a converted contact`
-      : `${leadLabel} · ${result.messageCount} messages (${result.newMessageCount} new)`;
+      : `${leadLabel} · ${result.messageCount} messages (${result.newMessageCount} new) · ${hint}`;
     setStatus('Conversation ingested.', 'success', 100);
   } catch (error) {
     setStatus(error.message || 'Ingest failed.', 'error', 0);
@@ -130,14 +147,22 @@ function renderDrafts(drafts) {
   draftsCard.style.display = 'block';
 }
 
-async function draft() {
+async function generateDrafts(mode) {
   if (busy || !lastIngestedProfileUrl) return;
   setBusy(true);
-  setStatus('Drafting three reply options…', '', 30);
+  draftsHeading.textContent =
+    mode === 'follow_up'
+      ? 'Follow-up options — pick one, copy it, paste it into LinkedIn.'
+      : 'Reply options — pick one, copy it, paste it into LinkedIn.';
+  setStatus(
+    mode === 'follow_up' ? 'Drafting three follow-up options…' : 'Drafting three reply options…',
+    '',
+    30
+  );
   try {
     const result = await api('/extension/conversations/draft', {
       method: 'POST',
-      body: JSON.stringify({ linkedinUrl: lastIngestedProfileUrl }),
+      body: JSON.stringify({ linkedinUrl: lastIngestedProfileUrl, mode }),
     });
     renderDrafts(result.drafts);
     setStatus('Drafts ready.', 'success', 100);
@@ -161,7 +186,8 @@ document.getElementById('saveSettings').addEventListener('click', async () => {
   setStatus('Settings saved.', 'success', 0);
 });
 ingestButton.addEventListener('click', () => void ingest());
-draftButton.addEventListener('click', () => void draft());
+draftButton.addEventListener('click', () => void generateDrafts('reply'));
+followUpButton.addEventListener('click', () => void generateDrafts('follow_up'));
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message.action === 'ingestProgress') {

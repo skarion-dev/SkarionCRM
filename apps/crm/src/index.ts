@@ -2463,6 +2463,7 @@ app.post('/extension/conversations/ingest', async (c) => {
     entityType: exact?.entityType ?? 'lead',
     messageCount: messages.length,
     newMessageCount: Math.max(0, messages.length - priorCount),
+    lastMessageFromUs: conversationValues.lastMessageFromUs,
   });
 });
 
@@ -2482,6 +2483,7 @@ app.post('/extension/conversations/draft', async (c) => {
   if (!linkedinUrl || !profileKey) {
     return c.json({ error: 'A valid candidate LinkedIn URL is required.' }, 400);
   }
+  const isFollowUp = body.mode === 'follow_up';
 
   const [lead] = await db
     .select()
@@ -2508,13 +2510,17 @@ app.post('/extension/conversations/draft', async (c) => {
   const context = await loadCandidateConversationContext(db, lead);
   const prompt = buildCandidateConversationPrompt(
     context,
-    'Draft the next reply to this candidate.'
+    isFollowUp
+      ? 'Draft a follow-up message — the candidate has not replied to our last message yet.'
+      : 'Draft the next reply to this candidate.'
   );
   const result = await ai.extractStructured<{ drafts?: unknown }>(prompt, c.env, {
     tier: 'fast',
     agent: 'candidate-conversation',
     temperature: 0.4,
-    systemInstruction: buildCandidateConversationSystemInstruction('reply_options'),
+    systemInstruction: buildCandidateConversationSystemInstruction(
+      isFollowUp ? 'follow_up' : 'reply_options'
+    ),
   });
   const drafts = sanitizeCandidateDraftOptions(result?.drafts);
   if (!drafts) {
@@ -2524,10 +2530,13 @@ app.post('/extension/conversations/draft', async (c) => {
   await withAudit(db, schema.auditLog, {
     actorUserId: resolved.userId,
     action: 'generate',
-    resourceType: 'candidate_reply_draft_options',
+    resourceType: isFollowUp
+      ? 'candidate_follow_up_draft_options'
+      : 'candidate_reply_draft_options',
     resourceId: lead.id,
     after: {
       leadId: lead.id,
+      mode: isFollowUp ? 'follow_up' : 'reply',
       draftCount: drafts.length,
       linkedinMessagesUsed: context.linkedinMessages.length,
       sentToCandidate: false,

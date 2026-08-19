@@ -113,6 +113,13 @@
       .action.draft {
         background: #7c3aed;
       }
+      .action.followup {
+        background: #d97706;
+      }
+      .action.recommended {
+        outline: 2px solid #0f172a;
+        outline-offset: 2px;
+      }
       .action:disabled {
         opacity: 0.45;
         cursor: wait;
@@ -214,12 +221,17 @@
         <div class="progress"><div id="progress"></div></div>
         <div class="actions">
           <button class="action ingest" id="ingestButton">Ingest</button>
-          <button class="action draft" id="draftButton" disabled>Draft</button>
+        </div>
+        <div class="actions" style="margin-top: 9px">
+          <button class="action draft" id="draftButton" disabled>Draft Reply</button>
+          <button class="action followup" id="followUpButton" disabled>Follow Up</button>
         </div>
       </section>
 
       <section class="card drafts" id="draftsCard">
-        <div class="muted" style="margin-bottom: 8px">Pick one, copy it, paste it into LinkedIn.</div>
+        <div class="muted" id="draftsHeading" style="margin-bottom: 8px">
+          Pick one, copy it, paste it into LinkedIn.
+        </div>
         <div class="drafts open" id="draftsList"></div>
       </section>
 
