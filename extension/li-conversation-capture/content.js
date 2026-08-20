@@ -1,8 +1,14 @@
 // Skarion Conversation Capture
-// Runs on linkedin.com/messaging/* pages and waits for an explicit popup
-// command ("ingestConversationNow"). Scrolls the open thread's message pane
-// to the top to force LinkedIn to lazy-load the full history, then extracts
-// it into a plain array the popup POSTs to the CRM.
+// Runs on linkedin.com pages and waits for an explicit popup command:
+// - "ingestConversationNow" on a linkedin.com/messaging/thread/ page: scrolls
+//   the open thread's message pane to the top to force LinkedIn to lazy-load
+//   the full history, then extracts it into a plain array the popup POSTs to
+//   the CRM.
+// - "captureConnectionNoteProfile" on a linkedin.com/in/ page: scrolls the
+//   profile to render every lazy-loaded section (mirrors
+//   li-profile-capture/content.js's scrollAndCapture), then extracts the
+//   header/about/experience/education/skills text for the connection-note
+//   agent — no CRM write happens here, the popup does that.
 
 // Same re-injection guard pattern as li-profile-capture/content.js: the
 // manifest auto-loads this on every messaging page, and the popup's
@@ -30,6 +36,192 @@ function initLiConvoCapture() {
       { action: 'ingestProgress', status, percent, message, detail },
       () => void chrome.runtime.lastError
     );
+  }
+
+  // --- Profile-page scraping (linkedin.com/in/*), for the connection-note
+  // agent. Ported directly from li-profile-capture/content.js so both
+  // extensions read the profile the same way — this file doesn't do
+  // anything with the result besides return it to the popup.
+
+  function compactText(value) {
+    return String(value || '').trim().replace(/\s+/g, ' ');
+  }
+
+  function isPlausibleProfileName(value) {
+    const cleaned = compactText(value);
+    if (cleaned.length < 2 || cleaned.length > 120 || !/\p{L}/u.test(cleaned)) return false;
+    if (/^\(\d+\)(?:\s|$)/u.test(cleaned)) return false;
+    return !/^(?:\(\d+\)\s*)?(?:activity|recent activity|all activity|posts?|comments?|reactions?|followers?|connections?|notifications?|messaging|jobs?|home|feed|my network|linkedin)$/i.test(
+      cleaned
+    );
+  }
+
+  function cleanDocumentTitle(value) {
+    return compactText(value)
+      .replace(/\s*\|\s*LinkedIn.*$/i, '')
+      .split(' - ')[0]
+      .trim();
+  }
+
+  function clickProfileExpanders() {
+    let clicked = 0;
+    document.querySelectorAll('button, span[role="button"]').forEach((btn) => {
+      const txt = (btn.innerText || btn.textContent || '').trim().toLowerCase();
+      if (
+        txt === 'see more' ||
+        txt === 'show more' ||
+        txt === '…more' ||
+        txt.includes('show all experiences') ||
+        txt.includes('show all education')
+      ) {
+        btn.click();
+        clicked++;
+      }
+    });
+    return clicked;
+  }
+
+  function extractProfileSection(sectionHeading) {
+    const sections = document.querySelectorAll('section');
+    for (const sec of sections) {
+      const h2 = sec.querySelector('h2');
+      if (h2 && h2.innerText.trim().toLowerCase().includes(sectionHeading.toLowerCase())) {
+        return sec.innerText.trim();
+      }
+    }
+    return '';
+  }
+
+  // Same multi-pass scroller as li-profile-capture: LinkedIn only renders
+  // Experience/Education/Skills as those sections scroll into view, and
+  // rendering lags behind the scroll itself, so a single scroll-to-bottom
+  // isn't enough.
+  async function scrollProfileAndCapture() {
+    let stableRounds = 0;
+    let lastHeight = 0;
+    let lastSectionCount = 0;
+    const maxRounds = 40;
+
+    for (let round = 0; round < maxRounds; round++) {
+      window.scrollBy(0, Math.round(window.innerHeight * 0.8));
+      await delay(500);
+
+      const height = document.body.scrollHeight;
+      const sectionCount = document.querySelectorAll('section').length;
+      const atBottom = window.scrollY + window.innerHeight >= height - 100;
+      const scrollableHeight = Math.max(1, height - window.innerHeight);
+      const pageProgress = Math.min(1, window.scrollY / scrollableHeight);
+      reportProgress(
+        'running',
+        Math.min(65, Math.round(15 + pageProgress * 50)),
+        'Loading LinkedIn profile sections',
+        `Scroll pass ${round + 1}`
+      );
+
+      if (height === lastHeight && sectionCount === lastSectionCount && atBottom) {
+        stableRounds++;
+        if (stableRounds >= 2) break;
+      } else {
+        stableRounds = 0;
+      }
+      lastHeight = height;
+      lastSectionCount = sectionCount;
+
+      if (atBottom && stableRounds === 0) {
+        await delay(700);
+      }
+    }
+
+    reportProgress('running', 70, 'Expanding profile details', 'Opening "see more" sections.');
+    await delay(400);
+    clickProfileExpanders();
+    await delay(400);
+
+    reportProgress('running', 80, 'Finalizing profile scan', '');
+    window.scrollTo({ top: 0, behavior: 'instant' });
+    await delay(300);
+  }
+
+  function extractProfile() {
+    const url = window.location.href.split('?')[0];
+
+    const nameCandidates = [
+      ...document.querySelectorAll(
+        'main h1, .pv-text-details__left-panel h1, [data-view-name="profile-top-card"] h1'
+      ),
+    ];
+    const nameElement = nameCandidates.find((element) =>
+      isPlausibleProfileName(element.innerText || element.textContent)
+    );
+    const metadataName = cleanDocumentTitle(
+      document.querySelector('meta[property="og:title"]')?.getAttribute('content')
+    );
+    const titleName = cleanDocumentTitle(document.title);
+    const name =
+      compactText(nameElement?.innerText || nameElement?.textContent) ||
+      (isPlausibleProfileName(metadataName) ? metadataName : '') ||
+      (isPlausibleProfileName(titleName) ? titleName : '');
+    const headerSec =
+      nameElement?.closest('section') ||
+      nameElement?.closest('[data-view-name="profile-top-card"]') ||
+      null;
+    const headline =
+      headerSec
+        ?.querySelector('div[data-generated-suggestion-target] + div, .text-body-medium')
+        ?.innerText?.trim() ||
+      (() => {
+        if (!headerSec) return '';
+        const lines = headerSec.innerText.split('\n').map((l) => l.trim()).filter(Boolean);
+        const ni = lines.findIndex((l) => l === name);
+        return ni >= 0 ? lines[ni + 1] : '';
+      })();
+
+    const location = (() => {
+      const spans = Array.from(headerSec?.querySelectorAll('span.text-body-small') || []);
+      for (const s of spans) {
+        const t = s.innerText.trim();
+        if (t.includes(',') && !t.includes('@') && t.length < 80) return t;
+      }
+      return '';
+    })();
+
+    const about = extractProfileSection('About').replace(/^About\n/, '').trim();
+    const experience = extractProfileSection('Experience').replace(/^Experience\n/, '').trim();
+    const education = extractProfileSection('Education').replace(/^Education\n/, '').trim();
+    const skills = extractProfileSection('Skills').replace(/^Skills\n/, '').trim();
+
+    return { profileUrl: url, name, headline, location, about, experience, education, skills };
+  }
+
+  async function captureConnectionNoteProfile() {
+    if (window.__liConvoCaptureRunning) {
+      reportProgress('running', 5, 'Already capturing this profile', '');
+      return;
+    }
+    window.__liConvoCaptureRunning = true;
+    try {
+      reportProgress('running', 10, 'Starting profile scan', '');
+      await scrollProfileAndCapture();
+      reportProgress('running', 90, 'Reading profile data', '');
+      const profile = extractProfile();
+      if (!isPlausibleProfileName(profile.name)) {
+        throw new Error(
+          'Could not read this profile. Return to the main profile page, reload it, and try again.'
+        );
+      }
+      reportProgress('complete', 100, 'Profile captured', `${profile.name}'s profile is ready.`);
+      return profile;
+    } catch (error) {
+      reportProgress(
+        'failed',
+        0,
+        'Capture failed',
+        error instanceof Error ? error.message : 'Unknown capture error.'
+      );
+      throw error;
+    } finally {
+      window.__liConvoCaptureRunning = false;
+    }
   }
 
   function startOfDay(date) {
@@ -143,7 +335,19 @@ function initLiConvoCapture() {
   }
 
   function extractThreadId() {
-    const match = window.location.pathname.match(/\/messaging\/thread\/([^/]+)\/?/);
+    // When this frame is the child iframe LinkedIn sometimes renders the
+    // real thread inside (see the all_frames comment above), this frame's
+    // own window.location is something unrelated (observed: /preload/) —
+    // only the top-level window's address bar URL actually has the thread
+    // id. Same-origin (both www.linkedin.com), so window.top is reachable.
+    let pathname = window.location.pathname;
+    try {
+      if (window.top && window.top !== window) pathname = window.top.location.pathname;
+    } catch {
+      // Cross-origin top window (shouldn't happen on linkedin.com, but
+      // fall back to this frame's own location rather than throwing).
+    }
+    const match = pathname.match(/\/messaging\/thread\/([^/]+)\/?/);
     return match ? decodeURIComponent(match[1]) : '';
   }
 
@@ -180,6 +384,24 @@ function initLiConvoCapture() {
     return messages;
   }
 
+  // LinkedIn's messaging UI is a client-side SPA: switching threads in the
+  // conversation list doesn't reload the page, and the new thread's header
+  // (candidate name + profile link) can take a beat to re-render after the
+  // URL/selection changes. A single synchronous query right after a thread
+  // switch can catch that gap and find nothing. Retry briefly before giving up.
+  async function extractCandidateProfileWithRetry() {
+    const maxAttempts = 8;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const candidate = extractCandidateProfile();
+      if (candidate) return candidate;
+      if (attempt < maxAttempts - 1) {
+        reportProgress('running', 5, 'Waiting for the conversation to finish loading', '');
+        await delay(300);
+      }
+    }
+    return null;
+  }
+
   async function run() {
     if (window.__liConvoCaptureRunning) {
       reportProgress('running', 5, 'Already ingesting this conversation', '');
@@ -188,7 +410,7 @@ function initLiConvoCapture() {
     window.__liConvoCaptureRunning = true;
     try {
       reportProgress('running', 5, 'Starting conversation scan', '');
-      const candidate = extractCandidateProfile();
+      const candidate = await extractCandidateProfileWithRetry();
       if (!candidate) {
         throw new Error('Could not identify the other participant. Open a 1:1 message thread and try again.');
       }
@@ -226,8 +448,29 @@ function initLiConvoCapture() {
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.action === 'ingestConversationNow') {
+      // The manifest injects this script into every linkedin.com frame
+      // (all_frames: true) because LinkedIn sometimes renders the real
+      // messaging UI inside a same-origin child iframe (observed:
+      // /preload/?_bprMode=vanilla) instead of the top-level document —
+      // the top frame is left an empty shell in that case. Only the one
+      // frame that actually has the message list should ever answer;
+      // every other frame silently declines instead of racing a wrong
+      // or empty response back to the popup.
+      if (!findMessagePane()) return false;
       void run()
         .then((conversation) => sendResponse({ ok: true, conversation }))
+        .catch((error) =>
+          sendResponse({ ok: false, error: error instanceof Error ? error.message : 'Capture failed.' })
+        );
+      return true;
+    }
+    if (message.action === 'captureConnectionNoteProfile') {
+      const hasProfileHeader = document.querySelector(
+        'main h1, .pv-text-details__left-panel h1, [data-view-name="profile-top-card"] h1'
+      );
+      if (!hasProfileHeader) return false;
+      void captureConnectionNoteProfile()
+        .then((profile) => sendResponse({ ok: true, profile }))
         .catch((error) =>
           sendResponse({ ok: false, error: error instanceof Error ? error.message : 'Capture failed.' })
         );

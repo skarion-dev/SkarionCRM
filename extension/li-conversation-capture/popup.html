@@ -116,6 +116,9 @@
       .action.followup {
         background: #d97706;
       }
+      .action.note {
+        background: #0f766e;
+      }
       .action.recommended {
         outline: 2px solid #0f172a;
         outline-offset: 2px;
@@ -145,6 +148,20 @@
         white-space: pre-wrap;
         font-size: 13px;
         margin-bottom: 8px;
+      }
+      .draft-footer {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+      }
+      .char-count {
+        font-size: 11px;
+        color: #64748b;
+      }
+      .char-count.over {
+        color: #b91c1c;
+        font-weight: 700;
       }
       .copy {
         border: 1px solid #cbd5e1;
@@ -212,7 +229,7 @@
     <header>
       <div>
         <h1>Skarion Conversation Capture</h1>
-        <p>Ingest a LinkedIn thread, draft the reply</p>
+        <p>Message threads and profile connection notes</p>
       </div>
       <button class="gear" id="toggleSettings" aria-label="Settings">⚙</button>
     </header>
@@ -226,23 +243,27 @@
       </section>
 
       <section class="card">
-        <div class="candidate-name" id="candidateName">Open a LinkedIn message thread</div>
-        <div class="muted" id="candidateMeta">Then click Ingest.</div>
+        <div class="candidate-name" id="candidateName">Open a LinkedIn message thread or profile</div>
+        <div class="muted" id="candidateMeta">Then use the action below.</div>
       </section>
 
       <section class="card">
         <div class="status" id="status">Ready.</div>
         <div class="progress"><div id="progress"></div></div>
+      </section>
+
+      <!-- Shown on linkedin.com/messaging/thread/* -->
+      <section class="card" id="threadCard" style="display: none">
         <div class="actions">
           <button class="action ingest" id="ingestButton">Ingest</button>
         </div>
 
         <div class="direction-label">
-          <label for="directionInput" style="margin-bottom: 0">Steer this draft (optional)</label>
-          <span class="muted" id="directionCount">0/600</span>
+          <label for="threadDirectionInput" style="margin-bottom: 0">Steer this draft (optional)</label>
+          <span class="muted" id="threadDirectionCount">0/600</span>
         </div>
         <textarea
-          id="directionInput"
+          id="threadDirectionInput"
           maxlength="600"
           placeholder="e.g. ask if they're open to desktop support roles"
         ></textarea>
@@ -250,6 +271,23 @@
         <div class="actions" style="margin-top: 9px">
           <button class="action draft" id="draftButton" disabled>Draft Reply</button>
           <button class="action followup" id="followUpButton" disabled>Follow Up</button>
+        </div>
+      </section>
+
+      <!-- Shown on linkedin.com/in/* -->
+      <section class="card" id="profileCard" style="display: none">
+        <div class="direction-label">
+          <label for="profileDirectionInput" style="margin-bottom: 0">Steer this note (optional)</label>
+          <span class="muted" id="profileDirectionCount">0/600</span>
+        </div>
+        <textarea
+          id="profileDirectionInput"
+          maxlength="600"
+          placeholder="e.g. mention their recent certification"
+        ></textarea>
+
+        <div class="actions" style="margin-top: 9px; grid-template-columns: 1fr">
+          <button class="action note" id="connectionNoteButton">Connection Note</button>
         </div>
       </section>
 
@@ -261,7 +299,7 @@
       </section>
 
       <div class="privacy">
-        Nothing sends automatically. Ingest stores the conversation in CRM; Draft only generates
+        Nothing sends automatically. Ingest/Connection Note store to CRM; drafting only generates
         text for you to review and copy.
       </div>
     </main>

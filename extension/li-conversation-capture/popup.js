@@ -7,17 +7,23 @@ const progressBar = document.getElementById('progress');
 const settings = document.getElementById('settings');
 const crmUrlInput = document.getElementById('crmUrl');
 const apiKeyInput = document.getElementById('apiKey');
+const threadCard = document.getElementById('threadCard');
+const profileCard = document.getElementById('profileCard');
 const ingestButton = document.getElementById('ingestButton');
 const draftButton = document.getElementById('draftButton');
 const followUpButton = document.getElementById('followUpButton');
+const connectionNoteButton = document.getElementById('connectionNoteButton');
 const draftsCard = document.getElementById('draftsCard');
 const draftsHeading = document.getElementById('draftsHeading');
 const draftsList = document.getElementById('draftsList');
-const directionInput = document.getElementById('directionInput');
-const directionCount = document.getElementById('directionCount');
+const threadDirectionInput = document.getElementById('threadDirectionInput');
+const threadDirectionCount = document.getElementById('threadDirectionCount');
+const profileDirectionInput = document.getElementById('profileDirectionInput');
+const profileDirectionCount = document.getElementById('profileDirectionCount');
 
 let activeTab = null;
 let busy = false;
+let pageMode = null; // 'thread' | 'profile' | null
 let crmSettings = { crmUrl: DEFAULT_CRM_URL, apiKey: '' };
 let lastIngestedProfileUrl = null;
 let lastMessageFromUs = null;
@@ -29,7 +35,7 @@ function setStatus(message, kind = '', percent = null) {
 }
 
 function updateDraftButtons() {
-  const ready = Boolean(lastIngestedProfileUrl) && !busy;
+  const ready = pageMode === 'thread' && Boolean(lastIngestedProfileUrl) && !busy;
   draftButton.disabled = !ready;
   followUpButton.disabled = !ready;
   // Recommend whichever action actually matches the conversation state: if
@@ -41,7 +47,8 @@ function updateDraftButtons() {
 
 function setBusy(value) {
   busy = value;
-  ingestButton.disabled = value;
+  ingestButton.disabled = value || pageMode !== 'thread';
+  connectionNoteButton.disabled = value || pageMode !== 'profile';
   updateDraftButtons();
 }
 
@@ -66,31 +73,58 @@ async function api(path, options = {}) {
   return body;
 }
 
+function detectPageMode(url) {
+  if (!url) return null;
+  if (url.includes('linkedin.com/messaging/thread/')) return 'thread';
+  if (/linkedin\.com\/in\/[^/?#]+/.test(url)) return 'profile';
+  return null;
+}
+
 async function refreshActiveTab() {
   [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  const onThread = Boolean(activeTab?.url?.includes('linkedin.com/messaging/thread/'));
-  ingestButton.disabled = !onThread || busy;
-  if (!onThread) {
-    candidateName.textContent = 'Open a LinkedIn message thread';
-    candidateMeta.textContent = 'Then click Ingest.';
-    draftsCard.style.display = 'none';
-    lastIngestedProfileUrl = null;
-    lastMessageFromUs = null;
-    updateDraftButtons();
+  pageMode = detectPageMode(activeTab?.url);
+
+  threadCard.style.display = pageMode === 'thread' ? 'block' : 'none';
+  profileCard.style.display = pageMode === 'profile' ? 'block' : 'none';
+  ingestButton.disabled = pageMode !== 'thread' || busy;
+  connectionNoteButton.disabled = pageMode !== 'profile' || busy;
+
+  if (pageMode === 'thread') {
+    candidateName.textContent = 'LinkedIn message thread';
+    candidateMeta.textContent = 'Click Ingest to read it in.';
+  } else if (pageMode === 'profile') {
+    candidateName.textContent = 'LinkedIn profile';
+    candidateMeta.textContent = 'Click Connection Note to draft one.';
+  } else {
+    candidateName.textContent = 'Open a LinkedIn message thread or profile';
+    candidateMeta.textContent = 'Then use the action below.';
   }
+
+  draftsCard.style.display = 'none';
+  lastIngestedProfileUrl = null;
+  lastMessageFromUs = null;
+  updateDraftButtons();
 }
 
 async function requestFromContentScript(action) {
-  try {
-    return await chrome.tabs.sendMessage(activeTab.id, { action });
-  } catch {
-    await chrome.scripting.executeScript({ target: { tabId: activeTab.id }, files: ['content.js'] });
-    return chrome.tabs.sendMessage(activeTab.id, { action });
-  }
+  // chrome.tabs.sendMessage resolves with `undefined` — not a rejection —
+  // when no content script frame actually called sendResponse. That
+  // happens both when nothing was ever injected (extension loaded after
+  // this tab was already open) and when LinkedIn rendered the real
+  // messaging UI inside a same-origin child iframe that only an
+  // allFrames-scoped injection reaches. Treat both the same: (re)inject
+  // into every frame and retry once.
+  const response = await chrome.tabs.sendMessage(activeTab.id, { action }).catch(() => undefined);
+  if (response !== undefined) return response;
+  await chrome.scripting.executeScript({
+    target: { tabId: activeTab.id, allFrames: true },
+    files: ['content.js'],
+  });
+  return chrome.tabs.sendMessage(activeTab.id, { action });
 }
 
 async function ingest() {
-  if (busy || !activeTab) return;
+  if (busy || !activeTab || pageMode !== 'thread') return;
   setBusy(true);
   draftsCard.style.display = 'none';
   setStatus('Scanning the open conversation…', '', 5);
@@ -123,7 +157,7 @@ async function ingest() {
   }
 }
 
-function renderDrafts(drafts) {
+function renderDrafts(drafts, { charLimit = null, onCopy = null } = {}) {
   draftsList.replaceChildren();
   drafts.forEach((text, index) => {
     const card = document.createElement('div');
@@ -131,6 +165,10 @@ function renderDrafts(drafts) {
     const body = document.createElement('div');
     body.className = 'draft-text';
     body.textContent = text;
+
+    const footer = document.createElement('div');
+    footer.className = 'draft-footer';
+
     const copyButton = document.createElement('button');
     copyButton.className = 'copy';
     copyButton.textContent = `Copy option ${index + 1}`;
@@ -142,8 +180,19 @@ function renderDrafts(drafts) {
         copyButton.textContent = `Copy option ${index + 1}`;
         copyButton.classList.remove('copied');
       }, 1500);
+      if (onCopy) void onCopy();
     });
-    card.append(body, copyButton);
+    footer.append(copyButton);
+
+    if (charLimit) {
+      const count = [...text].length;
+      const countLabel = document.createElement('span');
+      countLabel.className = `char-count${count > charLimit ? ' over' : ''}`;
+      countLabel.textContent = `${count}/${charLimit}`;
+      footer.append(countLabel);
+    }
+
+    card.append(body, footer);
     draftsList.append(card);
   });
   draftsCard.style.display = 'block';
@@ -162,7 +211,7 @@ async function generateDrafts(mode) {
     30
   );
   try {
-    const direction = directionInput.value.trim();
+    const direction = threadDirectionInput.value.trim();
     const result = await api('/extension/conversations/draft', {
       method: 'POST',
       body: JSON.stringify({
@@ -180,8 +229,64 @@ async function generateDrafts(mode) {
   }
 }
 
-directionInput.addEventListener('input', () => {
-  directionCount.textContent = `${directionInput.value.length}/600`;
+async function generateConnectionNote() {
+  if (busy || !activeTab || pageMode !== 'profile') return;
+  setBusy(true);
+  draftsCard.style.display = 'none';
+  setStatus('Reading the profile…', '', 5);
+  try {
+    const response = await requestFromContentScript('captureConnectionNoteProfile');
+    if (!response?.ok) throw new Error(response?.error || 'Could not read this profile.');
+    const profile = response.profile;
+
+    candidateName.textContent = profile.name;
+    candidateMeta.textContent = 'Drafting connection note options…';
+    setStatus('Drafting three connection-note options…', '', 60);
+
+    const direction = profileDirectionInput.value.trim();
+    const result = await api('/extension/profiles/connection-note', {
+      method: 'POST',
+      body: JSON.stringify({ ...profile, direction: direction || undefined }),
+    });
+
+    const leadLabel = result.lead ? result.lead.leadNumber : 'existing contact';
+    candidateMeta.textContent = result.duplicate
+      ? `${leadLabel} · already a converted contact`
+      : `${leadLabel} · copy a note to mark Connection Sent`;
+
+    draftsHeading.textContent = 'Connection note options — under 300 characters, ready for LinkedIn.';
+    const linkedinUrl = result.lead ? profile.profileUrl : null;
+    renderDrafts(result.drafts, {
+      charLimit: 300,
+      onCopy: linkedinUrl
+        ? async () => {
+            try {
+              await api('/extension/leads/mark-connection-sent', {
+                method: 'POST',
+                body: JSON.stringify({ profileUrl: linkedinUrl }),
+              });
+              candidateMeta.textContent = `${leadLabel} · marked Connection Sent`;
+            } catch {
+              // Non-fatal — the note is already copied, worth telling the
+              // operator the CRM update specifically didn't go through.
+              candidateMeta.textContent = `${leadLabel} · note copied, but marking Connection Sent failed`;
+            }
+          }
+        : null,
+    });
+    setStatus('Notes ready.', 'success', 100);
+  } catch (error) {
+    setStatus(error.message || 'Connection note failed.', 'error', 0);
+  } finally {
+    setBusy(false);
+  }
+}
+
+threadDirectionInput.addEventListener('input', () => {
+  threadDirectionCount.textContent = `${threadDirectionInput.value.length}/600`;
+});
+profileDirectionInput.addEventListener('input', () => {
+  profileDirectionCount.textContent = `${profileDirectionInput.value.length}/600`;
 });
 
 document.getElementById('toggleSettings').addEventListener('click', () => {
@@ -199,6 +304,7 @@ document.getElementById('saveSettings').addEventListener('click', async () => {
 ingestButton.addEventListener('click', () => void ingest());
 draftButton.addEventListener('click', () => void generateDrafts('reply'));
 followUpButton.addEventListener('click', () => void generateDrafts('follow_up'));
+connectionNoteButton.addEventListener('click', () => void generateConnectionNote());
 
 chrome.runtime.onMessage.addListener((message) => {
   if (message.action === 'ingestProgress') {
