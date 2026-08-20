@@ -92,6 +92,39 @@ function initLiConvoCapture() {
     return '';
   }
 
+  // LinkedIn's top-card no longer exposes an <h1> or any stable class name
+  // for the name/headline/location (build-hashed classes that rotate on
+  // every deploy). What's stable: the name is the first <h2> inside the
+  // first <section> of <main>, and the headline/location are the next
+  // visible <p> lines after it once pronoun ("He/Him") and connection-degree
+  // ("· 1st") lines are filtered out. There's also a hidden accessibility
+  // duplicate of several of these lines (0x0 bounding rect) that must be
+  // excluded or it reorders everything.
+  function isVisibleEl(el) {
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function isPronounLine(text) {
+    return /^(?:he|she|they)\/(?:him|her|them)$/i.test(text);
+  }
+
+  function isDegreeLine(text) {
+    // "· 1st" / "· 3rd" degree badges, and bare mutual-connections-count
+    // badges (observed rendering as a lone number with no suffix, e.g. "3").
+    return /^·?\s*\d+(?:st|nd|rd|th)?$/i.test(text);
+  }
+
+  function findProfileTopCard() {
+    const main = document.querySelector('main');
+    return main ? main.querySelector('section') : null;
+  }
+
+  function findProfileNameElement(topCard) {
+    const candidates = [...(topCard || document).querySelectorAll('h2')];
+    return candidates.find((el) => isPlausibleProfileName(el.innerText || el.textContent)) || null;
+  }
+
   // Same multi-pass scroller as li-profile-capture: LinkedIn only renders
   // Experience/Education/Skills as those sections scroll into view, and
   // rendering lags behind the scroll itself, so a single scroll-to-bottom
@@ -145,45 +178,34 @@ function initLiConvoCapture() {
   function extractProfile() {
     const url = window.location.href.split('?')[0];
 
-    const nameCandidates = [
-      ...document.querySelectorAll(
-        'main h1, .pv-text-details__left-panel h1, [data-view-name="profile-top-card"] h1'
-      ),
-    ];
-    const nameElement = nameCandidates.find((element) =>
-      isPlausibleProfileName(element.innerText || element.textContent)
-    );
+    const topCard = findProfileTopCard();
+    const nameElement = findProfileNameElement(topCard);
     const metadataName = cleanDocumentTitle(
       document.querySelector('meta[property="og:title"]')?.getAttribute('content')
     );
     const titleName = cleanDocumentTitle(document.title);
     const name =
-      compactText(nameElement?.innerText || nameElement?.textContent) ||
+      (isPlausibleProfileName(nameElement?.innerText) ? compactText(nameElement.innerText) : '') ||
       (isPlausibleProfileName(metadataName) ? metadataName : '') ||
       (isPlausibleProfileName(titleName) ? titleName : '');
-    const headerSec =
-      nameElement?.closest('section') ||
-      nameElement?.closest('[data-view-name="profile-top-card"]') ||
-      null;
-    const headline =
-      headerSec
-        ?.querySelector('div[data-generated-suggestion-target] + div, .text-body-medium')
-        ?.innerText?.trim() ||
-      (() => {
-        if (!headerSec) return '';
-        const lines = headerSec.innerText.split('\n').map((l) => l.trim()).filter(Boolean);
-        const ni = lines.findIndex((l) => l === name);
-        return ni >= 0 ? lines[ni + 1] : '';
-      })();
 
-    const location = (() => {
-      const spans = Array.from(headerSec?.querySelectorAll('span.text-body-small') || []);
-      for (const s of spans) {
-        const t = s.innerText.trim();
-        if (t.includes(',') && !t.includes('@') && t.length < 80) return t;
-      }
-      return '';
-    })();
+    const introLines = topCard
+      ? [...topCard.querySelectorAll('p')]
+          .filter((p) => isVisibleEl(p))
+          .map((p) => compactText(p.innerText))
+          .filter(Boolean)
+          .filter((text) => text !== name && text !== '·' && !isPronounLine(text) && !isDegreeLine(text))
+      : [];
+    const headline = introLines[0] || '';
+    const location =
+      introLines
+        .slice(1)
+        .find(
+          (text) =>
+            !/^contact info$/i.test(text) &&
+            !/^[\d,]+\s+followers?$/i.test(text) &&
+            !/mutual connection/i.test(text)
+        ) || '';
 
     const about = extractProfileSection('About').replace(/^About\n/, '').trim();
     const experience = extractProfileSection('Experience').replace(/^Experience\n/, '').trim();
@@ -465,9 +487,7 @@ function initLiConvoCapture() {
       return true;
     }
     if (message.action === 'captureConnectionNoteProfile') {
-      const hasProfileHeader = document.querySelector(
-        'main h1, .pv-text-details__left-panel h1, [data-view-name="profile-top-card"] h1'
-      );
+      const hasProfileHeader = findProfileNameElement(findProfileTopCard());
       if (!hasProfileHeader) return false;
       void captureConnectionNoteProfile()
         .then((profile) => sendResponse({ ok: true, profile }))
