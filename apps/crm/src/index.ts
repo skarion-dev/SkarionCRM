@@ -129,6 +129,7 @@ import {
   sanitizeCandidateConversationIdentity,
   sanitizeCandidateDraft,
   sanitizeCandidateDraftOptions,
+  sanitizeConnectionNoteOptions,
   type CandidateLeadAction,
   type CandidateConversationContext,
   type CandidateConversationIdentity,
@@ -2557,6 +2558,241 @@ app.post('/extension/conversations/draft', async (c) => {
       name: `${lead.firstName} ${lead.lastName}`.trim(),
     },
     drafts,
+  });
+});
+
+// Same sectioned-text convention leadDedup.ts's LINKEDIN_PROFILE_SECTION
+// regex already recognizes ("headline:", "about:", etc.) — keeps a
+// freshly-created lead's notes readable and future-compatible with the
+// existing profile-normalization pipeline, even though connection-note
+// generation itself never waits on that pipeline (see below).
+function buildScrapedProfileNotes(fields: {
+  headline?: string | null;
+  location?: string | null;
+  about?: string | null;
+  experience?: string | null;
+  education?: string | null;
+  skills?: string | null;
+}): string | null {
+  const lines: string[] = [];
+  if (fields.headline) lines.push(`Headline: ${fields.headline}`);
+  if (fields.location) lines.push(`Location: ${fields.location}`);
+  if (fields.about) lines.push(`About:\n${fields.about}`);
+  if (fields.experience) lines.push(`Experience:\n${fields.experience}`);
+  if (fields.education) lines.push(`Education:\n${fields.education}`);
+  if (fields.skills) lines.push(`Skills:\n${fields.skills}`);
+  return lines.length > 0 ? lines.join('\n\n').slice(0, 12_000) : null;
+}
+
+// Pre-connection: on a profile page, not a message thread. Resolves/creates
+// the lead like the other extension routes, but drafts the note straight
+// from the profile fields the content script just scraped rather than
+// waiting on CRM columns — those are only populated later by the async
+// profile-normalization queue, which would leave a brand-new lead's note
+// generation with nothing to work from.
+app.post('/extension/profiles/connection-note', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const resolved = await resolveExtensionKeyOwner(db, readExtensionKey(c));
+  if (!resolved) return c.json({ error: 'Invalid or missing API key.' }, 401);
+  const rateLimit = checkRateLimit(
+    `extension:profiles:connection-note:${resolved.userId}`,
+    30,
+    60_000
+  );
+  if (!rateLimit.allowed) {
+    c.header('Retry-After', String(rateLimit.retryAfter));
+    return c.json({ error: 'Too many extension requests. Please wait and retry.' }, 429);
+  }
+
+  const body = (await c.req.json()) as Record<string, unknown>;
+  const profileUrl = canonicalizeLinkedinUrl(body.profileUrl);
+  const profileKey = linkedinProfileKey(profileUrl);
+  const name = typeof body.name === 'string' ? body.name.trim().slice(0, 200) : '';
+  if (!profileUrl || !profileKey || !name) {
+    return c.json({ error: 'A name and a valid LinkedIn profile URL are required.' }, 400);
+  }
+  const scraped = {
+    headline: typeof body.headline === 'string' ? body.headline.trim().slice(0, 500) : null,
+    location: typeof body.location === 'string' ? body.location.trim().slice(0, 300) : null,
+    about: typeof body.about === 'string' ? body.about.trim().slice(0, 8_000) : null,
+    experience:
+      typeof body.experience === 'string' ? body.experience.trim().slice(0, 20_000) : null,
+    education: typeof body.education === 'string' ? body.education.trim().slice(0, 12_000) : null,
+    skills: typeof body.skills === 'string' ? body.skills.trim().slice(0, 8_000) : null,
+  };
+  const direction =
+    typeof body.direction === 'string' && body.direction.trim()
+      ? body.direction.trim().slice(0, 600)
+      : null;
+
+  const exact = await findExactMatch(db, { linkedinUrl: profileUrl, email: null, phone: null });
+
+  let lead: typeof schema.leads.$inferSelect | null = null;
+  if (exact?.entityType === 'lead') {
+    lead = exact.record;
+  } else if (!exact) {
+    const identity = await nextLeadIdentity(db);
+    const name2 = deriveProspectName(name, profileUrl);
+    const journeyStage: LeadJourneyStage = 'new';
+    const legacy = legacyFieldsForJourney(journeyStage);
+    const [inserted] = await db
+      .insert(schema.leads)
+      .values({
+        workspaceId: DEFAULT_WORKSPACE_ID,
+        ...identity,
+        firstName: name2.firstName,
+        lastName: name2.lastName,
+        linkedinUrl: profileUrl,
+        linkedinProfileKey: profileKey,
+        headline: scraped.headline,
+        location: scraped.location,
+        notes: buildScrapedProfileNotes(scraped),
+        source: 'linkedin',
+        ownerId: resolved.userId,
+        capturedByApiKeyId: resolved.keyId,
+        capturedByApiKeyLabel: resolved.label,
+        journeyStage,
+        status: legacy.status,
+        outreachStatus: legacy.outreachStatus,
+      })
+      .returning();
+    if (!inserted) return c.json({ error: 'Could not create candidate lead.' }, 500);
+    lead = inserted;
+    await linkImportedLinkedInConversationsToLead(db, lead);
+  }
+  // exact?.entityType === 'contact': already converted — draft the note
+  // from the scraped data without creating a duplicate lead; there's just
+  // no lead to later mark connection_sent on for this case.
+
+  if (!ai.isAiConfigured(c.env)) {
+    return c.json({ error: 'AI drafting is not configured.' }, 503);
+  }
+
+  const context: CandidateConversationContext = {
+    lead: {
+      id: lead?.id ?? '',
+      leadNumber: lead?.leadNumber ?? null,
+      name,
+      headline: lead?.headline ?? scraped.headline,
+      location: lead?.location ?? scraped.location,
+      about: (lead?.about ?? scraped.about)?.slice(0, 5_000) ?? null,
+      currentRole: lead?.currentRole ?? null,
+      currentRoleDates: lead?.currentRoleDates ?? null,
+      experience: (lead?.experience ?? scraped.experience)?.slice(0, 8_000) ?? null,
+      education: (lead?.education ?? scraped.education)?.slice(0, 5_000) ?? null,
+      skills: (lead?.skills ?? scraped.skills)?.slice(0, 3_000) ?? null,
+      profileSummary: lead?.profileSummary ?? null,
+      mostRecentSchool: lead?.mostRecentSchool ?? null,
+      mostRecentDegree: lead?.mostRecentDegree ?? null,
+      mostRecentFieldOfStudy: lead?.mostRecentFieldOfStudy ?? null,
+      mostRecentGraduationDate: lead?.mostRecentGraduationDate ?? null,
+      journeyStage: lead?.journeyStage ?? 'new',
+      source: lead?.source ?? 'linkedin',
+      tags: Array.isArray(lead?.tags)
+        ? lead.tags.filter((tag): tag is string => typeof tag === 'string')
+        : [],
+      notes: lead?.notes?.slice(0, 4_000) ?? null,
+    },
+    assessment: null,
+    channels: [],
+    linkedinMessages: [],
+    activities: [],
+  };
+  const baseInstruction = 'Draft a connection-request note for this profile.';
+  const operatorRequest = direction
+    ? `${baseInstruction}\n\nOperator's additional direction for this note: ${direction}`
+    : baseInstruction;
+  const prompt = buildCandidateConversationPrompt(context, operatorRequest);
+  const result = await ai.extractStructured<{ drafts?: unknown }>(prompt, c.env, {
+    tier: 'fast',
+    agent: 'linkedin-connection-writer',
+    temperature: 0.4,
+    systemInstruction: buildCandidateConversationSystemInstruction('connection_note'),
+  });
+  const drafts = sanitizeConnectionNoteOptions(result?.drafts);
+  if (!drafts) {
+    return c.json({ error: 'The connection note model returned no usable notes.' }, 422);
+  }
+
+  if (lead) {
+    await withAudit(db, schema.auditLog, {
+      actorUserId: resolved.userId,
+      action: 'generate',
+      resourceType: 'candidate_connection_note_options',
+      resourceId: lead.id,
+      after: { leadId: lead.id, draftCount: drafts.length, sentToCandidate: false },
+      app: 'crm',
+    });
+  }
+
+  return c.json({
+    lead: lead
+      ? {
+          id: lead.id,
+          leadNumber: lead.leadNumber,
+          name: `${lead.firstName} ${lead.lastName}`.trim(),
+        }
+      : null,
+    duplicate: exact?.entityType === 'contact',
+    drafts,
+  });
+});
+
+app.post('/extension/leads/mark-connection-sent', async (c) => {
+  const db = getDb(c.env, schema) as CrmDb;
+  const resolved = await resolveExtensionKeyOwner(db, readExtensionKey(c));
+  if (!resolved) return c.json({ error: 'Invalid or missing API key.' }, 401);
+
+  const body = (await c.req.json()) as Record<string, unknown>;
+  const profileUrl = canonicalizeLinkedinUrl(body.profileUrl);
+  const profileKey = linkedinProfileKey(profileUrl);
+  if (!profileUrl || !profileKey) {
+    return c.json({ error: 'A valid candidate LinkedIn URL is required.' }, 400);
+  }
+
+  const [lead] = await db
+    .select()
+    .from(schema.leads)
+    .where(
+      and(
+        eq(schema.leads.workspaceId, DEFAULT_WORKSPACE_ID),
+        eq(schema.leads.linkedinProfileKey, profileKey),
+        isNull(schema.leads.deletedAt)
+      )
+    )
+    .limit(1);
+  if (!lead) {
+    return c.json({ error: 'No lead found for this LinkedIn URL.' }, 404);
+  }
+
+  const journeyStage: LeadJourneyStage = 'connection_sent';
+  const legacy = legacyFieldsForJourney(journeyStage);
+  const [updated] = await db
+    .update(schema.leads)
+    .set({
+      journeyStage,
+      status: legacy.status,
+      outreachStatus: legacy.outreachStatus,
+      approachedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(eq(schema.leads.id, lead.id))
+    .returning();
+
+  await withAudit(db, schema.auditLog, {
+    actorUserId: resolved.userId,
+    action: 'update',
+    resourceType: 'lead',
+    resourceId: lead.id,
+    before: { journeyStage: lead.journeyStage },
+    after: { journeyStage },
+    app: 'crm',
+  });
+
+  return c.json({
+    lead: updated
+      ? { id: updated.id, leadNumber: updated.leadNumber, journeyStage: updated.journeyStage }
+      : null,
   });
 });
 
